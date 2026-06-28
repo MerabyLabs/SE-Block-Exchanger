@@ -1,4 +1,4 @@
-customtkinter>=5.2.2
+customtkinter>=6.0.0
 
 # Security: hardened XML parser (prevents XXE / billion-laughs)
 defusedxml>=0.7.1
