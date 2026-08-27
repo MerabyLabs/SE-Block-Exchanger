@@ -1,4 +1,4 @@
-﻿"""
+"""
 Release Packaging Script for Space Engineers Tactical Command (SE Block Exchanger).
 Builds a clean distribution package containing ONLY runtime files and executable.
 Excludes all test files, dev scripts, and internal documentation.
@@ -36,9 +36,13 @@ def create_release_package(output_dir: Path = Path("dist")) -> Path:
         "app_settings.py",
         "update_checker.py",
         "safe_xml.py",
+        "engine_compat.py",
         "version.py",
         "requirements.txt",
         "launch.bat",
+        "SE Tactical Command.bat",
+        "Create Desktop Shortcut.bat",
+        "create_desktop_shortcut.ps1",
         "README.md",
         "RELEASE_NOTES.md",
         "LICENSE",
