@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from typing import Optional, cast, Any
+from typing import Optional, Any
 
 
 class BlueprintParseError(ValueError):
