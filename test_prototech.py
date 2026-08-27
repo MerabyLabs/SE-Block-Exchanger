@@ -21,7 +21,7 @@ class TestPrototech(unittest.TestCase):
 
     def test_bidirectional_consistency(self):
         sanity_map = get_survival_sanity_mapping()
-        self.assertEqual(len(sanity_map), len(VANILLA_TO_PROTOTECH_PAIRS))
+        self.assertGreaterEqual(len(sanity_map), len(VANILLA_TO_PROTOTECH_PAIRS))
         for v_block, proto_block in VANILLA_TO_PROTOTECH_PAIRS.items():
             self.assertEqual(sanity_map[proto_block], v_block)
 

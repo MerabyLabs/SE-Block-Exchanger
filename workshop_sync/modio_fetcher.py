@@ -40,11 +40,17 @@ class ModioFetcher:
         destination_folder.mkdir(parents=True, exist_ok=True)
 
         with zipfile.ZipFile(zip_path, "r") as zf:
+            dest_resolved = destination_folder.resolve()
             for member in zf.infolist():
-                # Defend against zip slip
-                target = destination_folder / member.filename
-                if not str(target.resolve()).startswith(str(destination_folder.resolve())):
-                    raise ValueError(f"Illegal zip entry path: {member.filename}")
+                # Defend against zip slip using is_relative_to
+                target_resolved = (destination_folder / member.filename).resolve()
+                try:
+                    if not target_resolved.is_relative_to(dest_resolved):
+                        raise ValueError(f"Illegal zip entry path: {member.filename}")
+                except AttributeError:
+                    # Fallback for Python < 3.9
+                    if not str(target_resolved).startswith(str(dest_resolved)):
+                        raise ValueError(f"Illegal zip entry path: {member.filename}")
             zf.extractall(destination_folder)
 
         return destination_folder

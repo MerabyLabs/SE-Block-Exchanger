@@ -387,7 +387,7 @@ class BlueprintAnalyticsEngine:
                         sub_id.text = target
                     converted += 1
             if converted > 0:
-                tree.write(blueprint_file, encoding="utf-8", xml_declaration=True)
+                safe_xml.safe_write(tree, blueprint_file)
                 return True
             return False
         elif fix_id == "vanillafy_dlc":
@@ -405,7 +405,7 @@ class BlueprintAnalyticsEngine:
                         sub_id.text = target
                     converted += 1
             if converted > 0:
-                tree.write(blueprint_file, encoding="utf-8", xml_declaration=True)
+                safe_xml.safe_write(tree, blueprint_file)
                 return True
             return False
         else:
@@ -418,7 +418,7 @@ class BlueprintAnalyticsEngine:
         ET.SubElement(new_block, "BlockOrientation").attrib.update(
             {"Forward": "Forward", "Up": "Up"}
         )
-        tree.write(blueprint_file, encoding="utf-8", xml_declaration=True)
+        safe_xml.safe_write(tree, blueprint_file)
         return True
 
     @staticmethod

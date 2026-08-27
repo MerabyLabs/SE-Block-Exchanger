@@ -52,9 +52,12 @@ class SubgridHierarchyParser:
         if not blueprint_path.is_file():
             return MultiGridStructure(root_node=None, total_grids=0, total_blocks=0, mechanical_links=[])
 
-        tree = safe_xml.parse(blueprint_path)
-        root = tree.getroot()
-        return cls.parse_element(root)
+        try:
+            tree = safe_xml.parse(blueprint_path)
+            root = tree.getroot()
+            return cls.parse_element(root)
+        except Exception:
+            return MultiGridStructure(root_node=None, total_grids=0, total_blocks=0, mechanical_links=[])
 
     @classmethod
     def parse_element(cls, root: ET.Element) -> MultiGridStructure:
@@ -100,7 +103,12 @@ class SubgridHierarchyParser:
                 custom_name = cls._get_text(block, "CustomName") or subtype
                 block_entity_id = cls._get_text(block, "EntityId") or ""
 
-                top_part_id = cls._get_text(block, "TopBlockId") or cls._get_text(block, "RotorEntityId")
+                top_part_id = (
+                    cls._get_text(block, "TopBlockId")
+                    or cls._get_text(block, "TopPartEntityId")
+                    or cls._get_text(block, "RotorEntityId")
+                    or cls._get_text(block, "AttachedSubgridId")
+                )
                 if top_part_id and top_part_id != "0":
                     link_type = "Mechanical"
                     if "Motor" in xsi_type or "Rotor" in subtype:

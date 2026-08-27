@@ -166,16 +166,15 @@ class BlueprintConverter:
         root = tree.getroot()
         
         # 1. Update GridSizeEnum
-        changed_grids = 0
         grid_size_elements = root.findall(".//CubeGrid/GridSizeEnum")
         for elem in grid_size_elements:
             if elem.text and elem.text.strip().capitalize() != target_size:
                 elem.text = target_size
-                changed_grids += 1
                 
-        # 2. Swap Subtypes
+        # 2. Swap Subtypes & Scale Coordinates (5:1 ratio between Large 2.5m and Small 0.5m)
         source_prefix = "Large" if target_size == "Small" else "Small"
         dest_prefix = "Small" if target_size == "Small" else "Large"
+        scale_factor = 5 if target_size == "Small" else 1 / 5.0
         
         replacements = 0
         blocks_scanned = 0
@@ -216,8 +215,26 @@ class BlueprintConverter:
                         for elem in elem_to_modify:
                             elem.text = new_val
                         replacements += 1
+
+                # 3. Rescale coordinates so blocks do not overlap or float
+                min_elem = block.find("Min")
+                if min_elem is not None:
+                    try:
+                        x = int(min_elem.attrib.get("x", 0))
+                        y = int(min_elem.attrib.get("y", 0))
+                        z = int(min_elem.attrib.get("z", 0))
+                        if target_size == "Small":
+                            min_elem.attrib["x"] = str(x * 5)
+                            min_elem.attrib["y"] = str(y * 5)
+                            min_elem.attrib["z"] = str(z * 5)
+                        else:
+                            min_elem.attrib["x"] = str(int(x // 5))
+                            min_elem.attrib["y"] = str(int(y // 5))
+                            min_elem.attrib["z"] = str(int(z // 5))
+                    except (ValueError, TypeError):
+                        pass
                         
-        tree.write(new_bp_file, encoding="utf-8", xml_declaration=True)
+        safe_xml.safe_write(tree, new_bp_file)
         self._history.append(dest_path)
         return dest_path, blocks_scanned, replacements
 
@@ -270,7 +287,7 @@ class BlueprintConverter:
                     subtype_id.text = target
                 converted += 1
 
-        tree.write(new_bp_file, encoding="utf-8", xml_declaration=True)
+        safe_xml.safe_write(tree, new_bp_file)
         self._history.append(dest_path)
         return dest_path, scanned, converted
 
@@ -324,7 +341,7 @@ class BlueprintConverter:
                     subtype_id.text = target
                 converted += 1
 
-        tree.write(new_bp_file, encoding="utf-8", xml_declaration=True)
+        safe_xml.safe_write(tree, new_bp_file)
         self._history.append(dest_path)
         return dest_path, scanned, converted
 
@@ -377,7 +394,7 @@ class BlueprintConverter:
                     subtype_id.text = target
                 converted += 1
 
-        tree.write(new_bp_file, encoding="utf-8", xml_declaration=True)
+        safe_xml.safe_write(tree, new_bp_file)
         self._history.append(dest_path)
         return dest_path, scanned, converted
 

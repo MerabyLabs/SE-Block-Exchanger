@@ -112,13 +112,17 @@ class SteamWorkshopFetcher:
     def import_to_local_blueprints(cls, item: WorkshopItem, custom_name: Optional[str] = None) -> Path:
         """Copies a workshop blueprint folder into the user's SpaceEngineers local blueprint directory."""
         appdata = os.environ.get("APPDATA")
-        if not appdata:
-            raise RuntimeError("APPDATA environment variable is not defined.")
+        appdata_path = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
 
-        local_bp_dir = Path(appdata) / "SpaceEngineers" / "Blueprints" / "local"
+        local_bp_dir = appdata_path / "SpaceEngineers" / "Blueprints" / "local"
         local_bp_dir.mkdir(parents=True, exist_ok=True)
 
-        target_name = custom_name or f"Workshop_{item.workshop_id}"
+        raw_name = custom_name or f"Workshop_{item.workshop_id}"
+        # Sanitize folder name to prevent path traversal or filesystem illegal characters
+        target_name = re.sub(r'[<>:"/\\|?*]', '_', raw_name).strip('. ')
+        if not target_name:
+            target_name = f"Workshop_{item.workshop_id}"
+
         dest_dir = local_bp_dir / target_name
         dest_dir.mkdir(parents=True, exist_ok=True)
 

@@ -12,8 +12,8 @@ VANILLA_TO_PROTOTECH_PAIRS: Dict[str, str] = {
     # Power & Energy
     "LargeBlockLargeGenerator": "LargePrototechGenerator",
     "LargeBlockSmallGenerator": "LargePrototechGeneratorSmall",
-    "LargeBlockBatteryBlock": "PrototechBattery",
-    "SmallBlockBatteryBlock": "PrototechBatterySmall",
+    "LargeBlockBatteryBlock": "LargePrototechBattery",
+    "SmallBlockBatteryBlock": "SmallPrototechBattery",
 
     # Propulsion
     "LargeBlockLargeThrust": "LargePrototechThruster",
@@ -28,7 +28,7 @@ VANILLA_TO_PROTOTECH_PAIRS: Dict[str, str] = {
     "LargeAssembler": "PrototechAssembler",
     "LargeHydrogenEngine": "LargePrototechHydrogenEngine",
     "LargeOxygenGenerator": "LargePrototechO2H2",
-    "LargeJumpDrive": "PrototechJumpDrive",
+    "LargeJumpDrive": "LargePrototechJumpDrive",
 
     # Combat & Offense
     "LargeGatlingTurret": "PrototechGatlingTurret",
@@ -45,11 +45,55 @@ VANILLA_TO_PROTOTECH_PAIRS: Dict[str, str] = {
 
 # Reverse: Prototech -> Survival-Craftable Vanilla Equivalents (Survival Sanity Mode)
 PROTOTECH_TO_VANILLA_PAIRS: Dict[str, str] = {
-    v: k for k, v in VANILLA_TO_PROTOTECH_PAIRS.items()
+    # Power
+    "LargePrototechGenerator": "LargeBlockLargeGenerator",
+    "LargePrototechReactor": "LargeBlockLargeGenerator",
+    "LargePrototechGeneratorSmall": "LargeBlockSmallGenerator",
+    "PrototechBattery": "LargeBlockBatteryBlock",
+    "LargePrototechBattery": "LargeBlockBatteryBlock",
+    "PrototechBatterySmall": "SmallBlockBatteryBlock",
+    "SmallPrototechBattery": "SmallBlockBatteryBlock",
+    "PrototechCapacitor": "LargeBlockBatteryBlock",
+    "LargePrototechCapacitor": "LargeBlockBatteryBlock",
+
+    # Propulsion
+    "LargePrototechThruster": "LargeBlockLargeThrust",
+    "LargePrototechThrust": "LargeBlockLargeThrust",
+    "LargePrototechThrusterSmall": "LargeBlockSmallThrust",
+    "SmallPrototechThruster": "SmallBlockLargeThrust",
+    "SmallPrototechThrusterSmall": "SmallBlockSmallThrust",
+    "LargePrototechHydrogenThruster": "LargeBlockLargeHydrogenThrust",
+    "LargePrototechHydrogenThrusterSmall": "LargeBlockSmallHydrogenThrust",
+
+    # Utility & Production
+    "PrototechRefinery": "LargeRefinery",
+    "LargePrototechRefinery": "LargeRefinery",
+    "PrototechAssembler": "LargeAssembler",
+    "LargePrototechAssembler": "LargeAssembler",
+    "LargePrototechHydrogenEngine": "LargeHydrogenEngine",
+    "LargePrototechO2H2": "LargeOxygenGenerator",
+    "PrototechO2H2": "LargeOxygenGenerator",
+    "PrototechJumpDrive": "LargeJumpDrive",
+    "LargePrototechJumpDrive": "LargeJumpDrive",
+
+    # Combat
+    "PrototechGatlingTurret": "LargeGatlingTurret",
+    "PrototechMissileTurret": "LargeMissileTurret",
+    "PrototechInteriorTurret": "LargeInteriorTurret",
+    "PrototechArtilleryTurret": "LargeArtilleryTurret",
+    "PrototechRailgun": "LargeRailgun",
+
+    # Tools
+    "PrototechDrill": "LargeBlockDrill",
+    "LargePrototechDrill": "LargeBlockDrill",
+    "PrototechGrinder": "LargeBlockGrinder",
+    "LargePrototechGrinder": "LargeBlockGrinder",
+    "PrototechWelder": "LargeBlockWelder",
+    "LargePrototechWelder": "LargeBlockWelder",
 }
 
 # Set of all known Prototech subtypes for fast lookup and survival audits
-PROTOTECH_SUBTYPES: Set[str] = set(VANILLA_TO_PROTOTECH_PAIRS.values())
+PROTOTECH_SUBTYPES: Set[str] = set(PROTOTECH_TO_VANILLA_PAIRS.keys())
 
 
 def get_category() -> MappingCategory:
@@ -66,3 +110,4 @@ def get_category() -> MappingCategory:
 def get_survival_sanity_mapping() -> Dict[str, str]:
     """Returns mapping to downgrade all uncraftable Prototech blocks to standard survival blocks."""
     return dict(PROTOTECH_TO_VANILLA_PAIRS)
+

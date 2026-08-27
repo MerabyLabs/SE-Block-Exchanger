@@ -34,9 +34,12 @@ class PBScriptExtractor:
         if not blueprint_path.is_file():
             return []
 
-        tree = safe_xml.parse(blueprint_path)
-        root = tree.getroot()
-        return PBScriptExtractor.extract_from_element(root)
+        try:
+            tree = safe_xml.parse(blueprint_path)
+            root = tree.getroot()
+            return PBScriptExtractor.extract_from_element(root)
+        except Exception:
+            return []
 
     @staticmethod
     def extract_from_element(root: ET.Element) -> List[ExtractedPBScript]:
@@ -58,8 +61,7 @@ class PBScriptExtractor:
                 entity_id_elem = block.find("EntityId")
                 entity_id = entity_id_elem.text.strip() if (entity_id_elem is not None and entity_id_elem.text) else None
 
-                subtype_elem = block.find("SubtypeName") or block.find("SubtypeId")
-                subtype_name = subtype_elem.text.strip() if (subtype_elem is not None and subtype_elem.text) else "ProgrammableBlock"
+                subtype_name = safe_xml.get_subtype(block) or "ProgrammableBlock"
 
                 program_elem = block.find("Program")
                 program_code = program_elem.text if (program_elem is not None and program_elem.text) else ""

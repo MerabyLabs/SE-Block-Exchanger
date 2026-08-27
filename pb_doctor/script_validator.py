@@ -4,6 +4,7 @@ Analyzes C# code embedded in Space Engineers blueprints against in-game sandbox 
 """
 
 from __future__ import annotations
+from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -12,8 +13,18 @@ from pb_doctor.whitelist_rules import (
     RECOMMENDED_SAFE_CHARACTERS,
     ESTIMATED_INSTRUCTION_LIMIT,
     INSTRUCTION_WARNING_THRESHOLD,
-    FORBIDDEN_NAMESPACES,
-    FORBIDDEN_PATTERNS,
+    COMPILED_FORBIDDEN_NAMESPACES,
+    COMPILED_FORBIDDEN_PATTERNS,
+    RE_REGION_OPEN,
+    RE_REGION_CLOSE,
+    RE_PROGRAM_CTOR,
+    RE_MAIN_METHOD,
+    RE_SAVE_METHOD,
+    RE_LOOPS,
+    RE_CONDITIONALS,
+    RE_METHOD_CALLS,
+    RE_ALLOCATIONS,
+    RE_LINQ,
 )
 
 
@@ -120,8 +131,8 @@ class PBScriptValidator:
                 )
             )
 
-        open_regions = len(re.findall(r"^\s*#region\b", code, re.MULTILINE))
-        close_regions = len(re.findall(r"^\s*#endregion\b", code, re.MULTILINE))
+        open_regions = len(RE_REGION_OPEN.findall(code))
+        close_regions = len(RE_REGION_CLOSE.findall(code))
         if open_regions != close_regions:
             diagnostics.append(
                 PBDiagnostic(
@@ -133,11 +144,10 @@ class PBScriptValidator:
                 )
             )
 
-        # 3. Forbidden namespaces and patterns per line
+        # 3. Forbidden namespaces and patterns per line (precompiled)
         for idx, line in enumerate(lines, 1):
-            # Check forbidden namespaces
-            for ns in FORBIDDEN_NAMESPACES:
-                if re.search(r"\b" + re.escape(ns) + r"\b", line):
+            for regex, ns in COMPILED_FORBIDDEN_NAMESPACES:
+                if regex.search(line):
                     diagnostics.append(
                         PBDiagnostic(
                             severity="Error",
@@ -148,9 +158,8 @@ class PBScriptValidator:
                         )
                     )
 
-            # Check forbidden patterns
-            for pattern, msg, suggestion in FORBIDDEN_PATTERNS:
-                if re.search(pattern, line):
+            for regex, msg, suggestion in COMPILED_FORBIDDEN_PATTERNS:
+                if regex.search(line):
                     diagnostics.append(
                         PBDiagnostic(
                             severity="Error" if "Unicode" in msg or "Async" in msg or "Dynamic" in msg or "Namespace" in msg else "Warning",
@@ -162,9 +171,9 @@ class PBScriptValidator:
                     )
 
         # 4. Entry point detection
-        has_program = bool(re.search(r"\bpublic\s+Program\s*\(\s*\)", code)) or bool(re.search(r"\bProgram\s*\(\s*\)", code))
-        has_main = bool(re.search(r"\bvoid\s+Main\s*\(", code)) or bool(re.search(r"\bpublic\s+void\s+Main\s*\(", code))
-        has_save = bool(re.search(r"\bvoid\s+Save\s*\(\s*\)", code)) or bool(re.search(r"\bpublic\s+void\s+Save\s*\(\s*\)", code))
+        has_program = bool(RE_PROGRAM_CTOR.search(code))
+        has_main = bool(RE_MAIN_METHOD.search(code))
+        has_save = bool(RE_SAVE_METHOD.search(code))
 
         if not has_main:
             diagnostics.append(
@@ -223,12 +232,11 @@ class PBScriptValidator:
         """Lightweight static heuristic estimation for PB instruction load."""
         instructions = 500  # Base boilerplate overhead
         
-        # Count control flow, operations, and loops
-        loops = len(re.findall(r"\b(for|foreach|while|do)\b", code))
-        conditionals = len(re.findall(r"\b(if|switch|case|\?)\b", code))
-        method_calls = len(re.findall(r"\b[A-Za-z0-9_]+\s*\(", code))
-        allocations = len(re.findall(r"\bnew\s+[A-Za-z0-9_]+", code))
-        linq_usages = len(re.findall(r"\b(Select|Where|OrderBy|GroupBy|ToList|ToArray)\b", code))
+        loops = len(RE_LOOPS.findall(code))
+        conditionals = len(RE_CONDITIONALS.findall(code))
+        method_calls = len(RE_METHOD_CALLS.findall(code))
+        allocations = len(RE_ALLOCATIONS.findall(code))
+        linq_usages = len(RE_LINQ.findall(code))
 
         instructions += (loops * 2500)
         instructions += (conditionals * 150)
@@ -237,3 +245,4 @@ class PBScriptValidator:
         instructions += (linq_usages * 800)
 
         return min(instructions, 100_000)
+

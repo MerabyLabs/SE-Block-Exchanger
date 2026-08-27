@@ -379,8 +379,8 @@ class TacticalCommandCenter(ctk.CTk):
         def load_task():
             try:
                 scan_dir = self.custom_blueprint_dir or None
-                self.blueprints = self.scanner.scan_blueprints(scan_dir)
-                self.after(0, self._on_blueprints_loaded)
+                results = self.scanner.scan_blueprints(scan_dir)
+                self.after(0, lambda res=results: self._on_blueprints_loaded(res))
             except FileNotFoundError:
                 self.after(0, self._on_scan_not_found)
             except Exception as exc:
@@ -389,7 +389,8 @@ class TacticalCommandCenter(ctk.CTk):
 
         threading.Thread(target=load_task, daemon=True).start()
 
-    def _on_blueprints_loaded(self):
+    def _on_blueprints_loaded(self, results):
+        self.blueprints = list(results)
         count = len(self.blueprints)
         self.header.set_blueprint_count(count)
         self.footer.set_status("BLUEPRINTS LOADED")
