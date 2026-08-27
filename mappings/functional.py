@@ -12,6 +12,8 @@ FUNCTIONAL_PAIRS = {
     "SmallBlockSmallGenerator": "SmallBlockLargeGenerator",
     "LargeBlockSmallContainer": "LargeBlockLargeContainer",
     "SmallBlockSmallContainer": "SmallBlockLargeContainer",
+    "Collector": "FlatCollector",
+    "SmallBlockBatteryBlock": "LargeBlockBatteryBlock",
 }
 
 

@@ -5,27 +5,102 @@
     "notes": "Values are used for comparative analytics and planning, not authoritative engineering simulation."
   },
   "component_to_ingot": {
-    "SteelPlate": { "Iron": 3.5 },
-    "InteriorPlate": { "Iron": 3.0 },
-    "Construction": { "Iron": 8.0 },
-    "MetalGrid": { "Iron": 12.0, "Nickel": 2.0 },
-    "Motor": { "Iron": 3.0, "Nickel": 2.0 },
-    "Computer": { "Iron": 0.2, "Silicon": 1.0 },
-    "Display": { "Iron": 1.0, "Silicon": 2.0 },
-    "SolarCell": { "Silicon": 2.0, "Nickel": 0.2 },
-    "LargeTube": { "Iron": 12.0 },
-    "SmallTube": { "Iron": 4.0 },
-    "PowerCell": { "Iron": 2.0, "Nickel": 2.0, "Silicon": 1.0 },
-    "Superconductor": { "Iron": 1.0, "Gold": 1.0 },
-    "Reactor": { "Iron": 10.0, "Silver": 5.0 },
-    "Thrust": { "Iron": 2.0, "Cobalt": 3.0, "Gold": 1.0 },
-    "BulletproofGlass": { "Silicon": 5.0 },
-    "Girder": { "Iron": 4.0 },
-    "RadioCommunication": { "Silicon": 1.0, "Nickel": 0.5 },
-    "Detector": { "Iron": 2.0, "Nickel": 1.0 },
-    "Medical": { "Silver": 5.0, "Iron": 1.0, "Nickel": 1.0 },
-    "Canvas": { "Organic": 1.0 },
-    "Explosives": { "Magnesium": 2.0, "Silicon": 1.0, "Iron": 1.0 }
+    "SteelPlate": {
+      "Iron": 3.5
+    },
+    "InteriorPlate": {
+      "Iron": 3.0
+    },
+    "Construction": {
+      "Iron": 8.0
+    },
+    "MetalGrid": {
+      "Iron": 12.0,
+      "Nickel": 2.0
+    },
+    "Motor": {
+      "Iron": 3.0,
+      "Nickel": 2.0
+    },
+    "Computer": {
+      "Iron": 0.2,
+      "Silicon": 1.0
+    },
+    "Display": {
+      "Iron": 1.0,
+      "Silicon": 2.0
+    },
+    "SolarCell": {
+      "Silicon": 2.0,
+      "Nickel": 0.2
+    },
+    "LargeTube": {
+      "Iron": 12.0
+    },
+    "SmallTube": {
+      "Iron": 4.0
+    },
+    "PowerCell": {
+      "Iron": 2.0,
+      "Nickel": 2.0,
+      "Silicon": 1.0
+    },
+    "Superconductor": {
+      "Iron": 1.0,
+      "Gold": 1.0
+    },
+    "Reactor": {
+      "Iron": 10.0,
+      "Silver": 5.0
+    },
+    "Thrust": {
+      "Iron": 2.0,
+      "Cobalt": 3.0,
+      "Gold": 1.0
+    },
+    "BulletproofGlass": {
+      "Silicon": 5.0
+    },
+    "Girder": {
+      "Iron": 4.0
+    },
+    "RadioCommunication": {
+      "Silicon": 1.0,
+      "Nickel": 0.5
+    },
+    "Detector": {
+      "Iron": 2.0,
+      "Nickel": 1.0
+    },
+    "Medical": {
+      "Silver": 5.0,
+      "Iron": 1.0,
+      "Nickel": 1.0
+    },
+    "Canvas": {
+      "Organic": 1.0
+    },
+    "Explosives": {
+      "Magnesium": 2.0,
+      "Silicon": 1.0,
+      "Iron": 1.0
+    },
+    "PrototechCircuitry": {
+      "Gold": 10.0,
+      "Platinum": 5.0,
+      "Silicon": 8.0,
+      "Iron": 15.0
+    },
+    "PrototechCapacitor": {
+      "Gold": 8.0,
+      "Silicon": 10.0,
+      "Iron": 10.0
+    },
+    "PrototechCooling": {
+      "Cobalt": 10.0,
+      "Iron": 20.0,
+      "Silver": 5.0
+    }
   },
   "ore_yields": {
     "Iron": 0.7,
@@ -44,25 +119,33 @@
       "category": "armor",
       "pcu": 1,
       "mass": 2520.0,
-      "components": { "SteelPlate": 25 }
+      "components": {
+        "SteelPlate": 25
+      }
     },
     "LargeHeavyBlockArmorBlock": {
       "category": "armor",
       "pcu": 1,
       "mass": 15100.0,
-      "components": { "SteelPlate": 150 }
+      "components": {
+        "SteelPlate": 150
+      }
     },
     "SmallBlockArmorBlock": {
       "category": "armor",
       "pcu": 0,
       "mass": 10.0,
-      "components": { "SteelPlate": 1 }
+      "components": {
+        "SteelPlate": 1
+      }
     },
     "SmallHeavyBlockArmorBlock": {
       "category": "armor",
       "pcu": 0,
       "mass": 30.0,
-      "components": { "SteelPlate": 5 }
+      "components": {
+        "SteelPlate": 5
+      }
     },
     "LargeBlockSmallThrust": {
       "category": "thrusters",
@@ -600,6 +683,339 @@
         "Computer": 4,
         "Motor": 6,
         "SmallTube": 8
+      }
+    },
+    "LargePrototechGenerator": {
+      "category": "power",
+      "pcu": 50,
+      "mass": 6500.0,
+      "components": {
+        "SteelPlate": 120,
+        "Construction": 80,
+        "Reactor": 50,
+        "PrototechCircuitry": 15
+      }
+    },
+    "LargePrototechGeneratorSmall": {
+      "category": "power",
+      "pcu": 30,
+      "mass": 2200.0,
+      "components": {
+        "SteelPlate": 50,
+        "Construction": 30,
+        "Reactor": 15,
+        "PrototechCircuitry": 5
+      }
+    },
+    "PrototechBattery": {
+      "category": "power",
+      "pcu": 35,
+      "mass": 3200.0,
+      "components": {
+        "SteelPlate": 80,
+        "Construction": 30,
+        "PowerCell": 80,
+        "PrototechCircuitry": 10
+      }
+    },
+    "PrototechBatterySmall": {
+      "category": "power",
+      "pcu": 15,
+      "mass": 450.0,
+      "components": {
+        "SteelPlate": 15,
+        "Construction": 10,
+        "PowerCell": 15,
+        "PrototechCircuitry": 2
+      }
+    },
+    "LargePrototechThruster": {
+      "category": "thrusters",
+      "pcu": 25,
+      "mass": 5200.0,
+      "components": {
+        "SteelPlate": 100,
+        "Construction": 60,
+        "Thrust": 80,
+        "PrototechCircuitry": 20
+      }
+    },
+    "LargePrototechThrusterSmall": {
+      "category": "thrusters",
+      "pcu": 15,
+      "mass": 1800.0,
+      "components": {
+        "SteelPlate": 40,
+        "Construction": 20,
+        "Thrust": 20,
+        "PrototechCircuitry": 5
+      }
+    },
+    "SmallPrototechThruster": {
+      "category": "thrusters",
+      "pcu": 15,
+      "mass": 700.0,
+      "components": {
+        "SteelPlate": 20,
+        "Construction": 15,
+        "Thrust": 15,
+        "PrototechCircuitry": 4
+      }
+    },
+    "SmallPrototechThrusterSmall": {
+      "category": "thrusters",
+      "pcu": 10,
+      "mass": 200.0,
+      "components": {
+        "SteelPlate": 5,
+        "Construction": 5,
+        "Thrust": 4,
+        "PrototechCircuitry": 1
+      }
+    },
+    "LargePrototechHydrogenThruster": {
+      "category": "thrusters",
+      "pcu": 25,
+      "mass": 4800.0,
+      "components": {
+        "SteelPlate": 90,
+        "Construction": 50,
+        "MetalGrid": 30,
+        "PrototechCircuitry": 15
+      }
+    },
+    "LargePrototechHydrogenThrusterSmall": {
+      "category": "thrusters",
+      "pcu": 15,
+      "mass": 1500.0,
+      "components": {
+        "SteelPlate": 30,
+        "Construction": 20,
+        "MetalGrid": 10,
+        "PrototechCircuitry": 5
+      }
+    },
+    "PrototechRefinery": {
+      "category": "production",
+      "pcu": 40,
+      "mass": 12000.0,
+      "components": {
+        "SteelPlate": 1200,
+        "Construction": 250,
+        "LargeTube": 20,
+        "Motor": 16,
+        "PrototechCircuitry": 25
+      }
+    },
+    "PrototechAssembler": {
+      "category": "production",
+      "pcu": 35,
+      "mass": 4500.0,
+      "components": {
+        "SteelPlate": 200,
+        "Construction": 100,
+        "Display": 10,
+        "Computer": 80,
+        "PrototechCircuitry": 20
+      }
+    },
+    "LargePrototechO2H2": {
+      "category": "utility",
+      "pcu": 25,
+      "mass": 3000.0,
+      "components": {
+        "SteelPlate": 100,
+        "Construction": 40,
+        "LargeTube": 10,
+        "Motor": 10,
+        "PrototechCircuitry": 10
+      }
+    },
+    "PrototechJumpDrive": {
+      "category": "utility",
+      "pcu": 45,
+      "mass": 8500.0,
+      "components": {
+        "SteelPlate": 200,
+        "Construction": 100,
+        "Superconductor": 800,
+        "PrototechCircuitry": 30
+      }
+    },
+    "PrototechGatlingTurret": {
+      "category": "weapons",
+      "pcu": 150,
+      "mass": 1800.0,
+      "components": {
+        "SteelPlate": 60,
+        "Construction": 40,
+        "Motor": 16,
+        "Computer": 30,
+        "PrototechCircuitry": 10
+      }
+    },
+    "PrototechMissileTurret": {
+      "category": "weapons",
+      "pcu": 175,
+      "mass": 2200.0,
+      "components": {
+        "SteelPlate": 80,
+        "Construction": 50,
+        "Motor": 20,
+        "Computer": 40,
+        "PrototechCircuitry": 15
+      }
+    },
+    "PrototechInteriorTurret": {
+      "category": "weapons",
+      "pcu": 100,
+      "mass": 800.0,
+      "components": {
+        "SteelPlate": 30,
+        "Construction": 20,
+        "Motor": 8,
+        "Computer": 15,
+        "PrototechCircuitry": 5
+      }
+    },
+    "PrototechArtilleryTurret": {
+      "category": "weapons",
+      "pcu": 200,
+      "mass": 3500.0,
+      "components": {
+        "SteelPlate": 120,
+        "Construction": 80,
+        "LargeTube": 20,
+        "PrototechCircuitry": 20
+      }
+    },
+    "PrototechRailgun": {
+      "category": "weapons",
+      "pcu": 250,
+      "mass": 4500.0,
+      "components": {
+        "SteelPlate": 150,
+        "Construction": 100,
+        "Superconductor": 200,
+        "PrototechCircuitry": 30
+      }
+    },
+    "PrototechDrill": {
+      "category": "utility",
+      "pcu": 30,
+      "mass": 3500.0,
+      "components": {
+        "SteelPlate": 300,
+        "Construction": 50,
+        "Motor": 10,
+        "PrototechCircuitry": 10
+      }
+    },
+    "PrototechGrinder": {
+      "category": "utility",
+      "pcu": 30,
+      "mass": 2500.0,
+      "components": {
+        "SteelPlate": 150,
+        "Construction": 40,
+        "Motor": 10,
+        "PrototechCircuitry": 10
+      }
+    },
+    "PrototechWelder": {
+      "category": "utility",
+      "pcu": 30,
+      "mass": 2500.0,
+      "components": {
+        "SteelPlate": 150,
+        "Construction": 40,
+        "Motor": 10,
+        "PrototechCircuitry": 10
+      }
+    },
+    "LargeSlopedCockpit": {
+      "category": "utility",
+      "pcu": 15,
+      "mass": 1200.0,
+      "components": {
+        "SteelPlate": 30,
+        "Construction": 20,
+        "Motor": 2,
+        "Display": 8,
+        "Computer": 15,
+        "BulletproofGlass": 60
+      }
+    },
+    "SmallSlopedCockpit": {
+      "category": "utility",
+      "pcu": 10,
+      "mass": 300.0,
+      "components": {
+        "SteelPlate": 10,
+        "Construction": 10,
+        "Motor": 1,
+        "Display": 4,
+        "Computer": 10,
+        "BulletproofGlass": 25
+      }
+    },
+    "LargeBatteryBank": {
+      "category": "power",
+      "pcu": 30,
+      "mass": 4000.0,
+      "components": {
+        "SteelPlate": 90,
+        "Construction": 35,
+        "PowerCell": 90,
+        "Computer": 30
+      }
+    },
+    "SmallBatteryBank": {
+      "category": "power",
+      "pcu": 12,
+      "mass": 600.0,
+      "components": {
+        "SteelPlate": 18,
+        "Construction": 12,
+        "PowerCell": 18,
+        "Computer": 8
+      }
+    },
+    "FlatCollector": {
+      "category": "utility",
+      "pcu": 15,
+      "mass": 1400.0,
+      "components": {
+        "SteelPlate": 50,
+        "Construction": 30,
+        "SmallTube": 12,
+        "Motor": 8,
+        "Display": 4,
+        "Computer": 10
+      }
+    },
+    "ContactRadarAntenna": {
+      "category": "utility",
+      "pcu": 20,
+      "mass": 1800.0,
+      "components": {
+        "SteelPlate": 40,
+        "Construction": 30,
+        "LargeTube": 4,
+        "RadioCommunication": 40,
+        "Computer": 20
+      }
+    },
+    "SignalBeacon": {
+      "category": "utility",
+      "pcu": 15,
+      "mass": 800.0,
+      "components": {
+        "SteelPlate": 20,
+        "Construction": 20,
+        "LargeTube": 1,
+        "RadioCommunication": 20,
+        "Computer": 10
       }
     }
   }

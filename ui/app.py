@@ -1,4 +1,4 @@
-﻿"""
+"""
 Main Application Window
 Integrates all panel components into the Tactical Command Center.
 """
@@ -169,6 +169,9 @@ class TacticalCommandCenter(ctk.CTk):
             on_apply_fix=self.apply_health_fix,
             on_vanillafy=self.vanillafy_blueprint,
             on_scale_grid=self.scale_grid_choice,
+            on_survival_sanity=self.survival_sanity_blueprint,
+            on_upgrade_prototech=self.upgrade_prototech_blueprint,
+            on_workshop_sync=self.import_workshop_blueprint,
         )
         self.preview_panel.grid(row=0, column=1, sticky="nsew", padx=3)
 
@@ -189,6 +192,17 @@ class TacticalCommandCenter(ctk.CTk):
         import tkinter as tk
 
         menubar = tk.Menu(self)
+
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Open Blueprint Directory (Ctrl+O)", command=self.browse_blueprint_dir)
+        file_menu.add_command(label="Import Workshop / Mod.io Blueprint...", command=self.import_workshop_blueprint)
+        file_menu.add_command(label="Refresh Blueprints (F5)", command=self.load_blueprints_async)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.destroy)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
         self._auto_update_var = tk.BooleanVar(value=self.settings.auto_check_updates)
         help_menu.add_checkbutton(
@@ -198,7 +212,7 @@ class TacticalCommandCenter(ctk.CTk):
         )
         help_menu.add_separator()
         help_menu.add_command(label="View Changelog", command=self.show_changelog_window)
-        help_menu.add_command(label="Discord", command=lambda: webbrowser.open("https://discord.com/"))
+        help_menu.add_command(label="Discord Community", command=lambda: webbrowser.open("https://discord.com/"))
         help_menu.add_command(
             label="Report an Issue",
             command=lambda: webbrowser.open("https://github.com/MerabyLabs/SE-Block-Exchanger/issues"),
@@ -619,6 +633,132 @@ class TacticalCommandCenter(ctk.CTk):
         )
         self.load_blueprints_async()
 
+    def survival_sanity_blueprint(self):
+        if not self.selected_blueprint:
+            return
+        bp = self.selected_blueprint
+        confirm = messagebox.askyesno(
+            "Survival Sanity (Strip Prototech)",
+            f"Replace all uncraftable Prototech blocks in '{bp.display_name}' with standard survival-craftable counterparts?\n\n"
+            f"This ensures the blueprint can be projected and built in standard survival games.",
+            icon="question",
+        )
+        if not confirm:
+            return
+
+        self.control_panel.set_convert_enabled(False)
+        self.control_panel.progress.start_indeterminate("Stripping Prototech blocks for survival...")
+        self.footer.set_status("SURVIVAL SANITY...")
+
+        def task():
+            try:
+                dest, scanned, converted = self.converter.survival_sanity_prototech(bp.path)
+                self.after(0, lambda: self._on_survival_sanity_complete(dest, scanned, converted))
+            except Exception as exc:
+                error_message = str(exc)
+                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_survival_sanity_complete(self, dest_path: Path, scanned: int, converted: int):
+        self.control_panel.progress.stop()
+        self._converted_count += converted
+        self._undo_stack.append(dest_path)
+        self.footer.set_scanned(scanned)
+        self.footer.set_converted(self._converted_count)
+        self.footer.set_status("SURVIVAL READY")
+        self._update_convert_state()
+
+        self.preview_panel.load_xml(dest_path / "bp.sbc", f"SURVIVAL-READY: {dest_path.name}")
+        self.preview_panel.switch_to_xml()
+        self.toasts.toast(
+            f"Successfully converted {converted} Prototech block(s) to survival-craftable equivalents.",
+            level="success",
+        )
+        self.load_blueprints_async()
+
+    def upgrade_prototech_blueprint(self):
+        if not self.selected_blueprint:
+            return
+        bp = self.selected_blueprint
+        confirm = messagebox.askyesno(
+            "Upgrade to Prototech (Factorum)",
+            f"Upgrade standard vanilla blocks in '{bp.display_name}' to endgame Factorum Prototech equivalents?\n\n"
+            f"This equips maximum-tier reactors, thrusters, jump drives, and weapons.",
+            icon="question",
+        )
+        if not confirm:
+            return
+
+        self.control_panel.set_convert_enabled(False)
+        self.control_panel.progress.start_indeterminate("Upgrading to Prototech tier...")
+        self.footer.set_status("PROTOTECH UPGRADE...")
+
+        def task():
+            try:
+                dest, scanned, converted = self.converter.upgrade_to_prototech(bp.path)
+                self.after(0, lambda: self._on_prototech_complete(dest, scanned, converted))
+            except Exception as exc:
+                error_message = str(exc)
+                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_prototech_complete(self, dest_path: Path, scanned: int, converted: int):
+        self.control_panel.progress.stop()
+        self._converted_count += converted
+        self._undo_stack.append(dest_path)
+        self.footer.set_scanned(scanned)
+        self.footer.set_converted(self._converted_count)
+        self.footer.set_status("PROTOTECH COMPLETE")
+        self._update_convert_state()
+
+        self.preview_panel.load_xml(dest_path / "bp.sbc", f"PROTOTECH: {dest_path.name}")
+        self.preview_panel.switch_to_xml()
+        self.toasts.toast(
+            f"Successfully upgraded {converted} block(s) to Prototech tier.",
+            level="success",
+        )
+        self.load_blueprints_async()
+
+    def import_workshop_blueprint(self):
+        dialog = ctk.CTkInputDialog(
+            text="Enter Steam Workshop URL/ID or Mod.io URL:",
+            title="Import Blueprint from Workshop / Mod.io",
+        )
+        url_or_id = dialog.get_input()
+        if not url_or_id:
+            return
+
+        from workshop_sync import SteamWorkshopFetcher, ModioFetcher
+        wid = SteamWorkshopFetcher.parse_workshop_id(url_or_id)
+        if wid:
+            cached_items = SteamWorkshopFetcher.list_cached_workshop_items()
+            matched = [item for item in cached_items if item.workshop_id == wid]
+            if matched:
+                try:
+                    imported_path = SteamWorkshopFetcher.import_to_local_blueprints(matched[0])
+                    self.toasts.toast(f"Imported Workshop blueprint: {imported_path.name}", level="success")
+                    self.load_blueprints_async()
+                    return
+                except Exception as exc:
+                    self.toasts.toast(f"Import failed: {exc}", level="error")
+                    return
+            else:
+                self.toasts.toast(
+                    f"Workshop ID {wid} parsed. (Ensure item is downloaded in Steam workshop cache)",
+                    level="info",
+                    duration=5000,
+                )
+                return
+
+        mod_slug = ModioFetcher.parse_modio_url(url_or_id)
+        if mod_slug:
+            self.toasts.toast(f"Mod.io item '{mod_slug}' detected.", level="info")
+            return
+
+        self.toasts.toast("Could not parse Workshop ID or Mod.io URL.", level="warning")
+
     def batch_convert(self):
         selected_bps = self.blueprint_panel.get_selected_blueprints()
         if not selected_bps:
@@ -797,6 +937,22 @@ class TacticalCommandCenter(ctk.CTk):
                 subgrid_count += qty
                 
         self.preview_panel.update_se2_transition(self.selected_blueprint, dlc_count, script_count, subgrid_count)
+
+        # PB Script Doctor & Subgrid Engine updates
+        try:
+            if self.selected_blueprint:
+                bp_file = self.selected_blueprint.path / "bp.sbc"
+                from pb_doctor import PBScriptExtractor, PBScriptValidator
+                scripts = PBScriptExtractor.extract_from_file(bp_file)
+                reports = [PBScriptValidator.validate_script(s.custom_name, s.program_code) for s in scripts]
+                self.preview_panel.update_pb_doctor(scripts, reports)
+
+                from subgrid_engine import SubgridHierarchyParser, GridMatrixVisualizer
+                structure = SubgridHierarchyParser.parse_file(bp_file)
+                matrix = GridMatrixVisualizer.analyze_grid_matrix(bp_file)
+                self.preview_panel.update_subgrids(structure, matrix)
+        except Exception:
+            pass
 
     def export_comparison_csv(self):
         if not self._latest_comparison:

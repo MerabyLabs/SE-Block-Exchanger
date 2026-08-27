@@ -371,6 +371,43 @@ class BlueprintAnalyticsEngine:
         elif fix_id == "add_power_block":
             subtype = "LargeBlockBatteryBlock" if grid_size == "Large" else "SmallBlockBatteryBlock"
             block_type = "MyObjectBuilder_BatteryBlock"
+        elif fix_id == "survival_sanity_prototech":
+            from mappings.prototech import get_survival_sanity_mapping
+            sanity_map = get_survival_sanity_mapping()
+            converted = 0
+            for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+                st = self._get_block_subtype(block)
+                if st and st in sanity_map:
+                    target = sanity_map[st]
+                    sub_name = block.find("SubtypeName")
+                    if sub_name is not None:
+                        sub_name.text = target
+                    sub_id = block.find("SubtypeId")
+                    if sub_id is not None:
+                        sub_id.text = target
+                    converted += 1
+            if converted > 0:
+                tree.write(blueprint_file, encoding="utf-8", xml_declaration=True)
+                return True
+            return False
+        elif fix_id == "vanillafy_dlc":
+            from mappings.dlc_substitution import DLC_TO_BASE_PAIRS
+            converted = 0
+            for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+                st = self._get_block_subtype(block)
+                if st and st in DLC_TO_BASE_PAIRS:
+                    target = DLC_TO_BASE_PAIRS[st]
+                    sub_name = block.find("SubtypeName")
+                    if sub_name is not None:
+                        sub_name.text = target
+                    sub_id = block.find("SubtypeId")
+                    if sub_id is not None:
+                        sub_id.text = target
+                    converted += 1
+            if converted > 0:
+                tree.write(blueprint_file, encoding="utf-8", xml_declaration=True)
+                return True
+            return False
         else:
             return False
 
@@ -453,6 +490,50 @@ class BlueprintAnalyticsEngine:
                     fix_id="add_power_block",
                 )
             )
+
+        # Prototech survival sanity check
+        from mappings.prototech import PROTOTECH_SUBTYPES
+        prototech_found = [s for s in subtype_keys if s in PROTOTECH_SUBTYPES or "prototech" in s.lower()]
+        if prototech_found:
+            issues.append(
+                HealthIssue(
+                    severity=SEVERITY_WARNING,
+                    code="prototech_survival_warning",
+                    message=f"Detected {len(prototech_found)} uncraftable Prototech block type(s). Projection in standard survival will stall.",
+                    suggestion="Click Fix to downgrade Prototech blocks to survival-craftable equivalents.",
+                    fix_id="survival_sanity_prototech",
+                )
+            )
+
+        # DLC check
+        from mappings.dlc_substitution import DLC_TO_BASE_PAIRS
+        dlc_found = [s for s in subtype_keys if s in DLC_TO_BASE_PAIRS]
+        if dlc_found:
+            issues.append(
+                HealthIssue(
+                    severity=SEVERITY_INFO,
+                    code="dlc_blocks_present",
+                    message=f"Blueprint uses {len(dlc_found)} paid DLC block type(s).",
+                    suggestion="Use Vanillafyer to convert all DLC blocks into standard base-game blocks.",
+                    fix_id="vanillafy_dlc",
+                )
+            )
+
+        # PB Script Doctor audit
+        from pb_doctor import PBScriptExtractor, PBScriptValidator
+        scripts = PBScriptExtractor.extract_from_element(root)
+        for s in scripts:
+            report = PBScriptValidator.validate_script(s.custom_name, s.program_code)
+            if not report.is_valid:
+                error_msgs = [d.message for d in report.diagnostics if d.severity == "Error"]
+                issues.append(
+                    HealthIssue(
+                        severity=SEVERITY_ERROR,
+                        code="pb_script_error",
+                        message=f"PB Script '{s.custom_name}' has compiler errors: {'; '.join(error_msgs[:2])}",
+                        suggestion="Open PB Script Doctor tab to inspect diagnostics and fix compliance.",
+                    )
+                )
 
         thruster_balance = self._thruster_balance(root)
         if thruster_balance:

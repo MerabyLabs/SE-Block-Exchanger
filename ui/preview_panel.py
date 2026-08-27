@@ -32,6 +32,9 @@ class PreviewPanel(ctk.CTkFrame):
         on_apply_fix=None,
         on_vanillafy=None,
         on_scale_grid=None,
+        on_survival_sanity=None,
+        on_upgrade_prototech=None,
+        on_workshop_sync=None,
         **kwargs,
     ):
         super().__init__(
@@ -48,6 +51,9 @@ class PreviewPanel(ctk.CTkFrame):
         self._on_apply_fix = on_apply_fix
         self._on_vanillafy = on_vanillafy
         self._on_scale_grid = on_scale_grid
+        self._on_survival_sanity = on_survival_sanity
+        self._on_upgrade_prototech = on_upgrade_prototech
+        self._on_workshop_sync = on_workshop_sync
         self._latest_health_issues: List[HealthIssue] = []
 
         self.tabview = ctk.CTkTabview(
@@ -68,6 +74,8 @@ class PreviewPanel(ctk.CTkFrame):
         self._build_xml_tab()
         self._build_preview_tab()
         self._build_analytics_tab()
+        self._build_pb_doctor_tab()
+        self._build_subgrids_tab()
         self._build_se2_tab()
 
     def _build_intel_tab(self):
@@ -677,7 +685,7 @@ class PreviewPanel(ctk.CTkFrame):
             command=self._vanillafy_clicked,
             state="disabled",
         )
-        self.btn_vanillafy.grid(row=0, column=0, padx=(0, 6), sticky="ew")
+        self.btn_vanillafy.grid(row=0, column=0, padx=(0, 6), pady=(0, 6), sticky="ew")
         
         self.btn_gridsizer = ctk.CTkButton(
             btn_layout,
@@ -692,7 +700,37 @@ class PreviewPanel(ctk.CTkFrame):
             command=self._gridsizer_clicked,
             state="disabled",
         )
-        self.btn_gridsizer.grid(row=0, column=1, padx=(6, 0), sticky="ew")
+        self.btn_gridsizer.grid(row=0, column=1, padx=(6, 0), pady=(0, 6), sticky="ew")
+
+        self.btn_survival_sanity = ctk.CTkButton(
+            btn_layout,
+            text="SURVIVAL SANITY (STRIP PROTOTECH)",
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_DARK,
+            border_width=1,
+            border_color=TacticalTheme.ORANGE_DIM,
+            text_color=TacticalTheme.ORANGE_DIM,
+            hover_color=TacticalTheme.BG_GLASS,
+            height=34,
+            command=self._survival_sanity_clicked,
+            state="disabled",
+        )
+        self.btn_survival_sanity.grid(row=1, column=0, padx=(0, 6), pady=(4, 0), sticky="ew")
+
+        self.btn_upgrade_prototech = ctk.CTkButton(
+            btn_layout,
+            text="UPGRADE TO PROTOTECH (FACTORUM)",
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_DARK,
+            border_width=1,
+            border_color=TacticalTheme.CYAN_DIM,
+            text_color=TacticalTheme.CYAN_DIM,
+            hover_color=TacticalTheme.BG_GLASS,
+            height=34,
+            command=self._upgrade_prototech_clicked,
+            state="disabled",
+        )
+        self.btn_upgrade_prototech.grid(row=1, column=1, padx=(6, 0), pady=(4, 0), sticky="ew")
         
         self.se2_audit_frame = ctk.CTkFrame(
             scroll_frame,
@@ -724,6 +762,156 @@ class PreviewPanel(ctk.CTkFrame):
             "Select a blueprint to begin VRage3 Transition Scanning...\n"
         )
 
+    def _build_pb_doctor_tab(self):
+        self.tab_pb_doctor = self.tabview.add("PB DOCTOR")
+        self.tab_pb_doctor.configure(fg_color=TacticalTheme.BG_DARK)
+
+        scroll = ctk.CTkScrollableFrame(self.tab_pb_doctor, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=10, pady=10)
+
+        header = ctk.CTkFrame(scroll, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 10))
+
+        ctk.CTkLabel(
+            header,
+            text=">> PROGRAMMABLE BLOCK COMPILER DOCTOR",
+            font=TacticalTheme.FONT_LARGE,
+            text_color=TacticalTheme.ORANGE_PRIMARY,
+        ).pack(side="left")
+
+        self.pb_status_label = ctk.CTkLabel(
+            header,
+            text="NO BLUEPRINT LOADED",
+            font=TacticalTheme.FONT_NORMAL,
+            text_color=TacticalTheme.TEXT_CYAN,
+        )
+        self.pb_status_label.pack(side="right")
+
+        self.pb_report_textbox = ctk.CTkTextbox(
+            scroll,
+            height=240,
+            font=("Consolas", 11),
+            text_color=TacticalTheme.TEXT_CYAN,
+            fg_color="#0c1220",
+            border_width=1,
+            border_color=TacticalTheme.CYAN_DIM,
+            corner_radius=6,
+        )
+        self.pb_report_textbox.pack(fill="both", expand=True, pady=(0, 10))
+        self._set_textbox_content(
+            self.pb_report_textbox,
+            "Select a blueprint to extract and audit in-game Programmable Block scripts...\n"
+        )
+
+    def _build_subgrids_tab(self):
+        self.tab_subgrids = self.tabview.add("SUBGRIDS & MAP")
+        self.tab_subgrids.configure(fg_color=TacticalTheme.BG_DARK)
+
+        scroll = ctk.CTkScrollableFrame(self.tab_subgrids, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=10, pady=10)
+
+        header = ctk.CTkFrame(scroll, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 10))
+
+        ctk.CTkLabel(
+            header,
+            text=">> MULTI-GRID HIERARCHY & ISOMETRIC MATRIX",
+            font=TacticalTheme.FONT_LARGE,
+            text_color=TacticalTheme.ORANGE_PRIMARY,
+        ).pack(side="left")
+
+        self.subgrid_summary_textbox = ctk.CTkTextbox(
+            scroll,
+            height=320,
+            font=("Consolas", 10),
+            text_color=TacticalTheme.TEXT_CYAN,
+            fg_color="#0c1220",
+            border_width=1,
+            border_color=TacticalTheme.CYAN_DIM,
+            corner_radius=6,
+        )
+        self.subgrid_summary_textbox.pack(fill="both", expand=True, pady=(0, 10))
+        self._set_textbox_content(
+            self.subgrid_summary_textbox,
+            "Select a blueprint to inspect connected subgrids and 2.5D coordinate projection slices...\n"
+        )
+
+    def update_pb_doctor(self, scripts, reports):
+        if not scripts:
+            self.pb_status_label.configure(text="0 PB SCRIPTS DETECTED", text_color=TacticalTheme.TEXT_GRAY)
+            self._set_textbox_content(
+                self.pb_report_textbox,
+                "No Programmable Blocks with embedded scripts found in this blueprint.\n"
+            )
+            return
+
+        total_errors = sum(r.error_count for r in reports)
+        total_warnings = sum(r.warning_count for r in reports)
+
+        if total_errors == 0:
+            status_text = f"{len(scripts)} SCRIPT(S) — 100% COMPLIANT"
+            color = TacticalTheme.GREEN_PRIMARY
+        else:
+            status_text = f"{len(scripts)} SCRIPT(S) — {total_errors} COMPILER ERROR(S)"
+            color = TacticalTheme.RED_PRIMARY
+
+        self.pb_status_label.configure(text=status_text, text_color=color)
+
+        lines = []
+        for idx, (script, report) in enumerate(zip(scripts, reports), 1):
+            lines.append(f"============================================================")
+            lines.append(f"[{idx}] PROGRAMMABLE BLOCK: {script.custom_name}")
+            lines.append(f"Grid: {script.grid_name} | Length: {script.character_count:,} chars | Lines: {script.line_count}")
+            lines.append(f"Compliance Score: {report.compliance_score}% | Est. Instructions: ~{report.estimated_instructions:,}/tick")
+            lines.append(f"Constructors: Program() {'✓' if report.has_program_constructor else '✗'} | Main() {'✓' if report.has_main_method else '✗'} | Save() {'✓' if report.has_save_method else '✗'}")
+            lines.append("------------------------------------------------------------")
+            if not report.diagnostics:
+                lines.append("  [+] Script passes all in-game whitelist and syntax checks!")
+            else:
+                for d in report.diagnostics:
+                    line_str = f"L{d.line_number}: " if d.line_number else ""
+                    lines.append(f"  [{d.severity.upper()}] {line_str}{d.rule_id} -> {d.message}")
+                    lines.append(f"         Suggestion: {d.suggestion}")
+            lines.append("")
+
+        self._set_textbox_content(self.pb_report_textbox, "\n".join(lines))
+
+    def update_subgrids(self, structure, matrix_summaries):
+        lines = []
+        lines.append("============================================================")
+        lines.append(f"TOTAL GRIDS: {structure.total_grids} | TOTAL BLOCKS: {structure.total_blocks:,} | MECHANICAL LINKS: {len(structure.mechanical_links)}")
+        lines.append("============================================================")
+        lines.append("")
+        lines.append(">> MECHANICAL HIERARCHY TREE:")
+
+        def format_node(node, depth=0):
+            indent = "  " * depth
+            prefix = "└── " if depth > 0 else "■ "
+            link_desc = f" [{node.attachment_via}]" if node.attachment_via else ""
+            lines.append(f"{indent}{prefix}{node.grid_name} ({node.grid_size} Grid, {node.block_count:,} blocks){link_desc}")
+            for child in node.children:
+                format_node(child, depth + 1)
+
+        if structure.root_node:
+            format_node(structure.root_node)
+
+        for orphan in structure.orphaned_grids:
+            format_node(orphan, depth=0)
+
+        lines.append("")
+        lines.append("============================================================")
+        lines.append(">> 2.5D GRID DENSITY & PROJECTION MAPS:")
+        lines.append("============================================================")
+
+        for summary in matrix_summaries:
+            lines.append(f"\n--- GRID: {summary.grid_name} ---")
+            lines.append(f"Bounding Box: X[{summary.bounds.min_x}..{summary.bounds.max_x}] Y[{summary.bounds.min_y}..{summary.bounds.max_y}] Z[{summary.bounds.min_z}..{summary.bounds.max_z}] (Size: {summary.bounds.size_x}x{summary.bounds.size_y}x{summary.bounds.size_z})")
+            lines.append(summary.ascii_top_down_view)
+            lines.append("")
+            lines.append(summary.ascii_side_view)
+
+        self._set_textbox_content(self.subgrid_summary_textbox, "\n".join(lines))
+
     def _vanillafy_clicked(self):
         if self._on_vanillafy:
             self._on_vanillafy()
@@ -732,9 +920,19 @@ class PreviewPanel(ctk.CTkFrame):
         if self._on_scale_grid:
             self._on_scale_grid()
 
+    def _survival_sanity_clicked(self):
+        if self._on_survival_sanity:
+            self._on_survival_sanity()
+
+    def _upgrade_prototech_clicked(self):
+        if self._on_upgrade_prototech:
+            self._on_upgrade_prototech()
+
     def update_se2_transition(self, info, dlc_count: int, script_count: int, subgrid_count: int):
         self.btn_vanillafy.configure(state="normal")
         self.btn_gridsizer.configure(state="normal")
+        self.btn_survival_sanity.configure(state="normal")
+        self.btn_upgrade_prototech.configure(state="normal")
         
         score = 100
         score -= min(25, dlc_count * 5)
@@ -814,4 +1012,7 @@ class PreviewPanel(ctk.CTkFrame):
         self._set_textbox_content(self.se2_audit_textbox, "Select a blueprint to begin VRage3 Transition Scanning...\n")
         self.btn_vanillafy.configure(state="disabled")
         self.btn_gridsizer.configure(state="disabled")
+        self.btn_survival_sanity.configure(state="disabled")
+        self.btn_upgrade_prototech.configure(state="disabled")
+
 

@@ -73,6 +73,55 @@ class TestNewCommunityFeatures(unittest.TestCase):
         self.assertIn("SmallBlockArmorBlock", subtypes)
         self.assertIn("SmallBlockSmallThrustSciFi", subtypes)
 
+    def test_vanillafy_blueprint(self):
+        """Verify vanillafying removes DLC blocks."""
+        bp_dir = self._create_blueprint_dir(
+            "Large",
+            ["LargeSlopedCockpit", "LargeBatteryBank", "LargeBlockArmorBlock"]
+        )
+        dest_dir, scanned, converted = self.converter.vanillafy_blueprint(bp_dir)
+        self.assertEqual(scanned, 3)
+        self.assertEqual(converted, 2)
+        
+        tree = ET.parse(dest_dir / "bp.sbc")
+        root = tree.getroot()
+        subtypes = [elem.text for elem in root.findall(".//SubtypeId")]
+        self.assertIn("LargeBlockCockpit", subtypes)
+        self.assertIn("LargeBlockBatteryBlock", subtypes)
+
+    def test_survival_sanity_prototech(self):
+        """Verify survival sanity converts uncraftable Prototech blocks to standard craftables."""
+        bp_dir = self._create_blueprint_dir(
+            "Large",
+            ["LargePrototechGenerator", "LargePrototechThruster", "LargeBlockArmorBlock"]
+        )
+        dest_dir, scanned, converted = self.converter.survival_sanity_prototech(bp_dir)
+        self.assertEqual(scanned, 3)
+        self.assertEqual(converted, 2)
+
+        tree = ET.parse(dest_dir / "bp.sbc")
+        root = tree.getroot()
+        subtypes = [elem.text for elem in root.findall(".//SubtypeId")]
+        self.assertIn("LargeBlockLargeGenerator", subtypes)
+        self.assertIn("LargeBlockLargeThrust", subtypes)
+
+    def test_upgrade_to_prototech(self):
+        """Verify upgrading standard blocks to Prototech."""
+        bp_dir = self._create_blueprint_dir(
+            "Large",
+            ["LargeBlockLargeGenerator", "LargeBlockLargeThrust"]
+        )
+        dest_dir, scanned, converted = self.converter.upgrade_to_prototech(bp_dir)
+        self.assertEqual(scanned, 2)
+        self.assertEqual(converted, 2)
+
+        tree = ET.parse(dest_dir / "bp.sbc")
+        root = tree.getroot()
+        subtypes = [elem.text for elem in root.findall(".//SubtypeId")]
+        self.assertIn("LargePrototechGenerator", subtypes)
+        self.assertIn("LargePrototechThruster", subtypes)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -221,3 +221,164 @@ class BlueprintConverter:
         self._history.append(dest_path)
         return dest_path, blocks_scanned, replacements
 
+    def vanillafy_blueprint(self, source_path: Path) -> Tuple[Path, int, int]:
+        """
+        Create a vanilla-only blueprint copy, stripping all paid DLC blocks.
+        """
+        source_path = Path(source_path)
+        if not source_path.exists():
+            raise FileNotFoundError(f"Source blueprint not found: {source_path}")
+        
+        dest_path = source_path.parent / f"VANILLA_{source_path.name}"
+        if dest_path.exists():
+            shutil.rmtree(dest_path)
+
+        shutil.copytree(source_path, dest_path)
+        binary_bp_file = dest_path / "bp.sbcB5"
+        if binary_bp_file.exists():
+            binary_bp_file.unlink()
+
+        from mappings.dlc_substitution import DLC_TO_BASE_PAIRS
+        import safe_xml
+        new_bp_file = dest_path / "bp.sbc"
+        tree = safe_xml.parse(new_bp_file)
+        root = tree.getroot()
+
+        scanned = 0
+        converted = 0
+        for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+            scanned += 1
+            subtype_name = block.find("SubtypeName")
+            subtype_id = block.find("SubtypeId")
+            
+            val = None
+            elem = None
+            if subtype_name is not None and subtype_name.text:
+                val = subtype_name.text.strip()
+                elem = subtype_name
+            elif subtype_id is not None and subtype_id.text:
+                val = subtype_id.text.strip()
+                elem = subtype_id
+
+            if val and val in DLC_TO_BASE_PAIRS:
+                target = DLC_TO_BASE_PAIRS[val]
+                if elem is not None:
+                    elem.text = target
+                if subtype_name is not None and subtype_name.text:
+                    subtype_name.text = target
+                if subtype_id is not None and subtype_id.text:
+                    subtype_id.text = target
+                converted += 1
+
+        tree.write(new_bp_file, encoding="utf-8", xml_declaration=True)
+        self._history.append(dest_path)
+        return dest_path, scanned, converted
+
+    def survival_sanity_prototech(self, source_path: Path) -> Tuple[Path, int, int]:
+        """
+        Replace uncraftable Prototech blocks with standard survival-craftable counterparts.
+        """
+        source_path = Path(source_path)
+        if not source_path.exists():
+            raise FileNotFoundError(f"Source blueprint not found: {source_path}")
+
+        dest_path = source_path.parent / f"SURVIVAL_READY_{source_path.name}"
+        if dest_path.exists():
+            shutil.rmtree(dest_path)
+
+        shutil.copytree(source_path, dest_path)
+        binary_bp_file = dest_path / "bp.sbcB5"
+        if binary_bp_file.exists():
+            binary_bp_file.unlink()
+
+        from mappings.prototech import get_survival_sanity_mapping
+        sanity_mapping = get_survival_sanity_mapping()
+        import safe_xml
+        new_bp_file = dest_path / "bp.sbc"
+        tree = safe_xml.parse(new_bp_file)
+        root = tree.getroot()
+
+        scanned = 0
+        converted = 0
+        for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+            scanned += 1
+            subtype_name = block.find("SubtypeName")
+            subtype_id = block.find("SubtypeId")
+
+            val = None
+            elem = None
+            if subtype_name is not None and subtype_name.text:
+                val = subtype_name.text.strip()
+                elem = subtype_name
+            elif subtype_id is not None and subtype_id.text:
+                val = subtype_id.text.strip()
+                elem = subtype_id
+
+            if val and val in sanity_mapping:
+                target = sanity_mapping[val]
+                if elem is not None:
+                    elem.text = target
+                if subtype_name is not None and subtype_name.text:
+                    subtype_name.text = target
+                if subtype_id is not None and subtype_id.text:
+                    subtype_id.text = target
+                converted += 1
+
+        tree.write(new_bp_file, encoding="utf-8", xml_declaration=True)
+        self._history.append(dest_path)
+        return dest_path, scanned, converted
+
+    def upgrade_to_prototech(self, source_path: Path) -> Tuple[Path, int, int]:
+        """
+        Upgrade standard vanilla blocks to Factorum Prototech endgame equivalents.
+        """
+        source_path = Path(source_path)
+        if not source_path.exists():
+            raise FileNotFoundError(f"Source blueprint not found: {source_path}")
+
+        dest_path = source_path.parent / f"PROTOTECH_{source_path.name}"
+        if dest_path.exists():
+            shutil.rmtree(dest_path)
+
+        shutil.copytree(source_path, dest_path)
+        binary_bp_file = dest_path / "bp.sbcB5"
+        if binary_bp_file.exists():
+            binary_bp_file.unlink()
+
+        from mappings.prototech import VANILLA_TO_PROTOTECH_PAIRS
+        import safe_xml
+        new_bp_file = dest_path / "bp.sbc"
+        tree = safe_xml.parse(new_bp_file)
+        root = tree.getroot()
+
+        scanned = 0
+        converted = 0
+        for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+            scanned += 1
+            subtype_name = block.find("SubtypeName")
+            subtype_id = block.find("SubtypeId")
+
+            val = None
+            elem = None
+            if subtype_name is not None and subtype_name.text:
+                val = subtype_name.text.strip()
+                elem = subtype_name
+            elif subtype_id is not None and subtype_id.text:
+                val = subtype_id.text.strip()
+                elem = subtype_id
+
+            if val and val in VANILLA_TO_PROTOTECH_PAIRS:
+                target = VANILLA_TO_PROTOTECH_PAIRS[val]
+                if elem is not None:
+                    elem.text = target
+                if subtype_name is not None and subtype_name.text:
+                    subtype_name.text = target
+                if subtype_id is not None and subtype_id.text:
+                    subtype_id.text = target
+                converted += 1
+
+        tree.write(new_bp_file, encoding="utf-8", xml_declaration=True)
+        self._history.append(dest_path)
+        return dest_path, scanned, converted
+
+

@@ -7,11 +7,15 @@
 
 Space Engineers Block Exchanger ("SEBX") is a Windows desktop and CLI toolkit, developed and owned by **Meraby Labs**, for converting and analysing Space Engineers blueprints.
 
-- Multi-category block conversion (armor, thrusters, weapons, functional, DLC substitution)
-- Modular mapping registry with shareable profiles
+- Multi-category block conversion (armor, thrusters, weapons, functional, DLC substitution, Prototech/Factorum)
+- Full 2024–2026 SE1 content coverage: Prosperity Pack (July 2026), Contact, Signal, Automations, Warfare 2/3
+- Survival Projection Sanity Mode (1-click downgrade of uncraftable Prototech blocks for survival projectors)
+- In-App Programmable Block (PB) Script Doctor (AST whitelist auditing, MDK compliance, instruction estimation)
+- Multi-Grid Hierarchy & 2.5D Isometric Matrix Visualizer (rotors, pistons, hinges, coordinate slices)
+- Steam Workshop & Mod.io Direct Blueprint Ingestion
+- Modular mapping registry with shareable `.sebx-profile` profiles
 - Blueprint analytics: ores, ingots, components, PCU, mass, category distribution
 - Dry-run diff preview and conversion cost delta reporting
-- Profile editor with import/export/share and sample-blueprint testing
 - Space Engineers 2 (VRage 3) readiness audit, DLC -> Base vanillafyer, grid rescaler
 - Update checker and changelog viewer
 - Hardened XML parsing (defusedxml), SHA-256 release checksums
