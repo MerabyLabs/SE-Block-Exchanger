@@ -1,0 +1,18 @@
+# Exclude development, test, and CI files from release archives (git archive / GitHub Releases)
+# All files below remain fully tracked in git and visible on GitHub repository.
+
+.github                 export-ignore
+.gitignore              export-ignore
+.gitattributes          export-ignore
+.pytest_cache           export-ignore
+test_*.py               export-ignore
+tests                   export-ignore
+verify_mappings.py      export-ignore
+example_usage.py        export-ignore
+convert_icon.py         export-ignore
+generate_icon.py        export-ignore
+package_release.py      export-ignore
+DEVELOPMENT_PLAN.md     export-ignore
+Code Citations.md       export-ignore
+*.spec                  export-ignore
+
