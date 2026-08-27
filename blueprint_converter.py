@@ -59,8 +59,8 @@ class BlueprintConverter:
         source_path = Path(source_path)
         if not source_path.exists():
             raise FileNotFoundError(f"Source blueprint not found: {source_path}")
-        if not source_path.is_dir():
-            raise ValueError(f"Source must be a directory: {source_path}")
+        if source_path.is_file():
+            source_path = source_path.parent
 
         bp_file = source_path / "bp.sbc"
         if not bp_file.exists():
@@ -135,8 +135,8 @@ class BlueprintConverter:
         source_path = Path(source_path)
         if not source_path.exists():
             raise FileNotFoundError(f"Source blueprint not found: {source_path}")
-        if not source_path.is_dir():
-            raise ValueError(f"Source must be a directory: {source_path}")
+        if source_path.is_file():
+            source_path = source_path.parent
 
         bp_file = source_path / "bp.sbc"
         if not bp_file.exists():
@@ -244,6 +244,8 @@ class BlueprintConverter:
         source_path = Path(source_path)
         if not source_path.exists():
             raise FileNotFoundError(f"Source blueprint not found: {source_path}")
+        if source_path.is_file():
+            source_path = source_path.parent
         
         dest_path = source_path.parent / f"VANILLA_{source_path.name}"
         if dest_path.exists():
@@ -297,6 +299,8 @@ class BlueprintConverter:
         source_path = Path(source_path)
         if not source_path.exists():
             raise FileNotFoundError(f"Source blueprint not found: {source_path}")
+        if source_path.is_file():
+            source_path = source_path.parent
 
         dest_path = source_path.parent / f"SURVIVAL_READY_{source_path.name}"
         if dest_path.exists():
@@ -351,6 +355,8 @@ class BlueprintConverter:
         source_path = Path(source_path)
         if not source_path.exists():
             raise FileNotFoundError(f"Source blueprint not found: {source_path}")
+        if source_path.is_file():
+            source_path = source_path.parent
 
         dest_path = source_path.parent / f"PROTOTECH_{source_path.name}"
         if dest_path.exists():

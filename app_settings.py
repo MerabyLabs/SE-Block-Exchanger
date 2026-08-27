@@ -8,7 +8,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 def _default_settings_path() -> Path:
@@ -55,16 +55,19 @@ class AppSettings:
 class SettingsStore:
     """Load and save AppSettings from a local JSON file."""
 
-    def __init__(self, path: Path = None):
+    def __init__(self, path: Optional[Path] = None):
         self.path = Path(path) if path else _default_settings_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def load(self) -> AppSettings:
         if not self.path.exists():
             return AppSettings()
-        with open(self.path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        return AppSettings.from_dict(data)
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return AppSettings.from_dict(data)
+        except Exception:
+            return AppSettings()
 
     def save(self, settings: AppSettings) -> None:
         with open(self.path, "w", encoding="utf-8") as handle:

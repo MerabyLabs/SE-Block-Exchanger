@@ -365,10 +365,10 @@ class BlueprintAnalyticsEngine:
 
         grid_size = self._detect_grid_size(root)
 
-        if fix_id == "add_control_block":
+        if fix_id in ("add_control_block", "add_cockpit", "add_control"):
             subtype = "LargeBlockCockpit" if grid_size == "Large" else "SmallBlockCockpit"
             block_type = "MyObjectBuilder_Cockpit"
-        elif fix_id == "add_power_block":
+        elif fix_id in ("add_power_block", "add_power"):
             subtype = "LargeBlockBatteryBlock" if grid_size == "Large" else "SmallBlockBatteryBlock"
             block_type = "MyObjectBuilder_BatteryBlock"
         elif fix_id == "survival_sanity_prototech":

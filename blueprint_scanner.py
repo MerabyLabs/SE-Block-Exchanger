@@ -60,7 +60,7 @@ class BlueprintScanner:
     ):
         self.registry = registry if registry else build_registry(include_builtin=True)
         self.enabled_categories = (
-            [category.name for category in self.registry.list_categories()]
+            [category.name for category in self.registry.list_categories() if category.enabled_by_default]
             if enabled_categories is None
             else list(enabled_categories)
         )
@@ -109,6 +109,9 @@ class BlueprintScanner:
                 print(f"Warning: Could not parse {item.name}: {exc}")
         self.blueprints_cache = blueprints
         return blueprints
+
+    scan_directory = scan_blueprints
+    scan = scan_blueprints
 
     def _parse_blueprint(self, folder_path: Path, bp_file: Path) -> BlueprintInfo:
         tree = safe_xml.parse(bp_file)

@@ -57,3 +57,5 @@ tmp/
 # Agent/tool scratch artifacts
 tmpclaude-*
 nul
+marketing_research.md
+*.local.md

@@ -47,10 +47,19 @@ DLC_TO_BASE_PAIRS = {
     # SIGNAL PACK (2024) -> Vanilla Base Equivalents
     # ============================================================
     "SignalBeacon": "LargeBlockBeacon",
+    "LargeSignalBeacon": "LargeBlockBeacon",
     "SmallSignalBeacon": "SmallBlockBeacon",
     "BroadcastControllerDecorative": "ControlPanel",
     "ActionTriggerBlockDecorative": "TimerBlock",
     "SignalAntennaCompact": "LargeBlockRadioAntenna",
+
+    # ============================================================
+    # WARFARE PACKS -> Vanilla Base Equivalents
+    # ============================================================
+    "LargeWarfareBattery": "LargeBlockBatteryBlock",
+    "WarfareBattery": "LargeBlockBatteryBlock",
+    "LargeBlockWarfareBattery": "LargeBlockBatteryBlock",
+    "SmallBlockWarfareBattery": "SmallBlockBatteryBlock",
 
     # ============================================================
     # THRUSTERS (Industrial & Sci-Fi DLCs to Vanilla counterparts)

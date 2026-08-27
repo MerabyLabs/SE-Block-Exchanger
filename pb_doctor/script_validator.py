@@ -64,7 +64,13 @@ class PBScriptValidator:
     """Validates Programmable Block C# scripts against Space Engineers sandbox rules."""
 
     @classmethod
-    def validate_script(cls, script_name: str, code: str) -> PBScriptReport:
+    def validate_script(cls, script_name_or_code: str, code: Optional[str] = None) -> PBScriptReport:
+        if code is None:
+            code = script_name_or_code
+            script_name = "Script"
+        else:
+            script_name = script_name_or_code
+
         diagnostics: List[PBDiagnostic] = []
 
         if not code or not code.strip():

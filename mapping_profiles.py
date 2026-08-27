@@ -8,7 +8,7 @@ import json
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 from mappings.registry import MappingCategory, MappingRegistry, MappingValidationError
 
@@ -185,6 +185,8 @@ class ProfileManager:
             raise KeyError(f"Unknown profile: {name}")
         return self._profiles[key]
 
+    get_profile = get
+
     def upsert_profile(self, profile: MappingProfile) -> Path:
         file_name = f"{profile.name.strip().replace(' ', '_')}{PROFILE_EXTENSION}"
         file_path = self.profile_dir / file_name
@@ -192,11 +194,15 @@ class ProfileManager:
         self._profiles[self._normalize_name(profile.name)] = profile
         return file_path
 
-    def save_profile(self, profile: MappingProfile, path: Path) -> None:
+    def save_profile(self, profile: MappingProfile, path: Optional[Path] = None) -> Path:
+        if path is None:
+            return self.upsert_profile(profile)
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(profile.to_dict(), handle, indent=2, sort_keys=False)
+        self._profiles[self._normalize_name(profile.name)] = profile
+        return path
 
     def export_profile(self, name: str, destination: Path) -> Path:
         profile = self.get(name)
@@ -206,9 +212,10 @@ class ProfileManager:
         self.save_profile(profile, destination)
         return destination
 
-    def import_profile(self, source: str) -> Tuple[MappingProfile, Path]:
-        if source.startswith("http://") or source.startswith("https://"):
-            with urllib.request.urlopen(source, timeout=10) as response:
+    def import_profile(self, source: Union[str, Path]) -> Tuple[MappingProfile, Path]:
+        source_str = str(source)
+        if source_str.startswith("http://") or source_str.startswith("https://"):
+            with urllib.request.urlopen(source_str, timeout=10) as response:
                 payload = response.read().decode("utf-8")
             data = json.loads(payload)
             profile = self.parse_profile(data)
