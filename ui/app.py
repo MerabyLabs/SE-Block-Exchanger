@@ -10,7 +10,7 @@ import sys
 import threading
 import webbrowser
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -172,6 +172,8 @@ class TacticalCommandCenter(ctk.CTk):
             on_survival_sanity=self.survival_sanity_blueprint,
             on_upgrade_prototech=self.upgrade_prototech_blueprint,
             on_workshop_sync=self.import_workshop_blueprint,
+            on_selective_convert=self.selective_convert_blueprint,
+            on_migrate_se2=self.migrate_se2_blueprint,
         )
         self.preview_panel.grid(row=0, column=1, sticky="nsew", padx=3)
 
@@ -198,6 +200,8 @@ class TacticalCommandCenter(ctk.CTk):
         file_menu.add_command(label="Open Blueprint Directory (Ctrl+O)", command=self.browse_blueprint_dir)
         file_menu.add_command(label="Import Workshop / Mod.io Blueprint...", command=self.import_workshop_blueprint)
         file_menu.add_command(label="Refresh Blueprints (F5)", command=self.load_blueprints_async)
+        file_menu.add_separator()
+        file_menu.add_command(label="Create Desktop Shortcut", command=self.create_desktop_shortcut)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.destroy)
         menubar.add_cascade(label="File", menu=file_menu)
@@ -721,6 +725,110 @@ class TacticalCommandCenter(ctk.CTk):
             level="success",
         )
         self.load_blueprints_async()
+
+    def selective_convert_blueprint(self, custom_mapping: Dict[str, str], selected_subtypes: Set[str]):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+
+        bp = self.selected_blueprint
+        self.control_panel.set_convert_enabled(False)
+        self.control_panel.progress.start_indeterminate(f"Converting {len(selected_subtypes)} selective block type(s)...")
+        self.footer.set_status("SELECTIVE CONVERTING...")
+
+        def task():
+            try:
+                dest, scanned, converted = self.converter.create_selective_converted_blueprint(
+                    bp.path,
+                    custom_mapping=custom_mapping,
+                    selected_subtypes=selected_subtypes,
+                )
+                self.after(0, lambda: self._on_selective_convert_complete(dest, scanned, converted))
+            except Exception as exc:
+                error_message = str(exc)
+                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_selective_convert_complete(self, dest_path: Path, scanned: int, converted: int):
+        self.control_panel.progress.stop()
+        self._converted_count += converted
+        self._undo_stack.append(dest_path)
+        self.footer.set_scanned(scanned)
+        self.footer.set_converted(self._converted_count)
+        self.footer.set_status("SELECTIVE CONVERT COMPLETE")
+        self._update_convert_state()
+
+        self.preview_panel.load_xml(dest_path / "bp.sbc", f"CUSTOM: {dest_path.name}")
+        self.preview_panel.switch_to_xml()
+        self.toasts.toast(
+            f"Successfully exchanged {converted} selected block(s) into Custom blueprint.",
+            level="success",
+        )
+        self.load_blueprints_async()
+
+    def migrate_se2_blueprint(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+
+        bp = self.selected_blueprint
+        confirm = messagebox.askyesno(
+            "Export to Space Engineers 2 (VRage3)",
+            f"Export '{bp.display_name}' to the new VRage3 (SE2) JSON blueprint structure?\n\n"
+            f"This creates a forward-compatible SE2 blueprint with translated block subtypes and coordinates.",
+            icon="question",
+        )
+        if not confirm:
+            return
+
+        self.control_panel.set_convert_enabled(False)
+        self.control_panel.progress.start_indeterminate("Exporting to VRage3 (SE2) format...")
+        self.footer.set_status("SE2 EXPORT...")
+
+        def task():
+            try:
+                from engine_compat import SE2MigrationBridge
+                dest, scanned, converted = SE2MigrationBridge.migrate_se1_to_se2(bp.path)
+                self.after(0, lambda: self._on_se2_migration_complete(dest, scanned, converted))
+            except Exception as exc:
+                error_message = str(exc)
+                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_se2_migration_complete(self, dest_path: Path, scanned: int, converted: int):
+        self.control_panel.progress.stop()
+        self.footer.set_scanned(scanned)
+        self.footer.set_status("SE2 EXPORT COMPLETE")
+        self._update_convert_state()
+
+        json_file = dest_path / "blueprint.json"
+        if json_file.exists():
+            self.preview_panel.load_xml(json_file, f"VRAGE3 (SE2): {dest_path.name}")
+            self.preview_panel.switch_to_xml()
+
+        self.toasts.toast(
+            f"Exported {scanned} blocks to Space Engineers 2 format: {dest_path.name}",
+            level="success",
+        )
+        self.load_blueprints_async()
+
+    def create_desktop_shortcut(self):
+        try:
+            import subprocess
+            ps_script = Path(get_resource_path("create_desktop_shortcut.ps1"))
+            if ps_script.exists():
+                subprocess.run(
+                    ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(ps_script)],
+                    check=True,
+                    capture_output=True,
+                )
+                self.toasts.toast("Desktop shortcut created successfully!", level="success")
+            else:
+                self.toasts.toast("Shortcut script not found.", level="error")
+        except Exception as exc:
+            self.toasts.toast(f"Could not create desktop shortcut: {exc}", level="error")
 
     def import_workshop_blueprint(self):
         dialog = ctk.CTkInputDialog(

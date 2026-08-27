@@ -3,9 +3,11 @@ Blueprint Converter Module
 Handles safe copying and block conversion of Space Engineers blueprints.
 """
 
+from __future__ import annotations
+
 import shutil
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from se_armor_replacer import ArmorBlockReplacer
 
@@ -52,9 +54,16 @@ class BlueprintConverter:
         if self.verbose:
             print(f"[CONVERTER] {message}")
 
-    def create_converted_blueprint(self, source_path: Path) -> Tuple[Path, int, int]:
+    def create_converted_blueprint(
+        self,
+        source_path: Path,
+        custom_mapping: Optional[Dict[str, str]] = None,
+        selected_subtypes: Optional[Sequence[str] | Set[str]] = None,
+        custom_suffix: Optional[str] = None,
+    ) -> Tuple[Path, int, int]:
         """
         Create a new blueprint folder with converted blocks.
+        Supports mass conversion, category conversion, and granular selective block replacement.
         """
         source_path = Path(source_path)
         if not source_path.exists():
@@ -66,7 +75,11 @@ class BlueprintConverter:
         if not bp_file.exists():
             raise ValueError(f"No bp.sbc found in: {source_path}")
 
-        dest_path = self.get_destination_path(source_path)
+        if custom_suffix:
+            dest_path = source_path.parent / f"{custom_suffix}_{source_path.name}"
+        else:
+            dest_path = self.get_destination_path(source_path)
+
         if dest_path.exists():
             self.log(f"Destination exists, removing: {dest_path}")
             shutil.rmtree(dest_path)
@@ -83,10 +96,28 @@ class BlueprintConverter:
         blocks_scanned, replacements = self.replacer.process_blueprint(
             str(new_bp_file),
             create_backup=False,
+            custom_mapping=custom_mapping,
+            selected_subtypes=selected_subtypes,
         )
         self.log(f"Conversion complete ({replacements} replacement(s))")
         self._history.append(dest_path)
         return dest_path, blocks_scanned, replacements
+
+    def create_selective_converted_blueprint(
+        self,
+        source_path: Path,
+        custom_mapping: Dict[str, str],
+        selected_subtypes: Optional[Sequence[str] | Set[str]] = None,
+    ) -> Tuple[Path, int, int]:
+        """
+        Creates a custom converted blueprint using granular per-block user preferences.
+        """
+        return self.create_converted_blueprint(
+            source_path=source_path,
+            custom_mapping=custom_mapping,
+            selected_subtypes=selected_subtypes,
+            custom_suffix="Custom",
+        )
 
     def create_heavy_armor_blueprint(self, source_path: Path) -> Tuple[Path, int, int]:
         """

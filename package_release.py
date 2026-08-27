@@ -44,6 +44,7 @@ def create_release_package(output_dir: Path = Path("dist")) -> Path:
         "Create Desktop Shortcut.bat",
         "create_desktop_shortcut.ps1",
         "README.md",
+        "INSTALL.md",
         "RELEASE_NOTES.md",
         "LICENSE",
         "app_icon.ico",

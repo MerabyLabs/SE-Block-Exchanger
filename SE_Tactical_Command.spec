@@ -5,6 +5,7 @@ from version import __version__
 icon_file = 'app_icon.ico' if os.path.exists('app_icon.ico') else 'NONE'
 datas_list = [
     ('README.md', '.'),
+    ('INSTALL.md', '.'),
     ('LICENSE', '.'),
     ('RELEASE_NOTES.md', '.'),
     ('profiles', 'profiles'),

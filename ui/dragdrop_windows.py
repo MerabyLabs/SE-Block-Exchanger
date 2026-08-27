@@ -26,6 +26,17 @@ if sys.platform.startswith("win"):
         wintypes.LPARAM,
     )
 
+    # Configure 64-bit Windows pointer types
+    if hasattr(user32, "SetWindowLongPtrW"):
+        user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, LONG_PTR]
+        user32.SetWindowLongPtrW.restype = LONG_PTR
+    else:
+        user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, LONG_PTR]
+        user32.SetWindowLongW.restype = LONG_PTR
+
+    user32.CallWindowProcW.argtypes = [LONG_PTR, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.CallWindowProcW.restype = LONG_PTR
+
 
 class WindowsFileDropTarget:
     """Enable drag-and-drop of files/folders onto a Tk top-level window."""
@@ -43,35 +54,48 @@ class WindowsFileDropTarget:
             return False
         if self.enabled:
             return True
-        self._hwnd = self.tk_window.winfo_id()
-        if not self._hwnd:
-            return False
+        try:
+            self._hwnd = self.tk_window.winfo_id()
+            if not self._hwnd:
+                return False
 
-        self._wndproc = WNDPROC(self._handle_window_message)
-        self._old_wndproc = user32.SetWindowLongPtrW(self._hwnd, GWLP_WNDPROC, self._wndproc)
-        shell32.DragAcceptFiles(self._hwnd, True)
-        self.enabled = True
-        return True
+            self._wndproc = WNDPROC(self._handle_window_message)
+            set_wndproc = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
+            self._old_wndproc = set_wndproc(self._hwnd, GWLP_WNDPROC, ctypes.cast(self._wndproc, LONG_PTR).value)
+            shell32.DragAcceptFiles(self._hwnd, True)
+            self.enabled = True
+            return True
+        except Exception:
+            return False
 
     def disable(self):
         if not self.enabled or not sys.platform.startswith("win"):
             return
         try:
-            shell32.DragAcceptFiles(self._hwnd, False)
-            if self._old_wndproc:
-                user32.SetWindowLongPtrW(self._hwnd, GWLP_WNDPROC, self._old_wndproc)
+            if self._hwnd:
+                shell32.DragAcceptFiles(self._hwnd, False)
+            if self._old_wndproc and self._hwnd:
+                set_wndproc = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
+                set_wndproc(self._hwnd, GWLP_WNDPROC, self._old_wndproc)
+        except Exception:
+            pass
         finally:
             self.enabled = False
             self._old_wndproc = None
             self._wndproc = None
 
     def _handle_window_message(self, hwnd, msg, wparam, lparam):
-        if msg == WM_DROPFILES:
-            files = self._extract_drop_files(wparam)
-            if files:
-                self.on_files(files)
-            return 0
-        return user32.CallWindowProcW(self._old_wndproc, hwnd, msg, wparam, lparam)
+        try:
+            if msg == WM_DROPFILES:
+                files = self._extract_drop_files(wparam)
+                if files:
+                    self.on_files(files)
+                return 0
+            if self._old_wndproc:
+                return user32.CallWindowProcW(self._old_wndproc, hwnd, msg, wparam, lparam)
+        except Exception:
+            pass
+        return 0
 
     @staticmethod
     def _extract_drop_files(hdrop) -> List[str]:

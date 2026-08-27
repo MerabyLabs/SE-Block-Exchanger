@@ -48,6 +48,7 @@ jobs:
             --name "SE_Tactical_Command_v$version" `
             --icon "app_icon.ico" `
             --add-data "README.md;." `
+            --add-data "INSTALL.md;." `
             --add-data "LICENSE;." `
             --add-data "RELEASE_NOTES.md;." `
             --add-data "profiles;profiles" `

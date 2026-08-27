@@ -6,7 +6,7 @@ Center tabview with Intel, XML Source, Preview Diff, and Analytics tabs.
 from __future__ import annotations
 
 import tkinter as tk
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Set
 
 import customtkinter as ctk
 
@@ -17,6 +17,7 @@ from blueprint_analytics import (
     SEVERITY_INFO,
     SEVERITY_WARNING,
 )
+from ui.selective_exchange_panel import SelectiveExchangePanel
 from ui.theme import TacticalTheme
 
 
@@ -35,6 +36,8 @@ class PreviewPanel(ctk.CTkFrame):
         on_survival_sanity=None,
         on_upgrade_prototech=None,
         on_workshop_sync=None,
+        on_selective_convert=None,
+        on_migrate_se2=None,
         **kwargs,
     ):
         super().__init__(
@@ -54,6 +57,8 @@ class PreviewPanel(ctk.CTkFrame):
         self._on_survival_sanity = on_survival_sanity
         self._on_upgrade_prototech = on_upgrade_prototech
         self._on_workshop_sync = on_workshop_sync
+        self._on_selective_convert = on_selective_convert
+        self._on_migrate_se2 = on_migrate_se2
         self._latest_health_issues: List[HealthIssue] = []
 
         self.tabview = ctk.CTkTabview(
@@ -71,12 +76,26 @@ class PreviewPanel(ctk.CTkFrame):
         self.tabview.pack(fill="both", expand=True, padx=4, pady=4)
 
         self._build_intel_tab()
+        self._build_selective_tab()
         self._build_xml_tab()
         self._build_preview_tab()
         self._build_analytics_tab()
         self._build_pb_doctor_tab()
         self._build_subgrids_tab()
         self._build_se2_tab()
+
+    def _build_selective_tab(self):
+        self.tab_selective = self.tabview.add("SELECTIVE EXCHANGE")
+        self.tab_selective.configure(fg_color=TacticalTheme.BG_DARK)
+        self.selective_panel = SelectiveExchangePanel(
+            self.tab_selective,
+            on_selective_convert=self._on_selective_convert_clicked,
+        )
+        self.selective_panel.pack(fill="both", expand=True, padx=2, pady=2)
+
+    def _on_selective_convert_clicked(self, custom_mapping: Dict[str, str], selected_subtypes: Set[str]):
+        if self._on_selective_convert:
+            self._on_selective_convert(custom_mapping, selected_subtypes)
 
     def _build_intel_tab(self):
         self.tab_intel = self.tabview.add("INTEL")
@@ -379,6 +398,8 @@ class PreviewPanel(ctk.CTkFrame):
             for name, count in sorted(bp_info.category_counts.items()):
                 lines.append(f"  {name}: {count}")
         self.intel_text.configure(text="\n".join(lines))
+        if hasattr(self, "selective_panel"):
+            self.selective_panel.load_blueprint(bp_info)
 
     def clear_intel(self):
         self.intel_text.configure(
@@ -386,6 +407,8 @@ class PreviewPanel(ctk.CTkFrame):
         )
         self.clear_analytics()
         self.show_preview_diff({}, {}, "Select a blueprint and run preview.")
+        if hasattr(self, "selective_panel"):
+            self.selective_panel.load_blueprint(None)
 
     def load_xml(self, file_path, status_text: str):
         try:
@@ -731,6 +754,21 @@ class PreviewPanel(ctk.CTkFrame):
             state="disabled",
         )
         self.btn_upgrade_prototech.grid(row=1, column=1, padx=(6, 0), pady=(4, 0), sticky="ew")
+
+        self.btn_export_se2 = ctk.CTkButton(
+            btn_layout,
+            text="EXPORT TO SPACE ENGINEERS 2 (VRAGE3 JSON)",
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_DARK,
+            border_width=1,
+            border_color=TacticalTheme.GREEN_PRIMARY,
+            text_color=TacticalTheme.GREEN_PRIMARY,
+            hover_color=TacticalTheme.BG_GLASS,
+            height=34,
+            command=self._export_se2_clicked,
+            state="disabled",
+        )
+        self.btn_export_se2.grid(row=2, column=0, columnspan=2, pady=(6, 0), sticky="ew")
         
         self.se2_audit_frame = ctk.CTkFrame(
             scroll_frame,
@@ -932,11 +970,16 @@ class PreviewPanel(ctk.CTkFrame):
         if self._on_upgrade_prototech:
             self._on_upgrade_prototech()
 
+    def _export_se2_clicked(self):
+        if self._on_migrate_se2:
+            self._on_migrate_se2()
+
     def update_se2_transition(self, info, dlc_count: int, script_count: int, subgrid_count: int):
         self.btn_vanillafy.configure(state="normal")
         self.btn_gridsizer.configure(state="normal")
         self.btn_survival_sanity.configure(state="normal")
         self.btn_upgrade_prototech.configure(state="normal")
+        self.btn_export_se2.configure(state="normal")
         
         score = 100
         score -= min(25, dlc_count * 5)
@@ -1018,5 +1061,6 @@ class PreviewPanel(ctk.CTkFrame):
         self.btn_gridsizer.configure(state="disabled")
         self.btn_survival_sanity.configure(state="disabled")
         self.btn_upgrade_prototech.configure(state="disabled")
+        self.btn_export_se2.configure(state="disabled")
 
 
