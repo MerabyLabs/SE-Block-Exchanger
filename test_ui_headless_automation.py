@@ -6,8 +6,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 # Configure TCL/TK libraries for headless test runner
 tcl_dir = os.path.join(sys.base_prefix, "tcl", "tcl8.6")
 tk_dir = os.path.join(sys.base_prefix, "tcl", "tk8.6")
