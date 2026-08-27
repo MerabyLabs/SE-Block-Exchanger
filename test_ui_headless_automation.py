@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # Configure TCL/TK libraries for headless test runner
 tcl_dir = os.path.join(sys.base_prefix, "tcl", "tcl8.6")
 tk_dir = os.path.join(sys.base_prefix, "tcl", "tk8.6")
@@ -19,6 +21,10 @@ from test_grid_matrix_generator import generate_all_test_grids
 from ui.app import TacticalCommandCenter
 
 
+@unittest.skipIf(
+    sys.platform.startswith("linux") and "DISPLAY" not in os.environ,
+    "No X11 display available on headless Linux CI",
+)
 class TestUIHeadlessAutomation(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
