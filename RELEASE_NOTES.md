@@ -1,40 +1,37 @@
 # Release Notes
 
-## v4.0.0 (2026-08-26)
+## v4.0.0 (2026-08-26) — The Master Engineering & Prototech Update
 
-### Major Additions & Space Engineers 1 2024–2026 Content Expansion
+### 🚀 What's New in v4.0
 
-- **2024–2026 DLC & Block Expansion**:
-  - Full support for the **Prosperity Pack (July 2026)**: Sloped Cockpits, Battery Banks, Factory Stairs/Railings, Industrial Walkways, Decorative Conduits, and Flat Collectors.
-  - Full support for the **Contact Pack (2024)**: Radar/Scanner Antennas, Contact Bridge Cockpits, Factorum Consoles, and Decorative Modules.
-  - Full support for the **Signal Pack (2024)**: Signal Beacons, Broadcast Controllers, and Action Trigger blocks.
-  - Updated cost database in `data/block_costs.json` with PCU, mass, and component breakdowns for all 29 new block additions.
+- **Full 2024–2026 DLC Support**:
+  - Added every new block from the **Prosperity Pack (July 2026)**, **Contact Pack (2024)**, and **Signal Pack (2024)**.
+  - Convert sloped cockpits, battery banks, factory stairs, decorative conduits, and radar antennas back to base-game blocks with 1 click so anyone can paste your ships without owning DLCs.
 
-- **Prototech & Factorum Endgame Systems**:
-  - New `prototech` mapping category supporting bidirectional swaps (`Standard <-> Prototech`).
-  - **Survival Projection Sanity Mode**: 1-click conversion to downgrade uncraftable Factorum Prototech blocks to standard survival craftable blocks so projection blueprints never stall in survival games.
-  - **Prototech Upgrade Engine**: 1-click upgrade to equip blueprints with Factorum reactors, thrusters, jump drives, and weapons for creative and faction flagships.
+- **Prototech & Factorum Tech Tools**:
+  - **Survival Projection Sanity**: Ever had a shipyard projector get stuck because a blueprint contains salvage-only Prototech blocks? Click "Survival Sanity" to swap them to normal craftable reactors, thrusters, and batteries.
+  - **1-Click Prototech Upgrader**: Instantly upgrade your favorite vanilla ships into endgame Prototech beasts equipped with Factorum jump drives, reactors, thrusters, and weapons.
 
-- **Embedded Programmable Block (PB) Script Doctor**:
-  - Scans blueprints for `MyObjectBuilder_MyProgrammableBlock` instances.
-  - Static AST and whitelist analysis checking for banned namespaces (`System.IO`, `System.Threading`, `System.Reflection`, `System.Net`, etc.), forbidden keywords (`async`, `await`, `dynamic`, `…`), and MDK compliance.
-  - Structural sanity auditing (brace matching, `#region` balancing, character limits up to 100k chars).
-  - Per-tick instruction load heuristic estimator (~49,500 instruction warning thresholds).
+- **In-App PB Script Doctor**:
+  - Checks C# scripts inside your Programmable Blocks before you spawn them in multiplayer.
+  - Flags missing `Main()` methods, unclosed braces, and banned code (`System.IO`, `System.Threading`) that cause server kicks or crashes.
+  - Shows an estimated instruction cost so you can prevent server simulation drops (Sim Speed lag).
 
-- **Multi-Grid Hierarchy & Isometric Matrix Visualizer**:
-  - Parses multi-grid blueprints and graphs mechanical chains across rotors, hinges, pistons, and connectors.
-  - Computes 3D bounding boxes and generates 2.5D top-down (X/Z) and side-elevation (Z/Y) ASCII matrix projections with category legends and modification markers.
+- **Subgrid Inspector & 2.5D Ship Map**:
+  - View a complete hierarchy tree of all rotors, hinges, pistons, and attached subgrids.
+  - See top-down and side profile blueprint projections showing where weapons, cockpits, and thrusters are placed.
 
-- **Steam Workshop & Mod.io Sync**:
-  - Direct ingestion of Steam Workshop blueprints via Workshop IDs and URLs.
-  - Auto-discovery of local Steam Workshop download caches.
-  - Mod.io crossplay blueprint URL parsing and extraction.
+- **Steam Workshop & Mod.io Import**:
+  - Paste any Steam Workshop link or ID to grab blueprints directly from your cache or Workshop.
+  - Full support for Mod.io crossplay blueprint packages.
 
-- **UI & Workflow Enhancements**:
-  - Dedicated **PB DOCTOR** tab with compliance score badges, diagnostic logs, and script inspectors.
-  - Dedicated **SUBGRIDS & MAP** tab with hierarchy trees and density slices.
-  - 1-click quick action buttons in Utilities for Survival Sanity and Prototech upgrades.
-  - Added File Menu with direct Workshop/Mod.io imports and shortcut bindings.
+- **Smart Grid Rescaling**:
+  - Convert Large grid capital ships into Small grid fighters (or vice versa). Coordinates automatically scale by 5x so blocks never overlap or float away.
+
+- **Quality of Life & UI**:
+  - Added new dedicated tabs: **PB DOCTOR** and **SUBGRIDS & MAP**.
+  - New quick-action buttons for 1-click conversions.
+  - Full keyboard shortcuts (`Ctrl+O`, `Ctrl+R`, `Ctrl+Z`, `F5`) and top menu bar.
 
 ## v3.1.2 (2026-05-24)
 
