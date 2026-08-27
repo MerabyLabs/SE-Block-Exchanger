@@ -101,7 +101,6 @@ class SubgridHierarchyParser:
                 xsi_type = block.attrib.get("{http://www.w3.org/2001/XMLSchema-instance}type", "")
                 subtype = cls._get_text(block, "SubtypeName") or cls._get_text(block, "SubtypeId") or "Block"
                 custom_name = cls._get_text(block, "CustomName") or subtype
-                block_entity_id = cls._get_text(block, "EntityId") or ""
 
                 top_part_id = (
                     cls._get_text(block, "TopBlockId")

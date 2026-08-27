@@ -849,8 +849,12 @@ class PreviewPanel(ctk.CTkFrame):
         total_warnings = sum(r.warning_count for r in reports)
 
         if total_errors == 0:
-            status_text = f"{len(scripts)} SCRIPT(S) — 100% COMPLIANT"
-            color = TacticalTheme.GREEN_PRIMARY
+            if total_warnings > 0:
+                status_text = f"{len(scripts)} SCRIPT(S) — {total_warnings} WARNING(S)"
+                color = TacticalTheme.ORANGE_PRIMARY
+            else:
+                status_text = f"{len(scripts)} SCRIPT(S) — 100% COMPLIANT"
+                color = TacticalTheme.GREEN_PRIMARY
         else:
             status_text = f"{len(scripts)} SCRIPT(S) — {total_errors} COMPILER ERROR(S)"
             color = TacticalTheme.RED_PRIMARY
@@ -859,7 +863,7 @@ class PreviewPanel(ctk.CTkFrame):
 
         lines = []
         for idx, (script, report) in enumerate(zip(scripts, reports), 1):
-            lines.append(f"============================================================")
+            lines.append("============================================================")
             lines.append(f"[{idx}] PROGRAMMABLE BLOCK: {script.custom_name}")
             lines.append(f"Grid: {script.grid_name} | Length: {script.character_count:,} chars | Lines: {script.line_count}")
             lines.append(f"Compliance Score: {report.compliance_score}% | Est. Instructions: ~{report.estimated_instructions:,}/tick")

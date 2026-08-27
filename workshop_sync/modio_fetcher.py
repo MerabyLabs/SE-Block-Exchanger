@@ -4,10 +4,8 @@ Handles Mod.io URL parsing and zip/package extraction to local blueprints.
 """
 
 from __future__ import annotations
-import os
 import re
 import zipfile
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional

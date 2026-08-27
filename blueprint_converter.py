@@ -174,7 +174,6 @@ class BlueprintConverter:
         # 2. Swap Subtypes & Scale Coordinates (5:1 ratio between Large 2.5m and Small 0.5m)
         source_prefix = "Large" if target_size == "Small" else "Small"
         dest_prefix = "Small" if target_size == "Small" else "Large"
-        scale_factor = 5 if target_size == "Small" else 1 / 5.0
         
         replacements = 0
         blocks_scanned = 0

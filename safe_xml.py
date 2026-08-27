@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from typing import Optional, cast
+from typing import Optional, cast, Any
 
 
 class BlueprintParseError(ValueError):
@@ -19,18 +19,18 @@ class BlueprintParseError(ValueError):
 
 
 try:
-    import defusedxml.ElementTree as _DET  # type: ignore[import-not-found]
+    import defusedxml.ElementTree as _DET  # type: ignore
 
-    def parse(source) -> ET.ElementTree[ET.Element]:
+    def parse(source) -> Any:
         """Parse an XML file or file-like object using defusedxml."""
         try:
-            return cast("ET.ElementTree[ET.Element]", _DET.parse(source))
+            return _DET.parse(source)
         except Exception as exc:
             raise BlueprintParseError(f"Failed to parse XML blueprint: {exc}") from exc
 
     HARDENED = True
 except ImportError:  # pragma: no cover
-    def parse(source) -> ET.ElementTree[ET.Element]:
+    def parse(source) -> Any:
         """Parse an XML file or file-like object (stdlib fallback)."""
         try:
             return ET.parse(source)
@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover
     HARDENED = False
 
 
-def safe_write(tree: ET.ElementTree, file_path: Path | str, encoding: str = "utf-8", xml_declaration: bool = True) -> None:
+def safe_write(tree: Any, file_path: Path | str, encoding: str = "utf-8", xml_declaration: bool = True) -> None:
     """
     Atomically writes an ElementTree to disk using a temporary file and replace().
     Prevents file corruption on interrupted writes or disk errors.

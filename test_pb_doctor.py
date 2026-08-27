@@ -3,7 +3,7 @@ Unit tests for PB Script Doctor engine.
 """
 
 import unittest
-from pb_doctor import PBScriptValidator, PBScriptExtractor
+from pb_doctor import PBScriptValidator
 
 
 class TestPBScriptDoctor(unittest.TestCase):

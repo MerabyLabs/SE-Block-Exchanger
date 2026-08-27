@@ -5,7 +5,6 @@ Analyzes C# code embedded in Space Engineers blueprints against in-game sandbox 
 
 from __future__ import annotations
 from __future__ import annotations
-import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 from pb_doctor.whitelist_rules import (

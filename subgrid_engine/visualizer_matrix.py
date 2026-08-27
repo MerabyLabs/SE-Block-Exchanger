@@ -6,7 +6,7 @@ Generates coordinate bounds, cross-section density slices, and visual block repr
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import xml.etree.ElementTree as ET
 import safe_xml
 

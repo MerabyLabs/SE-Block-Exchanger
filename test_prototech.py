@@ -7,7 +7,6 @@ from mappings.prototech import (
     get_category,
     get_survival_sanity_mapping,
     VANILLA_TO_PROTOTECH_PAIRS,
-    PROTOTECH_TO_VANILLA_PAIRS,
     PROTOTECH_SUBTYPES,
 )
 
