@@ -99,6 +99,14 @@ class TacticalCommandCenter(ctk.CTk):
         if self.settings.auto_check_updates:
             self.after(900, self._check_updates_async)
 
+    def _safe_after(self, ms: int, func, *args):
+        try:
+            if not self.winfo_exists():
+                return
+            self.after(ms, func, *args)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # Bootstrapping
     # ------------------------------------------------------------------
@@ -1018,10 +1026,10 @@ class TacticalCommandCenter(ctk.CTk):
                     replacer.mapping,
                     self.conversion_mode,
                 )
-                self.after(0, lambda: self._on_analytics_ready(analytics, comparison))
+                self._safe_after(0, lambda: self._on_analytics_ready(analytics, comparison))
             except Exception as exc:
                 error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._show_error(f"Analytics failed: {msg}"))
+                self._safe_after(0, lambda msg=error_message: self._show_error(f"Analytics failed: {msg}"))
 
         threading.Thread(target=task, daemon=True).start()
 
