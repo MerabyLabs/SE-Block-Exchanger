@@ -52,7 +52,7 @@ class TestUpdateChecker(unittest.TestCase):
         self.assertEqual(UpdateChecker._normalize_version("v3.1.2"), "3.1.2")
         self.assertEqual(UpdateChecker._version_tuple("3.1"), (3, 1, 0))
         self.assertEqual(UpdateChecker._version_tuple("nope"), (0, 0, 0))
-        self.assertTrue(UpdateChecker._version_tuple("3.2.0") > UpdateChecker._version_tuple("3.1.2"))
+        self.assertGreater(UpdateChecker._version_tuple("3.2.0"), UpdateChecker._version_tuple("3.1.2"))
 
     def test_expired_cache_refetches(self):
         from unittest.mock import patch
@@ -80,14 +80,22 @@ class TestUpdateChecker(unittest.TestCase):
             self.assertEqual(info.latest_version, "99.9.9")
             self.assertEqual(info.changelog, "new notes")
 
-    def test_live_github_latest_release(self):
+    def test_force_refetch_uses_latest_payload(self):
+        from unittest.mock import patch
+
         with tempfile.TemporaryDirectory() as tmp:
-            checker = UpdateChecker(cache_path=Path(tmp) / "cache.json", cache_hours=24)
-            try:
+            cache_path = Path(tmp) / "cache.json"
+            checker = UpdateChecker(cache_path=cache_path, cache_hours=24)
+            fresh = {
+                "tag_name": "v4.0.0",
+                "html_url": "https://github.com/MerabyLabs/SE-Block-Exchanger/releases/tag/v4.0.0",
+                "published_at": "2026-01-01T00:00:00Z",
+                "body": "forced fetch",
+            }
+            with patch.object(checker, "_fetch_release", return_value=fresh):
                 info = checker.check_for_updates(force=True)
-            except Exception as exc:
-                self.skipTest(f"GitHub API unavailable: {exc}")
-            self.assertTrue(info.latest_version)
+            self.assertTrue(info.available)
+            self.assertEqual(info.latest_version, "4.0.0")
             self.assertIn("github.com", info.release_url)
 
 

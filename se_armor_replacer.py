@@ -126,7 +126,7 @@ class ArmorBlockReplacer:
                 return item
             for item in path.rglob("*.sbc"):
                 return item
-        raise FileNotFoundError(f"Could not find bp.sbc in {path}")
+        raise FileNotFoundError(f"Could not find bp.sbc (or any .sbc file) in {path}")
 
     def backup_file(self, file_path: Path) -> Path:
         backup_path = file_path.with_suffix(".sbc.backup")

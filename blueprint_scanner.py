@@ -140,6 +140,10 @@ class BlueprintScanner:
 
         light_armor_count = 0
         heavy_armor_count = 0
+        category_members = [
+            (category.name, set(category.pairs) | set(category.pairs.values()))
+            for category in self.registry.list_categories()
+        ]
 
         for block in blocks:
             subtype = self._extract_subtype(block)
@@ -152,9 +156,9 @@ class BlueprintScanner:
             if subtype in self.HEAVY_ARMOR_BLOCKS:
                 heavy_armor_count += 1
 
-            for category in self.registry.list_categories():
-                if subtype in category.pairs or subtype in category.pairs.values():
-                    category_counter[category.name] += 1
+            for category_name, members in category_members:
+                if subtype in members:
+                    category_counter[category_name] += 1
 
             if subtype in self._mapping:
                 target = self._mapping[subtype]

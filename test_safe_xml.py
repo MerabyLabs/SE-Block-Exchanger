@@ -33,13 +33,13 @@ class TestSafeXml(unittest.TestCase):
             self.skipTest("defusedxml is not installed")
 
         with tempfile.TemporaryDirectory() as tmp:
-            secret = Path(tmp) / "secret.txt"
-            secret.write_text("classified", encoding="utf-8")
+            marker = Path(tmp) / "marker.txt"
+            marker.write_text("xxe-probe", encoding="utf-8")
             payload = Path(tmp) / "evil.xml"
             payload.write_text(
                 (
                     '<?xml version="1.0"?>'
-                    f'<!DOCTYPE foo [<!ENTITY xxe SYSTEM "{secret.as_uri()}">]>'
+                    f'<!DOCTYPE foo [<!ENTITY xxe SYSTEM "{marker.as_uri()}">]>'
                     "<root><data>&xxe;</data></root>"
                 ),
                 encoding="utf-8",
