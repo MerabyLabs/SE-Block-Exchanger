@@ -589,7 +589,10 @@ class TacticalCommandCenter(ctk.CTk):
         self.preview_panel.show_preview_diff(before_counts, after_counts, report, switch_tab=False)
         self.preview_panel.update_analytics(analytics, comparison)
         self.preview_panel.update_se2_transition(bp, compute_se2_readiness(analytics.block_counts))
-        self.preview_panel.update_subgrids(structure, voxels=voxels)
+        try:
+            self.preview_panel.update_subgrids(structure, voxels=voxels)
+        except Exception as exc:
+            self.toasts.toast(f"Map view failed: {exc}", level="warning")
         self.preview_panel.load_xml(bp.path / "bp.sbc", f"Source: {bp.name}")
 
     def _on_inspect_error(self, generation: int, message: str):

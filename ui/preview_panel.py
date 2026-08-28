@@ -261,8 +261,11 @@ class PreviewPanel(ctk.CTkFrame):
         ).pack(anchor="w", padx=6, pady=10)
 
     def update_subgrids(self, structure: MultiGridStructure, matrix_summaries=None, voxels: Optional[List[dict]] = None):
-        for child in self.subgrid_tree_scroll.winfo_children():
-            child.destroy()
+        for child in list(self.subgrid_tree_scroll.winfo_children()):
+            try:
+                child.destroy()
+            except Exception:
+                pass
 
         if structure is None or (structure.total_grids == 0 and not (voxels or [])):
             self._subgrid_empty_hint()
@@ -293,17 +296,20 @@ class PreviewPanel(ctk.CTkFrame):
                 border_color=TacticalTheme.BORDER_SUBTLE,
             )
             card.pack(fill="x", pady=3)
-            ctk.CTkButton(
+            ctk.CTkLabel(
                 card,
                 text=f"{prefix}{node.grid_name}\n{node.grid_size} grid  ·  {node.block_count:,} blocks{link}",
                 font=TacticalTheme.FONT_NORMAL,
-                fg_color="transparent",
-                hover_color=TacticalTheme.BG_MEDIUM,
                 text_color=TacticalTheme.TEXT_WHITE if depth == 0 else TacticalTheme.TEXT_GRAY,
                 anchor="w",
                 justify="left",
-                command=lambda name=node.grid_name: self.ship_canvas.filter_by_grid(name),
-            ).pack(fill="x", padx=6, pady=6)
+            ).pack(fill="x", padx=8, pady=8)
+            card.bind("<Button-1>", lambda _e, name=node.grid_name: self.ship_canvas.filter_by_grid(name))
+            for grandchild in card.winfo_children():
+                grandchild.bind(
+                    "<Button-1>",
+                    lambda _e, name=node.grid_name: self.ship_canvas.filter_by_grid(name),
+                )
             for child in node.children:
                 add_node_card(child, depth + 1)
 
@@ -327,12 +333,16 @@ class PreviewPanel(ctk.CTkFrame):
                     for v in voxels
                 ]
             )
+            self.after(150, self.ship_canvas.fit_to_view)
         else:
             self.ship_canvas.clear()
 
     def clear_subgrids(self):
-        for child in self.subgrid_tree_scroll.winfo_children():
-            child.destroy()
+        for child in list(self.subgrid_tree_scroll.winfo_children()):
+            try:
+                child.destroy()
+            except Exception:
+                pass
         self._subgrid_empty_hint()
         self.ship_canvas.clear()
 

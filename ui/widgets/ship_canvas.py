@@ -182,11 +182,13 @@ class ShipCanvas(ctk.CTkFrame):
 
     def redraw(self) -> None:
         self._redraw_job = None
-        self.canvas.delete("all")
         w = self.canvas.winfo_width()
         h = self.canvas.winfo_height()
-        if w < 10 or h < 10:
+        if w < 20 or h < 20:
+            if self.blocks:
+                self.after(80, self._schedule_redraw)
             return
+        self.canvas.delete("all")
         if not self.blocks:
             self.canvas.create_text(
                 w // 2,
