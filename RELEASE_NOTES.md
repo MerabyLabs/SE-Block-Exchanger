@@ -1,5 +1,11 @@
 # Release Notes
 
+## Unreleased
+
+### GUI
+- Reworked the desktop UI so converting a ship reads as a product, not a terminal: sentence case, readable fonts, grouped category names, and a filled Convert button that states how many blocks will change.
+- Selecting a blueprint now opens a live before/after preview automatically. Convert always writes a new copy; the original stays untouched.
+
 ## v3.1.2 (2026-05-24)
 
 ### Fixes

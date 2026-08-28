@@ -27,6 +27,7 @@ from ui.control_panel import ControlPanel
 from ui.dragdrop_windows import WindowsFileDropTarget
 from ui.footer import Footer
 from ui.header import Header
+from ui.labels import category_label, convertible_total
 from ui.preview_panel import PreviewPanel
 from ui.profile_editor import ProfileEditorDialog
 from ui.theme import TacticalTheme
@@ -48,8 +49,9 @@ class TacticalCommandCenter(ctk.CTk):
         self.settings: AppSettings = self.settings_store.load()
         TacticalTheme.apply(self.settings.appearance_mode)
         super().__init__()
+        TacticalTheme.resolve_fonts()
 
-        self.title("SE BLOCK EXCHANGER // TACTICAL COMMAND CENTER")
+        self.title("SE Block Exchanger")
         self.geometry("1360x900")
         self.configure(fg_color=TacticalTheme.BG_DARK)
         self.minsize(1080, 700)
@@ -82,6 +84,8 @@ class TacticalCommandCenter(ctk.CTk):
         self._latest_comparison = None
         self._latest_update: Optional[UpdateInfo] = None
         self._profile_editor: Optional[ProfileEditorDialog] = None
+        self._rescan_after_id = None
+        self._preview_after_id = None
 
         self._build_ui()
         self.toasts = ToastManager(self)
@@ -153,15 +157,16 @@ class TacticalCommandCenter(ctk.CTk):
 
         content = ctk.CTkFrame(self, fg_color="transparent")
         content.pack(fill="both", expand=True, padx=10, pady=0)
-        content.columnconfigure(0, weight=0, minsize=330)
+        content.columnconfigure(0, weight=0, minsize=340)
         content.columnconfigure(1, weight=1, minsize=420)
-        content.columnconfigure(2, weight=0, minsize=340)
+        content.columnconfigure(2, weight=0, minsize=360)
         content.rowconfigure(0, weight=1)
 
         self.blueprint_panel = BlueprintPanel(
             content,
             on_select=self.on_blueprint_select,
             on_recent_select=self._on_recent_blueprint_pick,
+            on_browse=self.browse_blueprint_dir,
         )
         self.blueprint_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
 
@@ -214,7 +219,7 @@ class TacticalCommandCenter(ctk.CTk):
         self.settings.auto_check_updates = bool(self._auto_update_var.get())
         self.settings_store.save(self.settings)
         state = "enabled" if self.settings.auto_check_updates else "disabled"
-        self.footer.set_status(f"AUTO UPDATE CHECKS {state.upper()}")
+        self.footer.set_status(f"Auto-check updates {state}")
 
     def _bind_shortcuts(self):
         self.bind_all("<Control-o>", lambda event: self.browse_blueprint_dir())
@@ -226,9 +231,9 @@ class TacticalCommandCenter(ctk.CTk):
         try:
             enabled = self._drop_target.enable()
             if enabled:
-                self.footer.set_status("DRAG & DROP ENABLED")
+                self.footer.set_status("Drop a blueprint folder to open it")
         except Exception:
-            self.footer.set_status("DRAG & DROP UNAVAILABLE")
+            self.footer.set_status("Drag and drop unavailable")
 
     # ------------------------------------------------------------------
     # Settings and appearance
@@ -239,15 +244,15 @@ class TacticalCommandCenter(ctk.CTk):
         ctk.set_appearance_mode(normalized)
         self.settings.appearance_mode = normalized
         self.settings_store.save(self.settings)
-        self.footer.set_status(f"APPEARANCE: {normalized.upper()}")
+        self.footer.set_status(f"Appearance: {normalized}")
 
     def _select_recent_dir(self, directory: str):
         self.custom_blueprint_dir = directory
-        self.footer.set_status(f"DIR: {directory}")
+        self.footer.set_status(f"Folder: {directory}")
         self.load_blueprints_async()
 
     def _on_recent_blueprint_pick(self, name: str):
-        self.footer.set_status(f"RECENT BLUEPRINT: {name}")
+        self.footer.set_status(f"Recent: {name}")
 
     # ------------------------------------------------------------------
     # Registry / profiles
@@ -337,7 +342,7 @@ class TacticalCommandCenter(ctk.CTk):
 
         self.settings_store.add_recent_dir(self.settings, self.custom_blueprint_dir)
         self.header.set_recent_dirs(self.settings.recent_blueprint_dirs)
-        self.footer.set_status(f"DROPPED: {raw_path}")
+        self.footer.set_status(f"Opened: {raw_path.name}")
         self.load_blueprints_async()
 
     # ------------------------------------------------------------------
@@ -354,9 +359,12 @@ class TacticalCommandCenter(ctk.CTk):
             self.settings.enabled_categories = list(categories)
             self.settings_store.save(self.settings)
             self.converter = self._build_converter()
-            self.footer.set_status(f"CATEGORIES: {', '.join(categories)}")
+            self.footer.set_status(
+                "Categories: " + ", ".join(category_label(name) for name in categories)
+            )
             if self.selected_blueprint:
                 self.refresh_analytics_async()
+            self._schedule_rescan()
         except Exception as exc:
             self.scanner.set_enabled_categories(previous)
             self.enabled_categories = previous
@@ -368,7 +376,7 @@ class TacticalCommandCenter(ctk.CTk):
     # ------------------------------------------------------------------
 
     def load_blueprints_async(self):
-        self.footer.set_status("SCANNING BLUEPRINTS...")
+        self.footer.set_status("Scanning blueprints…")
 
         def load_task():
             try:
@@ -386,35 +394,43 @@ class TacticalCommandCenter(ctk.CTk):
     def _on_blueprints_loaded(self):
         count = len(self.blueprints)
         self.header.set_blueprint_count(count)
-        self.footer.set_status("BLUEPRINTS LOADED")
+        self.footer.set_status(f"{count} blueprint{'s' if count != 1 else ''} loaded")
         self.footer.set_scanned(count)
         self.blueprint_panel.set_blueprints(self.blueprints)
         self.blueprint_panel.set_recent_blueprints(self.settings.recent_blueprints)
 
-        if self._pending_select_name:
-            found = self.blueprint_panel.select_blueprint_by_name(self._pending_select_name)
-            self._pending_select_name = None
-            if not found:
-                self.toasts.toast("Dropped blueprint was not found in scanned directory.", level="warning")
+        target = self._pending_select_name
+        dropped = self._pending_select_name is not None
+        self._pending_select_name = None
+        if not target and self.selected_blueprint:
+            target = self.selected_blueprint.display_name
+        if not target and self.blueprints:
+            target = self.blueprints[0].display_name
+        if target:
+            found = self.blueprint_panel.select_blueprint_by_name(target)
+            if not found and dropped:
+                self.toasts.toast("That blueprint was not in the scanned folder.", level="warning")
+            if not found and self.blueprints:
+                self.blueprint_panel.select_blueprint_by_name(self.blueprints[0].display_name)
 
     def _on_scan_not_found(self):
         self.blueprints = []
         self.header.set_blueprint_count(0)
-        self.footer.set_status("NO SE INSTALL DETECTED")
+        self.footer.set_status("Space Engineers folder not found")
         self.blueprint_panel.set_blueprints([])
         messagebox.showwarning(
-            "Blueprint Directory Not Found",
-            "Space Engineers blueprint directory was not found.\n\n"
-            "Use BROWSE or drag/drop a blueprint folder.",
+            "Blueprint folder not found",
+            "The Space Engineers Blueprints folder was not found.\n\n"
+            "Use Open folder or drop a blueprint folder here.",
         )
 
     def browse_blueprint_dir(self):
-        chosen = filedialog.askdirectory(title="Select Blueprint Directory", mustexist=True)
+        chosen = filedialog.askdirectory(title="Open Blueprints folder", mustexist=True)
         if chosen:
             self.custom_blueprint_dir = chosen
             self.settings_store.add_recent_dir(self.settings, chosen)
             self.header.set_recent_dirs(self.settings.recent_blueprint_dirs)
-            self.footer.set_status(f"DIR: {chosen}")
+            self.footer.set_status(f"Folder: {chosen}")
             self.load_blueprints_async()
 
     # ------------------------------------------------------------------
@@ -430,8 +446,9 @@ class TacticalCommandCenter(ctk.CTk):
         self.preview_panel.update_intel(bp, self.conversion_mode)
         self.preview_panel.load_xml(bp.path / "bp.sbc", f"SOURCE: {bp.name}")
         self._update_convert_state()
-        self.footer.set_status(f"SELECTED: {bp.display_name}")
+        self.footer.set_status(f"Selected: {bp.display_name}")
         self.refresh_analytics_async()
+        self._schedule_preview()
 
     def _get_selected_blueprint_file(self) -> Optional[str]:
         if not self.selected_blueprint:
@@ -453,14 +470,46 @@ class TacticalCommandCenter(ctk.CTk):
             self.preview_panel.update_intel(self.selected_blueprint, mode)
             self.refresh_analytics_async()
         self._update_convert_state()
-        self.footer.set_status(f"MODE: {mode.replace('_', ' ').upper()}")
+        self.footer.set_status("Heavy → Light" if mode == "heavy_to_light" else "Light → Heavy")
+        self._schedule_rescan()
 
     def _update_convert_state(self):
         if not self.selected_blueprint:
-            self.control_panel.set_convert_enabled(False)
+            self.control_panel.set_convert_ready(
+                enabled=False,
+                count=0,
+                reverse=(self.conversion_mode == "heavy_to_light"),
+                has_blueprint=False,
+            )
             return
-        has_source = sum(self.selected_blueprint.convertible_counts.values()) > 0
-        self.control_panel.set_convert_enabled(has_source)
+        count = convertible_total(self.selected_blueprint)
+        self.control_panel.set_convert_ready(
+            enabled=count > 0,
+            count=count,
+            reverse=(self.conversion_mode == "heavy_to_light"),
+            has_blueprint=True,
+        )
+
+    def _schedule_rescan(self):
+        if self._rescan_after_id is not None:
+            self.after_cancel(self._rescan_after_id)
+        self._rescan_after_id = self.after(400, self._run_scheduled_rescan)
+
+    def _run_scheduled_rescan(self):
+        self._rescan_after_id = None
+        if self.selected_blueprint:
+            self._pending_select_name = self.selected_blueprint.display_name
+        self.load_blueprints_async()
+
+    def _schedule_preview(self):
+        if self._preview_after_id is not None:
+            self.after_cancel(self._preview_after_id)
+        self._preview_after_id = self.after(80, self._run_scheduled_preview)
+
+    def _run_scheduled_preview(self):
+        self._preview_after_id = None
+        if self.selected_blueprint:
+            self.run_dry_run_preview()
 
     # ------------------------------------------------------------------
     # Conversion operations
@@ -470,23 +519,22 @@ class TacticalCommandCenter(ctk.CTk):
         if not self.selected_blueprint:
             return
         bp = self.selected_blueprint
-        mode_name = "reverse" if self.conversion_mode == "heavy_to_light" else "forward"
-        category_text = ", ".join(self.enabled_categories)
+        count = convertible_total(bp)
+        direction = "heavy armor" if self.conversion_mode != "heavy_to_light" else "light armor"
+        category_text = ", ".join(category_label(name) for name in self.enabled_categories)
 
         confirm = messagebox.askyesno(
-            "Confirm Conversion",
-            f"Convert blueprint '{bp.display_name}'?\n\n"
-            f"Mode: {mode_name}\n"
-            f"Categories: {category_text}\n\n"
-            f"This creates a new prefixed blueprint folder.",
-            icon="warning",
+            "Create a converted copy?",
+            f"Create a new copy of '{bp.display_name}' with {count} block(s) converted to {direction}?\n\n"
+            f"Included: {category_text}\n\n"
+            "The original blueprint is not changed. Undo removes the new copy.",
         )
         if not confirm:
             return
 
         self.control_panel.set_convert_enabled(False)
         self.control_panel.progress.start_indeterminate("Converting blueprint...")
-        self.footer.set_status("CONVERTING...")
+        self.footer.set_status("Converting…")
 
         def task():
             try:
@@ -504,21 +552,22 @@ class TacticalCommandCenter(ctk.CTk):
         self._undo_stack.append(dest_path)
         self.footer.set_scanned(scanned)
         self.footer.set_converted(self._converted_count)
-        self.footer.set_status("CONVERSION COMPLETE")
+        self.footer.set_status("Copy created")
         self._update_convert_state()
 
-        self.preview_panel.load_xml(dest_path / "bp.sbc", f"CONVERTED: {dest_path.name}")
+        self.preview_panel.load_xml(dest_path / "bp.sbc", f"Converted: {dest_path.name}")
         self.preview_panel.switch_to_xml()
         self.toasts.toast(
-            f"Converted {converted} block(s) using {', '.join(self.enabled_categories)}.",
+            f"Created {dest_path.name} with {converted} block(s) converted.",
             level="success",
         )
+        self._pending_select_name = dest_path.name
         self.load_blueprints_async()
 
     def _on_conversion_error(self, error_msg: str):
         self.control_panel.progress.stop()
         self._update_convert_state()
-        self.footer.set_status("ERROR", TacticalTheme.RED_PRIMARY)
+        self.footer.set_status("Error", TacticalTheme.RED_PRIMARY)
         self.toasts.toast(f"Conversion failed: {error_msg}", level="error", duration=5000)
 
     def vanillafy_blueprint(self):
@@ -528,8 +577,8 @@ class TacticalCommandCenter(ctk.CTk):
 
         confirm = messagebox.askyesno(
             "Vanilla-fy Blueprint",
-            f"Replace all premium DLC blocks in '{bp.display_name}' with their base game (Vanilla) counterparts?\n\n"
-            f"This will create a new prefixed blueprint folder (e.g. CONVERTED_{bp.name}).",
+            f"Replace paid DLC blocks in '{bp.display_name}' with vanilla equivalents?\n\n"
+            "This creates a new copy (original stays untouched).",
             icon="question",
         )
         if not confirm:
@@ -537,7 +586,7 @@ class TacticalCommandCenter(ctk.CTk):
 
         self.control_panel.set_convert_enabled(False)
         self.control_panel.progress.start_indeterminate("Converting DLC blocks to base...")
-        self.footer.set_status("VANILLA-FYING...")
+        self.footer.set_status("Replacing DLC blocks…")
 
         # Build a temporary converter specifically for DLC substitution
         dlc_converter = BlueprintConverter(
@@ -564,15 +613,16 @@ class TacticalCommandCenter(ctk.CTk):
         self._undo_stack.append(dest_path)
         self.footer.set_scanned(scanned)
         self.footer.set_converted(self._converted_count)
-        self.footer.set_status("DLC CONVERT COMPLETE")
+        self.footer.set_status("DLC replaced")
         self._update_convert_state()
 
-        self.preview_panel.load_xml(dest_path / "bp.sbc", f"VANILLA-FIED: {dest_path.name}")
+        self.preview_panel.load_xml(dest_path / "bp.sbc", f"Vanilla copy: {dest_path.name}")
         self.preview_panel.switch_to_xml()
         self.toasts.toast(
-            f"Vanilla-fied {converted} DLC block(s) successfully.",
+            f"Created {dest_path.name} with {converted} DLC block(s) replaced.",
             level="success",
         )
+        self._pending_select_name = dest_path.name
         self.load_blueprints_async()
 
     def scale_grid_choice(self):
@@ -585,8 +635,9 @@ class TacticalCommandCenter(ctk.CTk):
         
         confirm = messagebox.askyesno(
             "Rescale Grid Size",
-            f"Would you like to auto-scale grid size for '{bp.display_name}' from {current_grid} Grid to {suggested_grid} Grid?\n\n"
-            f"This transfers all block subtypes and dimensions to {suggested_grid} equivalents and sets the grid property.",
+            f"Create a {suggested_grid.lower()}-grid copy of '{bp.display_name}'?\n\n"
+            f"Block subtypes and coordinates are scaled from {current_grid} to {suggested_grid}. "
+            "The original blueprint is not changed.",
             icon="question",
         )
         if not confirm:
@@ -594,7 +645,7 @@ class TacticalCommandCenter(ctk.CTk):
 
         self.control_panel.set_convert_enabled(False)
         self.control_panel.progress.start_indeterminate(f"Rescaling grid to {suggested_grid}...")
-        self.footer.set_status("RESCALING...")
+        self.footer.set_status(f"Scaling to {suggested_grid}…")
 
         def task():
             try:
@@ -612,28 +663,29 @@ class TacticalCommandCenter(ctk.CTk):
         self._undo_stack.append(dest_path)
         self.footer.set_scanned(scanned)
         self.footer.set_converted(self._converted_count)
-        self.footer.set_status(f"SCALED TO {target_grid.upper()}")
+        self.footer.set_status(f"Scaled to {target_grid}")
         self._update_convert_state()
 
-        self.preview_panel.load_xml(dest_path / "bp.sbc", f"SCALED: {dest_path.name}")
+        self.preview_panel.load_xml(dest_path / "bp.sbc", f"Scaled: {dest_path.name}")
         self.preview_panel.switch_to_xml()
         self.toasts.toast(
-            f"Successfully scaled entire blueprint grid size to {target_grid} with {converted} blocks updated.",
+            f"Created a {target_grid}-grid copy with {converted} blocks updated.",
             level="success",
         )
+        self._pending_select_name = dest_path.name
         self.load_blueprints_async()
 
     def batch_convert(self):
         selected_bps = self.blueprint_panel.get_selected_blueprints()
         if not selected_bps:
-            self.toasts.toast("Select one or more blueprints first.", level="warning")
+            self.toasts.toast("Select one or more blueprints first (Ctrl+click).", level="warning")
             return
 
         confirm = messagebox.askyesno(
-            "Batch Conversion",
-            f"Convert {len(selected_bps)} blueprint(s) with categories "
-            f"{', '.join(self.enabled_categories)}?",
-            icon="warning",
+            "Convert the selected ships?",
+            f"Create converted copies of {len(selected_bps)} blueprint(s)?\n\n"
+            f"Included: {', '.join(category_label(name) for name in self.enabled_categories)}\n\n"
+            "Originals stay untouched.",
         )
         if not confirm:
             return
@@ -641,7 +693,7 @@ class TacticalCommandCenter(ctk.CTk):
         self.control_panel.set_convert_enabled(False)
         total = len(selected_bps)
         self.control_panel.progress.start_indeterminate(f"Batch converting {total} blueprints...")
-        self.footer.set_status("BATCH CONVERTING...")
+        self.footer.set_status("Converting selected ships…")
 
         def batch_task():
             total_scanned = 0
@@ -685,10 +737,10 @@ class TacticalCommandCenter(ctk.CTk):
         self._undo_stack.extend(created_paths)
         self.footer.set_scanned(scanned)
         self.footer.set_converted(self._converted_count)
-        self.footer.set_status("BATCH COMPLETE")
+        self.footer.set_status("Batch complete")
         self._update_convert_state()
 
-        message = f"Batch converted {count} blueprint(s): {converted} block(s) changed."
+        message = f"Created copies for {count} blueprint(s): {converted} block(s) changed."
         if errors:
             message += f" ({len(errors)} error(s))"
             self.toasts.toast(message, level="warning", duration=6000)
@@ -707,7 +759,7 @@ class TacticalCommandCenter(ctk.CTk):
 
                 shutil.rmtree(last)
                 self.toasts.toast(f"Removed {last.name}", level="success")
-                self.footer.set_status("UNDO COMPLETE")
+                self.footer.set_status("Copy removed")
                 self.load_blueprints_async()
             else:
                 self.toasts.toast("Last converted folder no longer exists.", level="warning")
@@ -820,9 +872,9 @@ class TacticalCommandCenter(ctk.CTk):
             return
         bp_file = self.selected_blueprint.path / "bp.sbc"
         confirm = messagebox.askyesno(
-            "Apply Suggested Fix",
-            f"Apply fix '{fix_id}' to blueprint '{self.selected_blueprint.display_name}'?",
-            icon="question",
+            "Apply suggested fix?",
+            f"Apply this repair to '{self.selected_blueprint.display_name}'?\n\n"
+            "This edits the selected blueprint (not a copy).",
         )
         if not confirm:
             return
@@ -846,7 +898,7 @@ class TacticalCommandCenter(ctk.CTk):
 
         textbox = ctk.CTkTextbox(
             win,
-            font=("Consolas", 10),
+            font=TacticalTheme.FONT_MONO_SMALL,
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -874,7 +926,7 @@ class TacticalCommandCenter(ctk.CTk):
             return f"Could not load release notes: {exc}"
 
     def _show_error(self, message: str):
-        self.footer.set_status("ERROR", TacticalTheme.RED_PRIMARY)
+        self.footer.set_status("Error", TacticalTheme.RED_PRIMARY)
         self.toasts.toast(message, level="error", duration=5000)
 
 

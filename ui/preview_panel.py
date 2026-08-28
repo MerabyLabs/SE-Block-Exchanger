@@ -18,6 +18,7 @@ from blueprint_analytics import (
     SEVERITY_INFO,
     SEVERITY_WARNING,
 )
+from ui.labels import category_label
 from ui.theme import TacticalTheme
 
 
@@ -39,8 +40,8 @@ class PreviewPanel(ctk.CTkFrame):
             master,
             fg_color=TacticalTheme.BG_DARK,
             border_width=1,
-            border_color=TacticalTheme.CYAN_PRIMARY,
-            corner_radius=8,
+            border_color=TacticalTheme.BORDER_SUBTLE,
+            corner_radius=12,
             **kwargs,
         )
         self._on_run_preview = on_run_preview
@@ -66,25 +67,25 @@ class PreviewPanel(ctk.CTkFrame):
         self.tabview.pack(fill="both", expand=True, padx=4, pady=4)
 
         self._build_intel_tab()
-        self._build_xml_tab()
         self._build_preview_tab()
         self._build_analytics_tab()
         self._build_se2_tab()
+        self._build_xml_tab()
 
     def _build_intel_tab(self):
-        self.tab_intel = self.tabview.add("INTEL")
+        self.tab_intel = self.tabview.add("Overview")
         self.tab_intel.configure(fg_color=TacticalTheme.BG_DARK)
         ctk.CTkLabel(
             self.tab_intel,
-            text=">> BLUEPRINT INTEL",
+            text="Ship overview",
             font=TacticalTheme.FONT_LARGE,
-            text_color=TacticalTheme.ORANGE_PRIMARY,
-        ).pack(pady=(8, 4))
+            text_color=TacticalTheme.TEXT_WHITE,
+        ).pack(anchor="w", padx=20, pady=(12, 4))
         self.intel_text = ctk.CTkLabel(
             self.tab_intel,
-            text="Select a blueprint to review block totals, conversion readiness, and file location.",
+            text="Select a blueprint on the left. We'll show block totals, conversion readiness, and where the file lives — no XML editing required.",
             font=TacticalTheme.FONT_NORMAL,
-            text_color=TacticalTheme.TEXT_CYAN,
+            text_color=TacticalTheme.TEXT_GRAY,
             wraplength=600,
             anchor="nw",
             justify="left",
@@ -92,27 +93,27 @@ class PreviewPanel(ctk.CTkFrame):
         self.intel_text.pack(fill="both", expand=True, padx=20, pady=10)
 
     def _build_xml_tab(self):
-        self.tab_xml = self.tabview.add("XML SOURCE")
+        self.tab_xml = self.tabview.add("XML")
         self.tab_xml.configure(fg_color=TacticalTheme.BG_DARK)
 
         xml_header = ctk.CTkFrame(self.tab_xml, fg_color="transparent")
         xml_header.pack(fill="x", padx=8, pady=(4, 0))
         ctk.CTkLabel(
             xml_header,
-            text=">> XML SOURCE VIEWER",
+            text="Blueprint XML",
             font=TacticalTheme.FONT_LARGE,
-            text_color=TacticalTheme.CYAN_PRIMARY,
+            text_color=TacticalTheme.TEXT_WHITE,
         ).pack(side="left")
         self.xml_status = ctk.CTkLabel(
             xml_header,
-            text="(No file loaded)",
+            text="No file loaded",
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.TEXT_GRAY,
         )
         self.xml_status.pack(side="right")
         self.xml_textbox = ctk.CTkTextbox(
             self.tab_xml,
-            font=("Consolas", 9),
+            font=TacticalTheme.FONT_MONO_SMALL,
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -123,28 +124,29 @@ class PreviewPanel(ctk.CTkFrame):
         self.xml_textbox.pack(fill="both", expand=True, padx=8, pady=8)
 
     def _build_preview_tab(self):
-        self.tab_preview = self.tabview.add("PREVIEW")
+        self.tab_preview = self.tabview.add("Preview")
         self.tab_preview.configure(fg_color=TacticalTheme.BG_DARK)
 
         preview_header = ctk.CTkFrame(self.tab_preview, fg_color="transparent")
         preview_header.pack(fill="x", padx=8, pady=(4, 0))
         ctk.CTkLabel(
             preview_header,
-            text=">> BEFORE / AFTER DIFF",
+            text="Before / after",
             font=TacticalTheme.FONT_LARGE,
-            text_color=TacticalTheme.GREEN_PRIMARY,
+            text_color=TacticalTheme.TEXT_WHITE,
         ).pack(side="left")
         ctk.CTkButton(
             preview_header,
-            text="RUN PREVIEW",
+            text="Refresh preview",
             font=TacticalTheme.FONT_SMALL,
             fg_color="transparent",
             border_width=1,
             border_color=TacticalTheme.GREEN_PRIMARY,
             text_color=TacticalTheme.GREEN_PRIMARY,
             hover_color=TacticalTheme.BG_MEDIUM,
-            width=120,
+            width=130,
             height=28,
+            corner_radius=8,
             command=self._run_preview,
         ).pack(side="right")
 
@@ -156,20 +158,20 @@ class PreviewPanel(ctk.CTkFrame):
 
         ctk.CTkLabel(
             preview_split,
-            text="CURRENT (MATCHING SOURCE BLOCKS)",
+            text="Current blocks",
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.ORANGE_PRIMARY,
         ).grid(row=0, column=0, sticky="w", pady=(0, 4))
         ctk.CTkLabel(
             preview_split,
-            text="AFTER CONVERSION (TARGET BLOCKS)",
+            text="After conversion",
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.CYAN_PRIMARY,
         ).grid(row=0, column=1, sticky="w", pady=(0, 4))
 
         self.preview_before_text = ctk.CTkTextbox(
             preview_split,
-            font=("Consolas", 9),
+            font=TacticalTheme.FONT_MONO_SMALL,
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -180,7 +182,7 @@ class PreviewPanel(ctk.CTkFrame):
         self.preview_before_text.grid(row=1, column=0, sticky="nsew", padx=(0, 4))
         self.preview_after_text = ctk.CTkTextbox(
             preview_split,
-            font=("Consolas", 9),
+            font=TacticalTheme.FONT_MONO_SMALL,
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -193,7 +195,7 @@ class PreviewPanel(ctk.CTkFrame):
         self.preview_summary_text = ctk.CTkTextbox(
             self.tab_preview,
             height=120,
-            font=("Consolas", 9),
+            font=TacticalTheme.FONT_MONO_SMALL,
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -204,23 +206,23 @@ class PreviewPanel(ctk.CTkFrame):
         self.preview_summary_text.pack(fill="x", padx=8, pady=(0, 8))
 
     def _build_analytics_tab(self):
-        self.tab_analytics = self.tabview.add("ANALYTICS")
+        self.tab_analytics = self.tabview.add("Analytics")
         self.tab_analytics.configure(fg_color=TacticalTheme.BG_DARK)
 
         header = ctk.CTkFrame(self.tab_analytics, fg_color="transparent")
         header.pack(fill="x", padx=8, pady=(6, 4))
         ctk.CTkLabel(
             header,
-            text=">> BLUEPRINT ANALYTICS",
+            text="Blueprint analytics",
             font=TacticalTheme.FONT_LARGE,
-            text_color=TacticalTheme.ORANGE_PRIMARY,
+            text_color=TacticalTheme.TEXT_WHITE,
         ).pack(side="left")
 
         button_row = ctk.CTkFrame(header, fg_color="transparent")
         button_row.pack(side="right")
         ctk.CTkButton(
             button_row,
-            text="EXPORT CSV",
+            text="Export CSV",
             width=100,
             height=28,
             font=TacticalTheme.FONT_SMALL,
@@ -233,7 +235,7 @@ class PreviewPanel(ctk.CTkFrame):
         ).pack(side="left", padx=3)
         ctk.CTkButton(
             button_row,
-            text="EXPORT TXT",
+            text="Export TXT",
             width=100,
             height=28,
             font=TacticalTheme.FONT_SMALL,
@@ -266,7 +268,7 @@ class PreviewPanel(ctk.CTkFrame):
             cell.grid(row=0, column=idx, sticky="ew", padx=8, pady=8)
             ctk.CTkLabel(
                 cell,
-                text=name.upper(),
+                text=name,
                 font=TacticalTheme.FONT_SMALL,
                 text_color=TacticalTheme.TEXT_GRAY,
             ).pack(anchor="w")
@@ -287,13 +289,13 @@ class PreviewPanel(ctk.CTkFrame):
 
         ctk.CTkLabel(
             body,
-            text="CATEGORY DISTRIBUTION",
+            text="Block categories",
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.CYAN_PRIMARY,
         ).grid(row=0, column=0, sticky="w", pady=(0, 4))
         ctk.CTkLabel(
             body,
-            text="ORES -> INGOTS -> COMPONENTS -> BLOCKS",
+            text="Ores → ingots → components",
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.CYAN_PRIMARY,
         ).grid(row=0, column=1, sticky="w", pady=(0, 4))
@@ -308,7 +310,7 @@ class PreviewPanel(ctk.CTkFrame):
 
         self.resource_tree = ctk.CTkTextbox(
             body,
-            font=("Consolas", 9),
+            font=TacticalTheme.FONT_MONO_SMALL,
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -328,7 +330,7 @@ class PreviewPanel(ctk.CTkFrame):
         self.issues_frame.pack(fill="x", padx=8, pady=(0, 8))
         ctk.CTkLabel(
             self.issues_frame,
-            text="HEALTH AUDIT",
+            text="Health check",
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.ORANGE_PRIMARY,
         ).pack(anchor="w", padx=10, pady=(8, 2))
@@ -353,32 +355,33 @@ class PreviewPanel(ctk.CTkFrame):
             if conversion_mode == "light_to_heavy"
             else bp_info.heavy_armor_count
         )
-        source = "LIGHT" if conversion_mode == "light_to_heavy" else "HEAVY"
-        target = "HEAVY" if conversion_mode == "light_to_heavy" else "LIGHT"
+        source = "light" if conversion_mode == "light_to_heavy" else "heavy"
+        target = "heavy" if conversion_mode == "light_to_heavy" else "light"
+        ready = sum((bp_info.convertible_counts or {}).values())
         lines = [
-            f"BLUEPRINT: {bp_info.display_name}",
-            f"GRID SIZE: {bp_info.grid_size}",
-            f"TOTAL BLOCKS: {bp_info.block_count:,}",
-            f"LIGHT ARMOR: {bp_info.light_armor_count:,}",
-            f"HEAVY ARMOR: {bp_info.heavy_armor_count:,}",
+            f"{bp_info.display_name}",
+            f"{bp_info.grid_size} grid  ·  {bp_info.block_count:,} blocks",
+            f"{bp_info.light_armor_count:,} light armor  ·  {bp_info.heavy_armor_count:,} heavy armor",
             "",
-            f"Current mode: {source} -> {target}",
-            f"Convertible armor blocks available: {convertible:,}",
+            f"Direction: {source} → {target}",
+            f"{ready:,} blocks will convert with the current settings",
+            f"{convertible:,} armor blocks match this direction",
             "",
-            f"Blueprint path: {bp_info.path}",
+            f"File: {bp_info.path}",
         ]
         if bp_info.category_counts:
-            lines.extend(["", "Category matches:"])
+            lines.extend(["", "Blocks by category:"])
             for name, count in sorted(bp_info.category_counts.items()):
-                lines.append(f"  {name}: {count}")
-        self.intel_text.configure(text="\n".join(lines))
+                lines.append(f"  {category_label(name)}: {count}")
+        self.intel_text.configure(text="\n".join(lines), text_color=TacticalTheme.TEXT_WHITE)
 
     def clear_intel(self):
         self.intel_text.configure(
-            text="Select a blueprint to review block totals, conversion readiness, and file location."
+            text="Select a blueprint on the left. We'll show block totals, conversion readiness, and where the file lives — no XML editing required.",
+            text_color=TacticalTheme.TEXT_GRAY,
         )
         self.clear_analytics()
-        self.show_preview_diff({}, {}, "Select a blueprint and run preview.")
+        self.show_preview_diff({}, {}, "Select a blueprint. A live before/after preview appears automatically.")
 
     def load_xml(self, file_path, status_text: str):
         try:
@@ -399,8 +402,8 @@ class PreviewPanel(ctk.CTkFrame):
         """
         Backward-compatible API with richer rendering.
         """
-        self.show_preview_diff({}, {}, f"DRY-RUN PREVIEW: {bp_name}\nMode: {mode}\n\n{report}")
-        self.tabview.set("PREVIEW")
+        self.show_preview_diff({}, {}, f"Preview: {bp_name}\nDirection: {mode}\n\n{report}")
+        self.tabview.set("Preview")
 
     def show_preview_diff(
         self,
@@ -410,14 +413,14 @@ class PreviewPanel(ctk.CTkFrame):
     ):
         self._set_textbox_content(
             self.preview_before_text,
-            self._format_counts(before_counts, "No matching source blocks found."),
+            self._format_counts(before_counts, "No matching blocks in this ship."),
         )
         self._set_textbox_content(
             self.preview_after_text,
-            self._format_counts(after_counts, "No resulting target blocks."),
+            self._format_counts(after_counts, "Nothing would change."),
         )
-        self._set_textbox_content(self.preview_summary_text, summary_text or "No changes.")
-        self.tabview.set("PREVIEW")
+        self._set_textbox_content(self.preview_summary_text, summary_text or "No changes with the current settings.")
+        self.tabview.set("Preview")
 
     def update_analytics(self, analytics_result, comparison: Optional[ConversionComparison] = None):
         self.metric_labels["Blocks"].configure(text=f"{analytics_result.block_count:,}")
@@ -440,7 +443,7 @@ class PreviewPanel(ctk.CTkFrame):
         for label in self.metric_labels.values():
             label.configure(text="0")
         self.chart_canvas.delete("all")
-        self._set_textbox_content(self.resource_tree, "Select a blueprint to analyze.")
+        self._set_textbox_content(self.resource_tree, "Select a blueprint to see ore, ingot, and component totals.")
         self._populate_health_issues([])
         self.clear_se2_transition()
 
@@ -479,7 +482,7 @@ class PreviewPanel(ctk.CTkFrame):
             if issue.fix_id:
                 ctk.CTkButton(
                     row,
-                    text="APPLY FIX",
+                    text="Apply fix",
                     width=90,
                     height=26,
                     font=TacticalTheme.FONT_SMALL,
@@ -527,7 +530,7 @@ class PreviewPanel(ctk.CTkFrame):
             bar_w = int((width - 180) * ratio)
             color = palette[idx % len(palette)]
             self.chart_canvas.create_rectangle(150, y, 150 + bar_w, y + bar_h, fill=color, outline="")
-            self.chart_canvas.create_text(10, y + (bar_h / 2), text=name, fill=TacticalTheme.TEXT_CYAN, anchor="w")
+            self.chart_canvas.create_text(10, y + (bar_h / 2), text=category_label(name), fill=TacticalTheme.TEXT_CYAN, anchor="w")
             self.chart_canvas.create_text(
                 160 + bar_w,
                 y + (bar_h / 2),
@@ -583,10 +586,10 @@ class PreviewPanel(ctk.CTkFrame):
         return "\n".join(lines)
 
     def switch_to_xml(self):
-        self.tabview.set("XML SOURCE")
+        self.tabview.set("XML")
 
     def _build_se2_tab(self):
-        self.tab_se2 = self.tabview.add("SE2 TRANSITION")
+        self.tab_se2 = self.tabview.add("SE2")
         self.tab_se2.configure(fg_color=TacticalTheme.BG_DARK)
         
         scroll_frame = ctk.CTkScrollableFrame(self.tab_se2, fg_color="transparent")
@@ -597,9 +600,9 @@ class PreviewPanel(ctk.CTkFrame):
         
         ctk.CTkLabel(
             header_frame,
-            text=">> VRAGE3 & SE2 READINESS CENTER",
+            text="Space Engineers 2 readiness",
             font=TacticalTheme.FONT_LARGE,
-            text_color=TacticalTheme.ORANGE_PRIMARY,
+            text_color=TacticalTheme.TEXT_WHITE,
         ).pack(side="left")
         
         self.se2_score_frame = ctk.CTkFrame(
@@ -617,7 +620,7 @@ class PreviewPanel(ctk.CTkFrame):
         self.se2_score_label = ctk.CTkLabel(
             score_layout,
             text="--",
-            font=("Courier New", 36, "bold"),
+            font=(TacticalTheme.FONT_FAMILY, 36, "bold"),
             text_color=TacticalTheme.GREEN_PRIMARY,
         )
         self.se2_score_label.pack(side="left", padx=(0, 15))
@@ -627,7 +630,7 @@ class PreviewPanel(ctk.CTkFrame):
         
         self.se2_status_title = ctk.CTkLabel(
             score_details,
-            text="SELECT BLUEPRINT TO COMMENCE SCAN",
+            text="Select a blueprint to score it",
             font=TacticalTheme.FONT_LARGE,
             text_color=TacticalTheme.CYAN_PRIMARY,
             anchor="w",
@@ -636,7 +639,7 @@ class PreviewPanel(ctk.CTkFrame):
         
         self.se2_status_desc = ctk.CTkLabel(
             score_details,
-            text="The blueprint will be thoroughly audited across DLC constraints, mechanical hierarchies, and programmable subsystems for VRage3 (SE2) compatibility.",
+            text="We'll check DLC usage, scripts, and subgrids so you know how shareable this ship is for Space Engineers 2.",
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.TEXT_CYAN,
             wraplength=520,
@@ -656,7 +659,7 @@ class PreviewPanel(ctk.CTkFrame):
         
         ctk.CTkLabel(
             actions_frame,
-            text=">> TRANSITION UTILITIES",
+            text="Cleanup tools",
             font=TacticalTheme.FONT_NORMAL,
             text_color=TacticalTheme.ORANGE_PRIMARY,
         ).pack(anchor="w", padx=12, pady=(8, 4))
@@ -667,7 +670,7 @@ class PreviewPanel(ctk.CTkFrame):
         
         self.btn_vanillafy = ctk.CTkButton(
             btn_layout,
-            text="DLC TO BASE CONVERT (VANILLA-FY)",
+            text="Replace DLC with vanilla",
             font=TacticalTheme.FONT_SMALL,
             fg_color=TacticalTheme.BG_DARK,
             border_width=1,
@@ -682,7 +685,7 @@ class PreviewPanel(ctk.CTkFrame):
         
         self.btn_gridsizer = ctk.CTkButton(
             btn_layout,
-            text="RESCALE GRID SIZE (LARGE <-> SMALL)",
+            text="Switch large ↔ small grid",
             font=TacticalTheme.FONT_SMALL,
             fg_color=TacticalTheme.BG_DARK,
             border_width=1,
@@ -706,7 +709,7 @@ class PreviewPanel(ctk.CTkFrame):
         
         ctk.CTkLabel(
             self.se2_audit_frame,
-            text=">> TRANSITION ANALYSIS LOG",
+            text="Readiness notes",
             font=TacticalTheme.FONT_NORMAL,
             text_color=TacticalTheme.ORANGE_PRIMARY,
         ).pack(anchor="w", padx=12, pady=(8, 4))
@@ -714,7 +717,7 @@ class PreviewPanel(ctk.CTkFrame):
         self.se2_audit_textbox = ctk.CTkTextbox(
             self.se2_audit_frame,
             height=200,
-            font=("Consolas", 10),
+            font=TacticalTheme.FONT_MONO_SMALL,
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_width=0,
@@ -722,7 +725,7 @@ class PreviewPanel(ctk.CTkFrame):
         self.se2_audit_textbox.pack(fill="both", expand=True, padx=12, pady=(4, 12))
         self._set_textbox_content(
             self.se2_audit_textbox,
-            "Select a blueprint to begin VRage3 Transition Scanning...\n"
+            "Select a blueprint to see Space Engineers 2 readiness.\n"
         )
 
     def _vanillafy_clicked(self):
@@ -754,61 +757,56 @@ class PreviewPanel(ctk.CTkFrame):
         else:
             color = TacticalTheme.RED_PRIMARY
             
-        self.se2_status_title.configure(text=f"TRANSITION COMPATIBILITY: {status}", text_color=color)
+        status_title = {
+            "OPTIMAL": "Ready to share",
+            "STABLE": "Mostly ready",
+            "COMPLEX": "Needs cleanup",
+        }.get(status, "High complexity")
+        self.se2_status_title.configure(text=status_title, text_color=color)
         self.se2_score_label.configure(text_color=color)
         
         desc = (
-            "This blueprint has been evaluated for the upcoming VRage3 engine (Space Engineers 2). "
-            f"It was rated {status} based on custom script complexity, subgrids, and DLC usage. "
-            "Use the utilities below to clean, convert or scale this blueprint."
+            f"Scored {status.lower()} from DLC usage, scripts, and subgrids. "
+            "Use the tools below to make a vanilla copy or switch grid size — originals stay untouched."
         )
         self.se2_status_desc.configure(text=desc)
         
         log_text = []
-        log_text.append("=== VRAGE3 (SE2) TRANSITION ASSESSMENT ===")
-        log_text.append(f"Blueprint: {info.display_name}")
-        log_text.append(f"Grid Size: {info.grid_size}")
-        log_text.append(f"Total Blocks: {info.block_count}")
+        log_text.append(f"SE2 readiness — {info.display_name}")
+        log_text.append(f"{info.grid_size} grid  ·  {info.block_count} blocks")
         log_text.append("")
         
         if dlc_count > 0:
-            log_text.append(f"[!] DLC FOOTPRINT DETECTED: {dlc_count} block(s) require active expansions.")
-            log_text.append("    -> VRage3 conversion will require owning matching expansion packs.")
-            log_text.append("    -> Tip: Use 'DLC TO BASE CONVERT' below to make this a vanilla build!")
+            log_text.append(f"DLC: {dlc_count} block(s) need expansion packs.")
+            log_text.append("    Tip: Replace DLC with vanilla to make this freely shareable.")
         else:
-            log_text.append("[+] NO DLC DETECTED: Clean base-game (Vanilla) build.")
-            log_text.append("    -> Exceptional compatibility and highly shareable!")
+            log_text.append("DLC: none — this is a vanilla build.")
             
         if script_count > 0:
-            log_text.append(f"[!] SCRIPTS DETECTED: {script_count} programmable script host(s) found.")
-            log_text.append("    -> VRage3 uses an updated, highly multi-threaded behavior/logic layout.")
-            log_text.append("    -> Some older C# scripts might require manual code updates or transitions.")
+            log_text.append(f"Scripts: {script_count} programmable block(s). Some C# may need updates in SE2.")
         else:
-            log_text.append("[+] NO SCRIPTS DETECTED: Pure stateful engineering.")
+            log_text.append("Scripts: none.")
             
         if subgrid_count > 0:
-            log_text.append(f"[!] COMPLEX SUBGRIDS DETECTED: {subgrid_count} mechanical rotor/hinge/piston chain(s).")
-            log_text.append("    -> Physical clearances and rotor torque settings differ in VRage3.")
-            log_text.append("    -> Test integrity carefully after spawning in Space Engineers 2.")
+            log_text.append(f"Subgrids: {subgrid_count} rotor/hinge/piston chain(s). Test physics after spawning in SE2.")
         else:
-            log_text.append("[+] NO SUBGRIDS: Single grid layout with optimal structural physics.")
+            log_text.append("Subgrids: none — single grid.")
             
         log_text.append("")
-        log_text.append("=== RECOMMENDATION ===")
         if score >= 90:
-            log_text.append("Ready for seamless transition. Fully compatible with vanilla servers and public sharing!")
+            log_text.append("Recommendation: ready to share on vanilla servers.")
         elif score >= 60:
-            log_text.append("Good candidate. Ensure any required DLCs are enabled or vanilla-fy the blueprint.")
+            log_text.append("Recommendation: replace DLC or confirm expansion packs before sharing.")
         else:
-            log_text.append("Highly complex. We recommend standardizing blocks and verifying program logic prior to transition.")
+            log_text.append("Recommendation: simplify scripts and standardise blocks before transitioning.")
             
         self._set_textbox_content(self.se2_audit_textbox, "\n".join(log_text))
 
     def clear_se2_transition(self):
         self.se2_score_label.configure(text="--", text_color=TacticalTheme.GREEN_PRIMARY)
-        self.se2_status_title.configure(text="SELECT BLUEPRINT TO COMMENCE SCAN", text_color=TacticalTheme.CYAN_PRIMARY)
-        self.se2_status_desc.configure(text="The blueprint will be thoroughly audited across DLC constraints, mechanical hierarchies, and programmable subsystems for VRage3 (SE2) compatibility.")
-        self._set_textbox_content(self.se2_audit_textbox, "Select a blueprint to begin VRage3 Transition Scanning...\n")
+        self.se2_status_title.configure(text="Select a blueprint to score it", text_color=TacticalTheme.CYAN_PRIMARY)
+        self.se2_status_desc.configure(text="We'll check DLC usage, scripts, and subgrids so you know how shareable this ship is for Space Engineers 2.")
+        self._set_textbox_content(self.se2_audit_textbox, "Select a blueprint to see Space Engineers 2 readiness.\n")
         self.btn_vanillafy.configure(state="disabled")
         self.btn_gridsizer.configure(state="disabled")
 
