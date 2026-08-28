@@ -3,6 +3,9 @@ Toast Notification Widget
 Non-blocking slide-in notifications that auto-dismiss
 """
 
+from __future__ import annotations
+
+from typing import Callable, List, Optional
 import customtkinter as ctk
 from ui.theme import TacticalTheme
 
@@ -10,7 +13,14 @@ from ui.theme import TacticalTheme
 class Toast(ctk.CTkFrame):
     """A single toast notification that slides in and auto-dismisses."""
 
-    def __init__(self, master, message: str, level: str = "info", duration: int = 3000):
+    def __init__(
+        self,
+        master,
+        message: str,
+        level: str = "info",
+        duration: int = 3000,
+        on_dismiss: Optional[Callable[[Toast], None]] = None,
+    ):
         super().__init__(
             master,
             fg_color=TacticalTheme.BG_GLASS,
@@ -20,6 +30,7 @@ class Toast(ctk.CTkFrame):
         )
         self._duration = duration
         self._after_id = None
+        self._on_dismiss = on_dismiss
 
         # Color bar on the left
         bar = ctk.CTkFrame(
@@ -67,8 +78,16 @@ class Toast(ctk.CTkFrame):
     def dismiss(self):
         """Remove the toast."""
         if self._after_id:
-            self.after_cancel(self._after_id)
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
             self._after_id = None
+        if self._on_dismiss:
+            try:
+                self._on_dismiss(self)
+            except Exception:
+                pass
         self.pack_forget()
         self.destroy()
 
@@ -79,12 +98,28 @@ class ToastManager:
     def __init__(self, parent):
         self._parent = parent
         self._container = ctk.CTkFrame(parent, fg_color="transparent")
-        # Position at top-right as an overlay
-        self._container.place(relx=1.0, rely=0.0, anchor="ne", x=-10, y=10)
-        self._container.configure(width=400)
-        self._container.lift()
+        self._active_toasts: List[Toast] = []
+        # Note: Container is not placed until a toast is active to prevent blocking header buttons
 
     def toast(self, message: str, level: str = "info", duration: int = 3000):
         """Show a new toast notification."""
-        t = Toast(self._container, message, level, duration)
+        if not self._active_toasts:
+            # Anchor cleanly at bottom-right above footer
+            self._container.place(relx=1.0, rely=1.0, anchor="se", x=-20, y=-45)
+            self._container.lift()
+
+        t = Toast(
+            self._container,
+            message,
+            level=level,
+            duration=duration,
+            on_dismiss=self._handle_toast_dismiss,
+        )
+        self._active_toasts.append(t)
         t.show()
+
+    def _handle_toast_dismiss(self, toast_item: Toast):
+        if toast_item in self._active_toasts:
+            self._active_toasts.remove(toast_item)
+        if not self._active_toasts:
+            self._container.place_forget()
