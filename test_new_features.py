@@ -73,6 +73,15 @@ class TestNewCommunityFeatures(unittest.TestCase):
         self.assertIn("SmallBlockArmorBlock", subtypes)
         self.assertIn("SmallBlockSmallThrustSciFi", subtypes)
 
+    def test_scale_grid_small_to_large(self):
+        bp_dir = self._create_blueprint_dir("Small", ["SmallBlockArmorBlock"])
+        dest_dir, scanned, converted = self.converter.scale_grid_size(bp_dir, "Large")
+        self.assertEqual(scanned, 1)
+        self.assertEqual(converted, 1)
+        tree = ET.parse(dest_dir / "bp.sbc")
+        self.assertEqual(tree.find(".//CubeGrid/GridSizeEnum").text, "Large")
+        self.assertIn("LargeBlockArmorBlock", [elem.text for elem in tree.findall(".//SubtypeId")])
+
 
 if __name__ == "__main__":
     unittest.main()
