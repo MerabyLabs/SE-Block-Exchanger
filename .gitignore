@@ -58,4 +58,6 @@ tmp/
 tmpclaude-*
 nul
 marketing_research.md
+MARKET_RESEARCH.md
+market_research/
 *.local.md
