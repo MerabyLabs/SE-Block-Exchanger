@@ -1,0 +1,4 @@
+{
+  "name": "SE Block Exchanger",
+  "install": "bash .cursor/install.sh"
+}
