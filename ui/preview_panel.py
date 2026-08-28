@@ -274,6 +274,7 @@ class PreviewPanel(ctk.CTkFrame):
         if name == "Subgrids":
             self._render_subgrids()
             self.after(40, self.ship_canvas.refresh)
+            self.after(180, self.ship_canvas.refresh)
         elif name == "XML":
             self._ensure_xml_loaded()
         elif name == "Analytics":
@@ -294,39 +295,28 @@ class PreviewPanel(ctk.CTkFrame):
     def _render_subgrids(self):
         structure = self._pending_structure
         voxels = self._pending_voxels
-        render_key = (id(structure), len(voxels))
-        force_canvas = True
-        if self._subgrids_rendered_for == render_key:
-            self.ship_canvas.refresh()
-            self.hierarchy_view.render(structure)
+        render_key = (id(structure), len(voxels), tuple(sorted({v.get("grid_name", "") for v in voxels})))
+        self.hierarchy_view.render(structure if structure and getattr(structure, "total_grids", 0) else None)
+        if not voxels:
+            self.ship_canvas.clear()
+            self._subgrids_rendered_for = render_key
             return
+        self.ship_canvas.load_structure_data(
+            [
+                VoxelBlock(
+                    x=int(v["x"]),
+                    y=int(v["y"]),
+                    z=int(v["z"]),
+                    subtype=v["subtype"],
+                    grid_name=v["grid_name"],
+                    grid_size=v.get("grid_size", "Large"),
+                    is_subgrid=bool(v.get("is_subgrid", False)),
+                )
+                for v in voxels
+            ]
+        )
         self._subgrids_rendered_for = render_key
-
-        if structure is None or (getattr(structure, "total_grids", 0) == 0 and not voxels):
-            self.hierarchy_view.render(None)
-            self.ship_canvas.clear()
-            return
-
-        self.hierarchy_view.render(structure)
-        if voxels:
-            self.ship_canvas.load_structure_data(
-                [
-                    VoxelBlock(
-                        x=int(v["x"]),
-                        y=int(v["y"]),
-                        z=int(v["z"]),
-                        subtype=v["subtype"],
-                        grid_name=v["grid_name"],
-                        grid_size=v.get("grid_size", "Large"),
-                        is_subgrid=bool(v.get("is_subgrid", False)),
-                    )
-                    for v in voxels
-                ]
-            )
-            if force_canvas:
-                self.after(50, self.ship_canvas.refresh)
-        else:
-            self.ship_canvas.clear()
+        self.after_idle(self.ship_canvas.refresh)
 
     def clear_subgrids(self):
         self._pending_structure = None

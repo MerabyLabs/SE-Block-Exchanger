@@ -123,6 +123,7 @@ class ShipCanvas(ctk.CTkFrame):
 
     def load_structure_data(self, blocks: List[VoxelBlock]) -> None:
         self.blocks = list(blocks)
+        self.selected_grid_filter = None
         if not self.blocks:
             self.min_coords = (0, 0, 0)
             self.max_coords = (0, 0, 0)
@@ -198,9 +199,9 @@ class ShipCanvas(ctk.CTkFrame):
         self._redraw_job = None
         w = self.canvas.winfo_width()
         h = self.canvas.winfo_height()
-        if w < 20 or h < 20:
+        if w < 40 or h < 40:
             if self.blocks:
-                self.after(80, self._schedule_redraw)
+                self.after(80, self.refresh)
             return
         self.canvas.delete("all")
         if not self.blocks:
