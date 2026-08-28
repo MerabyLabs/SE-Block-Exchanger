@@ -13,6 +13,7 @@ import customtkinter as ctk
 from blueprint_analytics import (
     ConversionComparison,
     HealthIssue,
+    SE2Readiness,
     SEVERITY_ERROR,
     SEVERITY_INFO,
     SEVERITY_WARNING,
@@ -732,29 +733,25 @@ class PreviewPanel(ctk.CTkFrame):
         if self._on_scale_grid:
             self._on_scale_grid()
 
-    def update_se2_transition(self, info, dlc_count: int, script_count: int, subgrid_count: int):
+    def update_se2_transition(self, info, readiness: SE2Readiness):
         self.btn_vanillafy.configure(state="normal")
         self.btn_gridsizer.configure(state="normal")
-        
-        score = 100
-        score -= min(25, dlc_count * 5)
-        score -= min(25, script_count * 10)
-        score -= min(30, subgrid_count * 15)
-        score = max(20, score)
-        
+
+        score = readiness.score
+        status = readiness.status
+        dlc_count = readiness.dlc_count
+        script_count = readiness.script_count
+        subgrid_count = readiness.subgrid_count
+
         self.se2_score_label.configure(text=f"{score}%")
-        
-        if score >= 90:
-            status = "OPTIMAL"
+
+        if status == "OPTIMAL":
             color = TacticalTheme.GREEN_PRIMARY
-        elif score >= 60:
-            status = "STABLE"
+        elif status == "STABLE":
             color = TacticalTheme.CYAN_PRIMARY
-        elif score >= 40:
-            status = "COMPLEX"
+        elif status == "COMPLEX":
             color = TacticalTheme.ORANGE_PRIMARY
         else:
-            status = "FRAGILE"
             color = TacticalTheme.RED_PRIMARY
             
         self.se2_status_title.configure(text=f"TRANSITION COMPATIBILITY: {status}", text_color=color)

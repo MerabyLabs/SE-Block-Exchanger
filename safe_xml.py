@@ -30,6 +30,3 @@ except ImportError:  # pragma: no cover - exercised only when defusedxml absent
 
 
 __all__ = ["parse", "HARDENED"]
-
-
-__all__ = ["parse", "HARDENED"]

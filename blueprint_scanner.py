@@ -57,6 +57,7 @@ class BlueprintScanner:
         self,
         registry: Optional[MappingRegistry] = None,
         enabled_categories: Optional[Sequence[str]] = None,
+        reverse: bool = False,
     ):
         self.registry = registry if registry else build_registry(include_builtin=True)
         self.enabled_categories = (
@@ -64,18 +65,23 @@ class BlueprintScanner:
             if enabled_categories is None
             else list(enabled_categories)
         )
+        self.reverse = reverse
         self.blueprints_cache: List[BlueprintInfo] = []
+        self._rebuild_mapping()
+
+    def _rebuild_mapping(self) -> None:
         self._mapping = self.registry.build_mapping(
-            reverse=False,
+            reverse=self.reverse,
             enabled_categories=self.enabled_categories,
         )
 
     def set_enabled_categories(self, enabled_categories: Sequence[str]) -> None:
         self.enabled_categories = list(enabled_categories)
-        self._mapping = self.registry.build_mapping(
-            reverse=False,
-            enabled_categories=self.enabled_categories,
-        )
+        self._rebuild_mapping()
+
+    def set_reverse(self, reverse: bool) -> None:
+        self.reverse = bool(reverse)
+        self._rebuild_mapping()
 
     def get_default_blueprint_path(self) -> Path:
         appdata = os.getenv("APPDATA")
@@ -110,6 +116,13 @@ class BlueprintScanner:
         self.blueprints_cache = blueprints
         return blueprints
 
+    def parse_folder(self, folder_path: Path) -> BlueprintInfo:
+        folder_path = Path(folder_path)
+        bp_file = folder_path / "bp.sbc"
+        if not bp_file.exists():
+            raise FileNotFoundError(f"No bp.sbc found in: {folder_path}")
+        return self._parse_blueprint(folder_path, bp_file)
+
     def _parse_blueprint(self, folder_path: Path, bp_file: Path) -> BlueprintInfo:
         tree = safe_xml.parse(bp_file)
         root = tree.getroot()
@@ -120,7 +133,7 @@ class BlueprintScanner:
         if grid_size_elem is not None and grid_size_elem.text:
             grid_size = grid_size_elem.text.strip()
 
-        blocks = root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock")
+        blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
         subtype_counter: Dict[str, int] = Counter()
         category_counter: Dict[str, int] = defaultdict(int)
         convertible_counter: Dict[str, int] = defaultdict(int)
@@ -140,7 +153,7 @@ class BlueprintScanner:
                 heavy_armor_count += 1
 
             for category in self.registry.list_categories():
-                if subtype in category.pairs:
+                if subtype in category.pairs or subtype in category.pairs.values():
                     category_counter[category.name] += 1
 
             if subtype in self._mapping:

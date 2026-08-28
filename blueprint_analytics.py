@@ -19,6 +19,22 @@ SEVERITY_INFO = "Info"
 SEVERITY_WARNING = "Warning"
 SEVERITY_ERROR = "Error"
 
+DLC_KEYWORDS = (
+    "scifi",
+    "industrial",
+    "wasteland",
+    "warfare",
+    "reskin",
+    "decorative",
+    "desert",
+    "cab",
+    "buggy",
+    "sparks",
+    "vending",
+    "storeblock",
+)
+MECHANICAL_KEYWORDS = ("rotor", "stator", "hinge", "piston")
+
 
 @dataclass
 class HealthIssue:
@@ -43,6 +59,15 @@ class BlueprintAnalyticsResult:
     mass_total: float
     grid_size: str
     health_issues: List[HealthIssue] = field(default_factory=list)
+
+
+@dataclass
+class SE2Readiness:
+    dlc_count: int
+    script_count: int
+    subgrid_count: int
+    score: int
+    status: str
 
 
 @dataclass
@@ -177,7 +202,7 @@ class BlueprintAnalyticsEngine:
         root = tree.getroot()
         grid_size = self._detect_grid_size(root)
 
-        blocks = root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock")
+        blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
         subtype_counts: Dict[str, int] = Counter()
         component_totals: Dict[str, int] = defaultdict(int)
         category_totals: Dict[str, int] = defaultdict(int)
@@ -359,7 +384,7 @@ class BlueprintAnalyticsEngine:
     def apply_fix(self, blueprint_file: Path, fix_id: str) -> bool:
         tree = safe_xml.parse(blueprint_file)
         root = tree.getroot()
-        cube_blocks = root.find(".//CubeGrid/CubeBlocks")
+        cube_blocks = root.find(".//CubeBlocks")
         if cube_blocks is None:
             return False
 
@@ -507,3 +532,48 @@ class BlueprintAnalyticsEngine:
         if max(counts) / min(counts) >= 2.5:
             return "Thruster distribution appears heavily unbalanced across directions."
         return None
+
+
+def compute_se2_readiness(block_counts: Dict[str, int]) -> SE2Readiness:
+    """
+    Score a blueprint for Space Engineers 2 / VRage 3 transition risk.
+
+    DLC reskins, programmable blocks, and mechanical subgrids each reduce
+    the score. The floor is 20 so even dense grids remain comparable.
+    """
+    dlc_count = 0
+    script_count = 0
+    subgrid_count = 0
+
+    for subtype, qty in block_counts.items():
+        subtype_lower = subtype.lower()
+        if any(keyword in subtype_lower for keyword in DLC_KEYWORDS):
+            dlc_count += qty
+        if "programmable" in subtype_lower:
+            script_count += qty
+        if any(keyword in subtype_lower for keyword in MECHANICAL_KEYWORDS):
+            subgrid_count += qty
+
+    score = 100
+    score -= min(25, dlc_count * 5)
+    score -= min(25, script_count * 10)
+    score -= min(30, subgrid_count * 15)
+    score = max(20, score)
+
+    if score >= 90:
+        status = "OPTIMAL"
+    elif score >= 60:
+        status = "STABLE"
+    elif score >= 40:
+        status = "COMPLEX"
+    else:
+        status = "FRAGILE"
+
+    return SE2Readiness(
+        dlc_count=dlc_count,
+        script_count=script_count,
+        subgrid_count=subgrid_count,
+        score=score,
+        status=status,
+    )
+

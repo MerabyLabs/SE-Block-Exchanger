@@ -16,7 +16,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
 from app_settings import AppSettings, SettingsStore
-from blueprint_analytics import BlueprintAnalyticsEngine
+from blueprint_analytics import BlueprintAnalyticsEngine, compute_se2_readiness
 from blueprint_converter import BlueprintConverter
 from blueprint_scanner import BlueprintInfo, BlueprintScanner
 from mapping_profiles import ProfileManager
@@ -63,7 +63,11 @@ class TacticalCommandCenter(ctk.CTk):
         self.enabled_categories = self._resolve_enabled_categories(self.settings.enabled_categories)
         self.conversion_mode = "light_to_heavy"
 
-        self.scanner = BlueprintScanner(registry=self.registry, enabled_categories=self.enabled_categories)
+        self.scanner = BlueprintScanner(
+            registry=self.registry,
+            enabled_categories=self.enabled_categories,
+            reverse=False,
+        )
         self.converter = self._build_converter()
         self.analytics_engine = BlueprintAnalyticsEngine()
         self.update_checker = UpdateChecker(cache_hours=self.settings.cache_hours)
@@ -254,7 +258,11 @@ class TacticalCommandCenter(ctk.CTk):
         self.registry = build_registry(include_builtin=True)
         self.profile_manager.register_profile_categories(self.registry)
         self.enabled_categories = self._resolve_enabled_categories(self.enabled_categories)
-        self.scanner = BlueprintScanner(registry=self.registry, enabled_categories=self.enabled_categories)
+        self.scanner = BlueprintScanner(
+            registry=self.registry,
+            enabled_categories=self.enabled_categories,
+            reverse=(self.conversion_mode == "heavy_to_light"),
+        )
         self.converter = self._build_converter()
         self.control_panel.set_category_options(self.registry.list_categories(), self.enabled_categories)
         self.settings.enabled_categories = list(self.enabled_categories)
@@ -436,26 +444,22 @@ class TacticalCommandCenter(ctk.CTk):
 
     def set_conversion_mode(self, mode: str):
         self.conversion_mode = mode
+        self.scanner.set_reverse(mode == "heavy_to_light")
         self.converter = self._build_converter()
-        self._update_convert_state()
         if self.selected_blueprint:
+            bp_file = self.selected_blueprint.path / "bp.sbc"
+            if bp_file.exists():
+                self.selected_blueprint = self.scanner.parse_folder(self.selected_blueprint.path)
             self.preview_panel.update_intel(self.selected_blueprint, mode)
             self.refresh_analytics_async()
+        self._update_convert_state()
         self.footer.set_status(f"MODE: {mode.replace('_', ' ').upper()}")
 
     def _update_convert_state(self):
         if not self.selected_blueprint:
             self.control_panel.set_convert_enabled(False)
             return
-
-        bp = self.selected_blueprint
-        if self.conversion_mode == "light_to_heavy":
-            has_source = bp.light_armor_count > 0
-        else:
-            has_source = bp.heavy_armor_count > 0
-
-        if any(category.lower() != "armor" for category in self.enabled_categories):
-            has_source = has_source or any(bp.category_counts.get(name, 0) > 0 for name in self.enabled_categories)
+        has_source = sum(self.selected_blueprint.convertible_counts.values()) > 0
         self.control_panel.set_convert_enabled(has_source)
 
     # ------------------------------------------------------------------
@@ -780,23 +784,8 @@ class TacticalCommandCenter(ctk.CTk):
         self._latest_analytics = analytics
         self._latest_comparison = comparison
         self.preview_panel.update_analytics(analytics, comparison)
-
-        # Compute SE2 Readiness metrics
-        dlc_keywords = ["scifi", "industrial", "wasteland", "warfare", "reskin", "decorative", "desert", "cab", "buggy", "sparks", "vending", "storeblock"]
-        dlc_count = 0
-        script_count = 0
-        subgrid_count = 0
-        
-        for subtype, qty in analytics.block_counts.items():
-            subtype_lower = subtype.lower()
-            if any(kw in subtype_lower for kw in dlc_keywords):
-                dlc_count += qty
-            if "programmable" in subtype_lower:
-                script_count += qty
-            if any(kw in subtype_lower for kw in ["rotor", "stator", "hinge", "piston"]):
-                subgrid_count += qty
-                
-        self.preview_panel.update_se2_transition(self.selected_blueprint, dlc_count, script_count, subgrid_count)
+        readiness = compute_se2_readiness(analytics.block_counts)
+        self.preview_panel.update_se2_transition(self.selected_blueprint, readiness)
 
     def export_comparison_csv(self):
         if not self._latest_comparison:

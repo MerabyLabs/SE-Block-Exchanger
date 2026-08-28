@@ -73,7 +73,14 @@ class ArmorBlockReplacer:
             return ["armor"]
 
         if len(normalized) == 1 and normalized[0] == "all":
-            return [category.name for category in self.registry.list_categories()]
+            # Built-in categories only. Bundled mod profiles often share
+            # sources (e.g. SmallGatlingGun) and cannot be merged together.
+            builtin = [
+                category.name
+                for category in self.registry.list_categories()
+                if category.source == "built-in"
+            ]
+            return builtin or [category.name for category in self.registry.list_categories()]
 
         resolved: List[str] = []
         for name in normalized:
@@ -108,14 +115,16 @@ class ArmorBlockReplacer:
             print(message)
 
     def find_blueprint_file(self, path: Path) -> Path:
-        """Find bp.sbc in file/folder input."""
-        if path.is_file() and path.name == "bp.sbc":
+        """Find a blueprint .sbc file from a file or folder input."""
+        if path.is_file() and path.suffix.lower() == ".sbc":
             return path
         if path.is_dir():
             bp_file = path / "bp.sbc"
             if bp_file.exists():
                 return bp_file
             for item in path.rglob("bp.sbc"):
+                return item
+            for item in path.rglob("*.sbc"):
                 return item
         raise FileNotFoundError(f"Could not find bp.sbc in {path}")
 
@@ -218,7 +227,7 @@ class ArmorBlockReplacer:
         tree.write(output_file, encoding="utf-8", xml_declaration=True)
         self.log(f"[INFO] Output written: {output_file}")
 
-        binary_file = output_file.with_name(output_file.stem + "B5")
+        binary_file = output_file.with_name(output_file.name + "B5")
         if binary_file.exists():
             try:
                 binary_file.unlink()
@@ -296,7 +305,7 @@ def main() -> int:
     parser.add_argument(
         "--all-categories",
         action="store_true",
-        help="Enable all loaded categories for this run",
+        help="Enable all built-in categories (profiles remain opt-in)",
     )
     parser.add_argument(
         "--profile-dir",

@@ -148,7 +148,7 @@ class BlueprintConverter:
 
         prefix = "SCALED_SMALL_" if target_size == "Small" else "SCALED_LARGE_"
         dest_path = source_path.parent / f"{prefix}{source_path.name}"
-        
+
         if dest_path.exists():
             shutil.rmtree(dest_path)
 
@@ -159,36 +159,31 @@ class BlueprintConverter:
             binary_bp_file.unlink()
 
         new_bp_file = dest_path / "bp.sbc"
-        
-        # Parse XML, scale the grid size and swap subtypes!
+
         import safe_xml
         tree = safe_xml.parse(new_bp_file)
         root = tree.getroot()
-        
-        # 1. Update GridSizeEnum
-        changed_grids = 0
+
         grid_size_elements = root.findall(".//CubeGrid/GridSizeEnum")
         for elem in grid_size_elements:
             if elem.text and elem.text.strip().capitalize() != target_size:
                 elem.text = target_size
-                changed_grids += 1
-                
-        # 2. Swap Subtypes
+
         source_prefix = "Large" if target_size == "Small" else "Small"
         dest_prefix = "Small" if target_size == "Small" else "Large"
-        
+
         replacements = 0
         blocks_scanned = 0
-        
+
         for cube_blocks in root.findall(".//CubeBlocks"):
             for block in cube_blocks.findall("MyObjectBuilder_CubeBlock"):
                 blocks_scanned += 1
                 subtype_name = block.find("SubtypeName")
                 subtype_id = block.find("SubtypeId")
-                
+
                 elem_to_modify = []
                 current_val = None
-                
+
                 if subtype_name is not None and subtype_name.text:
                     elem_to_modify.append(subtype_name)
                     current_val = subtype_name.text.strip()
@@ -196,7 +191,7 @@ class BlueprintConverter:
                     elem_to_modify.append(subtype_id)
                     if not current_val:
                         current_val = subtype_id.text.strip()
-                
+
                 if current_val and elem_to_modify:
                     new_val = None
                     if current_val.startswith(source_prefix):
@@ -204,19 +199,34 @@ class BlueprintConverter:
                     elif current_val.startswith(source_prefix.lower()):
                         new_val = dest_prefix.lower() + current_val[len(source_prefix):]
                     elif "Large" in current_val and target_size == "Small":
-                        new_val = current_val.replace("Large", "Small")
+                        new_val = current_val.replace("Large", "Small", 1)
                     elif "Small" in current_val and target_size == "Large":
-                        new_val = current_val.replace("Small", "Large")
+                        new_val = current_val.replace("Small", "Large", 1)
                     elif "Lg" in current_val and target_size == "Small":
-                        new_val = current_val.replace("Lg", "Sm")
+                        new_val = current_val.replace("Lg", "Sm", 1)
                     elif "Sm" in current_val and target_size == "Large":
-                        new_val = current_val.replace("Sm", "Lg")
-                    
+                        new_val = current_val.replace("Sm", "Lg", 1)
+
                     if new_val and new_val != current_val:
                         for elem in elem_to_modify:
                             elem.text = new_val
                         replacements += 1
-                        
+
+                min_elem = block.find("Min")
+                if min_elem is not None:
+                    for axis in ("x", "y", "z"):
+                        raw = min_elem.attrib.get(axis)
+                        if raw is None:
+                            continue
+                        try:
+                            value = int(raw)
+                        except ValueError:
+                            continue
+                        if target_size == "Small":
+                            min_elem.attrib[axis] = str(value * 5)
+                        else:
+                            min_elem.attrib[axis] = str(value // 5)
+
         tree.write(new_bp_file, encoding="utf-8", xml_declaration=True)
         self._history.append(dest_path)
         return dest_path, blocks_scanned, replacements

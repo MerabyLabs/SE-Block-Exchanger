@@ -201,7 +201,10 @@ class ProfileManager:
     def export_profile(self, name: str, destination: Path) -> Path:
         profile = self.get(name)
         destination = Path(destination)
-        if destination.is_dir() or destination.suffix.lower() != PROFILE_EXTENSION:
+        if destination.exists() and destination.is_dir():
+            destination = destination / f"{profile.name.replace(' ', '_')}{PROFILE_EXTENSION}"
+        elif not destination.suffix:
+            destination.mkdir(parents=True, exist_ok=True)
             destination = destination / f"{profile.name.replace(' ', '_')}{PROFILE_EXTENSION}"
         self.save_profile(profile, destination)
         return destination
@@ -254,6 +257,14 @@ class ProfileManager:
                     registry.register(category)
                 count += 1
         return count
+
+    def discord_share_text(self, name: str) -> str:
+        profile = self.get(name)
+        payload = json.dumps(profile.to_dict(), indent=2)
+        return (
+            f"**{profile.name}** by {profile.author} (v{profile.version})\n"
+            f"{profile.description}\n\n```json\n{payload}\n```"
+        )
 
     @staticmethod
     def list_known_block_ids(registry: MappingRegistry) -> List[str]:
