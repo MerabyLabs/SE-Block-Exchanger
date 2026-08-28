@@ -90,7 +90,7 @@ class SubgridHierarchyParser:
 
         for grid in grids:
             grid_entity_id = cls._get_text(grid, "EntityId") or f"grid_{id(grid)}"
-            grid_name = cls._get_text(grid, "CustomName") or "CubeGrid"
+            grid_name = cls._get_text(grid, "CustomName") or cls._get_text(grid, "DisplayName") or "CubeGrid"
             grid_size = cls._get_text(grid, "GridSizeEnum") or "Large"
 
             blocks = grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")

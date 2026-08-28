@@ -13,12 +13,15 @@ from typing import Dict, Iterable, List, Optional, Set
 import customtkinter as ctk
 
 from blueprint_analytics import (
+    BlueprintAnalyticsEngine,
+    BlueprintAnalyticsResult,
     ConversionComparison,
     HealthIssue,
     SEVERITY_ERROR,
     SEVERITY_INFO,
     SEVERITY_WARNING,
 )
+from mappings.skin_palette_engine import OFFICIAL_SKINS
 from pb_doctor import (
     ExtractedPBScript,
     PBScriptReport,
@@ -48,6 +51,10 @@ class PreviewPanel(ctk.CTkFrame):
         on_workshop_sync=None,
         on_selective_convert=None,
         on_migrate_se2=None,
+        on_split_subgrids=None,
+        on_apply_skin_palette=None,
+        on_harden_armor=None,
+        on_lightweight_armor=None,
         **kwargs,
     ):
         super().__init__(
@@ -69,7 +76,13 @@ class PreviewPanel(ctk.CTkFrame):
         self._on_workshop_sync = on_workshop_sync
         self._on_selective_convert = on_selective_convert
         self._on_migrate_se2 = on_migrate_se2
+        self._on_split_subgrids = on_split_subgrids
+        self._on_apply_skin_palette = on_apply_skin_palette
+        self._on_harden_armor = on_harden_armor
+        self._on_lightweight_armor = on_lightweight_armor
         self._latest_health_issues: List[HealthIssue] = []
+        self._latest_analytics_result: Optional[BlueprintAnalyticsResult] = None
+        self._latest_structure: Optional[MultiGridStructure] = None
 
         # PB Doctor active data
         self._pb_scripts: List[ExtractedPBScript] = []
@@ -92,25 +105,14 @@ class PreviewPanel(ctk.CTkFrame):
 
         self._build_intel_tab()
         self._build_selective_tab()
+        self._build_survival_tab()
+        self._build_fleet_tab()
         self._build_xml_tab()
         self._build_preview_tab()
         self._build_analytics_tab()
         self._build_pb_doctor_tab()
         self._build_subgrids_tab()
         self._build_se2_tab()
-
-    def _build_selective_tab(self):
-        self.tab_selective = self.tabview.add("SELECTIVE EXCHANGE")
-        self.tab_selective.configure(fg_color=TacticalTheme.BG_DARK)
-        self.selective_panel = SelectiveExchangePanel(
-            self.tab_selective,
-            on_selective_convert=self._on_selective_convert_clicked,
-        )
-        self.selective_panel.pack(fill="both", expand=True, padx=2, pady=2)
-
-    def _on_selective_convert_clicked(self, custom_mapping: Dict[str, str], selected_subtypes: Set[str]):
-        if self._on_selective_convert:
-            self._on_selective_convert(custom_mapping, selected_subtypes)
 
     def _build_intel_tab(self):
         self.tab_intel = self.tabview.add("INTEL")
@@ -145,6 +147,489 @@ class PreviewPanel(ctk.CTkFrame):
             anchor="w",
         )
         self.intel_text.pack(fill="both", expand=True, padx=16, pady=14)
+
+    def _build_selective_tab(self):
+        self.tab_selective = self.tabview.add("SELECTIVE EXCHANGE")
+        self.tab_selective.configure(fg_color=TacticalTheme.BG_DARK)
+        self.selective_panel = SelectiveExchangePanel(
+            self.tab_selective,
+            on_selective_convert=self._on_selective_convert_clicked,
+        )
+        self.selective_panel.pack(fill="both", expand=True, padx=2, pady=2)
+
+    def _on_selective_convert_clicked(self, custom_mapping: Dict[str, str], selected_subtypes: Set[str]):
+        if self._on_selective_convert:
+            self._on_selective_convert(custom_mapping, selected_subtypes)
+
+    def _build_survival_tab(self):
+        self.tab_survival = self.tabview.add("SURVIVAL & BOM")
+        self.tab_survival.configure(fg_color=TacticalTheme.BG_DARK)
+
+        container = ctk.CTkFrame(self.tab_survival, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=8, pady=8)
+        container.columnconfigure(0, weight=1, minsize=380)
+        container.columnconfigure(1, weight=1, minsize=420)
+        container.rowconfigure(0, weight=1)
+
+        # --- LEFT PANE: Subgrid Projector Decomposer ---
+        left_pane = ctk.CTkFrame(
+            container,
+            fg_color=TacticalTheme.BG_CARD,
+            border_width=1,
+            border_color=TacticalTheme.BORDER_SUBTLE,
+            corner_radius=6,
+        )
+        left_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+
+        ctk.CTkLabel(
+            left_pane,
+            text="PROJECTOR SUBGRID DECOMPOSER",
+            font=TacticalTheme.FONT_LARGE,
+            text_color=TacticalTheme.ORANGE_PRIMARY,
+        ).pack(anchor="w", padx=12, pady=(10, 4))
+
+        self.survival_subgrid_status = ctk.CTkLabel(
+            left_pane,
+            text="Multi-Grid Status: Select blueprint to analyze",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.TEXT_CYAN,
+        )
+        self.survival_subgrid_status.pack(anchor="w", padx=12, pady=(0, 6))
+
+        btn_bar = ctk.CTkFrame(left_pane, fg_color="transparent")
+        btn_bar.pack(fill="x", padx=10, pady=(0, 8))
+
+        self.btn_split_subgrids = ctk.CTkButton(
+            btn_bar,
+            text="🚀 SPLIT FOR PROJECTOR PRINTING",
+            font=TacticalTheme.FONT_NORMAL,
+            fg_color=TacticalTheme.ORANGE_PRIMARY,
+            hover_color=TacticalTheme.ORANGE_DIM,
+            text_color=TacticalTheme.BG_DARK,
+            height=32,
+            command=self._on_split_subgrids_clicked,
+        )
+        self.btn_split_subgrids.pack(side="left", fill="x", expand=True)
+
+        self.survival_splitter_textbox = ctk.CTkTextbox(
+            left_pane,
+            font=TacticalTheme.FONT_CODE_SMALL,
+            text_color=TacticalTheme.TEXT_WHITE,
+            fg_color="#080e1a",
+            border_width=1,
+            border_color=TacticalTheme.CYAN_DIM,
+            corner_radius=4,
+        )
+        self.survival_splitter_textbox.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self._set_textbox_content(
+            self.survival_splitter_textbox,
+            "In Space Engineers survival mode, standard projector blocks cannot weld subgrids\n"
+            "(rotors, hinges, pistons, turrets).\n\n"
+            "Click 'SPLIT FOR PROJECTOR PRINTING' to automatically break this vessel into\n"
+            "standalone printable modules with step-by-step assembly sequence guides!"
+        )
+
+        # --- RIGHT PANE: Survival Bill of Materials & LCD Exporter ---
+        right_pane = ctk.CTkFrame(
+            container,
+            fg_color=TacticalTheme.BG_CARD,
+            border_width=1,
+            border_color=TacticalTheme.BORDER_SUBTLE,
+            corner_radius=6,
+        )
+        right_pane.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+
+        right_top = ctk.CTkFrame(right_pane, fg_color="transparent")
+        right_top.pack(fill="x", padx=12, pady=(10, 4))
+
+        ctk.CTkLabel(
+            right_top,
+            text="SURVIVAL BILL OF MATERIALS (BOM)",
+            font=TacticalTheme.FONT_LARGE,
+            text_color=TacticalTheme.CYAN_PRIMARY,
+        ).pack(side="left")
+
+        # Action Buttons
+        right_btns = ctk.CTkFrame(right_pane, fg_color="transparent")
+        right_btns.pack(fill="x", padx=10, pady=(0, 6))
+
+        self.btn_copy_tim = ctk.CTkButton(
+            right_btns,
+            text="📋 COPY TIM LCD",
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_GLASS,
+            hover_color=TacticalTheme.CYAN_DIM,
+            text_color=TacticalTheme.TEXT_CYAN,
+            height=28,
+            command=self._copy_tim_config,
+        )
+        self.btn_copy_tim.pack(side="left", padx=2)
+
+        self.btn_copy_isy = ctk.CTkButton(
+            right_btns,
+            text="📋 COPY ISY (IIM)",
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_GLASS,
+            hover_color=TacticalTheme.CYAN_DIM,
+            text_color=TacticalTheme.TEXT_CYAN,
+            height=28,
+            command=self._copy_isy_config,
+        )
+        self.btn_copy_isy.pack(side="left", padx=2)
+
+        self.btn_export_bom = ctk.CTkButton(
+            right_btns,
+            text="💾 EXPORT BOM (.MD)",
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_GLASS,
+            hover_color=TacticalTheme.CYAN_DIM,
+            text_color=TacticalTheme.TEXT_CYAN,
+            height=28,
+            command=self._export_bom_report,
+        )
+        self.btn_export_bom.pack(side="left", padx=2)
+
+        self.survival_bom_textbox = ctk.CTkTextbox(
+            right_pane,
+            font=TacticalTheme.FONT_CODE_SMALL,
+            text_color="#a5f3fc",
+            fg_color="#080e1a",
+            border_width=1,
+            border_color=TacticalTheme.CYAN_DIM,
+            corner_radius=4,
+        )
+        self.survival_bom_textbox.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self._set_textbox_content(
+            self.survival_bom_textbox,
+            "Select a blueprint to calculate raw ore extraction demands, ingot refining times,\n"
+            "and export automated inventory manager LCD scripts."
+        )
+
+    def _build_fleet_tab(self):
+        self.tab_fleet = self.tabview.add("FLEET & HARDENING")
+        self.tab_fleet.configure(fg_color=TacticalTheme.BG_DARK)
+
+        container = ctk.CTkFrame(self.tab_fleet, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=8, pady=8)
+        container.columnconfigure(0, weight=1, minsize=380)
+        container.columnconfigure(1, weight=1, minsize=420)
+        container.rowconfigure(0, weight=1)
+
+        # --- LEFT PANE: Batch Armor Reskinning & Color Palette ---
+        left_pane = ctk.CTkFrame(
+            container,
+            fg_color=TacticalTheme.BG_CARD,
+            border_width=1,
+            border_color=TacticalTheme.BORDER_SUBTLE,
+            corner_radius=6,
+        )
+        left_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+
+        ctk.CTkLabel(
+            left_pane,
+            text="ARMOR SKIN & PALETTE SWAPPER",
+            font=TacticalTheme.FONT_LARGE,
+            text_color=TacticalTheme.ORANGE_PRIMARY,
+        ).pack(anchor="w", padx=12, pady=(10, 4))
+
+        # Skin picker row
+        skin_row = ctk.CTkFrame(left_pane, fg_color="transparent")
+        skin_row.pack(fill="x", padx=12, pady=4)
+
+        ctk.CTkLabel(
+            skin_row,
+            text="TARGET SKIN:",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.TEXT_GRAY,
+            width=90,
+            anchor="w",
+        ).pack(side="left")
+
+        skin_options = [f"{v.display_name} ({k})" for k, v in OFFICIAL_SKINS.items()]
+        self.skin_var = ctk.StringVar(value="Clean Armor (Clean_Armor)")
+        self.skin_menu = ctk.CTkOptionMenu(
+            skin_row,
+            values=skin_options,
+            variable=self.skin_var,
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_DARK,
+            button_color=TacticalTheme.BG_MEDIUM,
+            button_hover_color=TacticalTheme.CYAN_DIM,
+            text_color=TacticalTheme.TEXT_WHITE,
+        )
+        self.skin_menu.pack(side="left", fill="x", expand=True)
+
+        # Primary Hex Color
+        color_row = ctk.CTkFrame(left_pane, fg_color="transparent")
+        color_row.pack(fill="x", padx=12, pady=4)
+
+        ctk.CTkLabel(
+            color_row,
+            text="PRIMARY HEX:",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.TEXT_GRAY,
+            width=90,
+            anchor="w",
+        ).pack(side="left")
+
+        self.color_hex_var = ctk.StringVar(value="#0284c7")
+        self.color_hex_entry = ctk.CTkEntry(
+            color_row,
+            textvariable=self.color_hex_var,
+            font=TacticalTheme.FONT_CODE,
+            fg_color=TacticalTheme.BG_DARK,
+            text_color=TacticalTheme.TEXT_CYAN,
+            border_color=TacticalTheme.CYAN_DIM,
+            width=120,
+        )
+        self.color_hex_entry.pack(side="left", padx=(0, 8))
+
+        # Quick Swatches
+        swatches = [
+            ("Tactical Blue", "#0284c7"),
+            ("Stealth Black", "#0f172a"),
+            ("Combat Red", "#dc2626"),
+            ("Hazard Yellow", "#eab308"),
+            ("Titanium", "#f8fafc"),
+        ]
+        for sname, shex in swatches:
+            btn = ctk.CTkButton(
+                color_row,
+                text="",
+                width=22,
+                height=22,
+                corner_radius=4,
+                fg_color=shex,
+                hover_color="#ffffff",
+                command=lambda h=shex: self.color_hex_var.set(h),
+            )
+            btn.pack(side="left", padx=2)
+
+        self.armor_only_var = ctk.BooleanVar(value=True)
+        self.armor_only_chk = ctk.CTkCheckBox(
+            left_pane,
+            text="Apply to Armor Blocks Only (Preserve internal functional colors)",
+            variable=self.armor_only_var,
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.TEXT_WHITE,
+            fg_color=TacticalTheme.CYAN_PRIMARY,
+            hover_color=TacticalTheme.CYAN_DIM,
+        )
+        self.armor_only_chk.pack(anchor="w", padx=12, pady=6)
+
+        self.btn_apply_skin = ctk.CTkButton(
+            left_pane,
+            text="🎨 APPLY BATCH RESKIN & PALETTE",
+            font=TacticalTheme.FONT_NORMAL,
+            fg_color=TacticalTheme.CYAN_PRIMARY,
+            hover_color=TacticalTheme.CYAN_DIM,
+            text_color=TacticalTheme.BG_DARK,
+            height=32,
+            command=self._on_apply_skin_palette_clicked,
+        )
+        self.btn_apply_skin.pack(fill="x", padx=12, pady=(4, 10))
+
+        self.skin_log_textbox = ctk.CTkTextbox(
+            left_pane,
+            font=TacticalTheme.FONT_CODE_SMALL,
+            text_color=TacticalTheme.TEXT_WHITE,
+            fg_color="#080e1a",
+            border_width=1,
+            border_color=TacticalTheme.CYAN_DIM,
+            corner_radius=4,
+        )
+        self.skin_log_textbox.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self._set_textbox_content(
+            self.skin_log_textbox,
+            "1-Click Fleet Reskinning:\n"
+            "Select any official Space Engineers armor texture or custom RGB/HSV palette\n"
+            "to reskin and recolor whole fleets in seconds without tedious in-game painting."
+        )
+
+        # --- RIGHT PANE: Combat Armor Hardening & Lightweighting ---
+        right_pane = ctk.CTkFrame(
+            container,
+            fg_color=TacticalTheme.BG_CARD,
+            border_width=1,
+            border_color=TacticalTheme.BORDER_SUBTLE,
+            corner_radius=6,
+        )
+        right_pane.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+
+        ctk.CTkLabel(
+            right_pane,
+            text="CORE HARDENING & LIGHTWEIGHTING WIZARD",
+            font=TacticalTheme.FONT_LARGE,
+            text_color=TacticalTheme.ORANGE_PRIMARY,
+        ).pack(anchor="w", padx=12, pady=(10, 4))
+
+        radius_row = ctk.CTkFrame(right_pane, fg_color="transparent")
+        radius_row.pack(fill="x", padx=12, pady=4)
+
+        ctk.CTkLabel(
+            radius_row,
+            text="REINFORCE RADIUS:",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.TEXT_GRAY,
+            width=130,
+            anchor="w",
+        ).pack(side="left")
+
+        self.radius_slider = ctk.CTkSlider(
+            radius_row,
+            from_=1,
+            to=5,
+            number_of_steps=4,
+            width=160,
+            command=lambda v: self.radius_val_lbl.configure(text=f"{int(v)} BLOCKS"),
+        )
+        self.radius_slider.set(2)
+        self.radius_slider.pack(side="left", padx=4)
+
+        self.radius_val_lbl = ctk.CTkLabel(
+            radius_row,
+            text="2 BLOCKS",
+            font=TacticalTheme.FONT_NORMAL,
+            text_color=TacticalTheme.TEXT_CYAN,
+        )
+        self.radius_val_lbl.pack(side="left", padx=6)
+
+        action_row = ctk.CTkFrame(right_pane, fg_color="transparent")
+        action_row.pack(fill="x", padx=12, pady=6)
+        action_row.columnconfigure(0, weight=1)
+        action_row.columnconfigure(1, weight=1)
+
+        self.btn_harden_cores = ctk.CTkButton(
+            action_row,
+            text="🛡️ HARDEN VITAL CORES",
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.ORANGE_PRIMARY,
+            hover_color=TacticalTheme.ORANGE_DIM,
+            text_color=TacticalTheme.BG_DARK,
+            height=32,
+            command=self._on_harden_armor_clicked,
+        )
+        self.btn_harden_cores.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        self.btn_lightweight = ctk.CTkButton(
+            action_row,
+            text="⚡ LIGHTWEIGHT OUTER HULL",
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_GLASS,
+            hover_color=TacticalTheme.CYAN_DIM,
+            text_color=TacticalTheme.TEXT_CYAN,
+            height=32,
+            command=self._on_lightweight_armor_clicked,
+        )
+        self.btn_lightweight.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+        self.hardening_log_textbox = ctk.CTkTextbox(
+            right_pane,
+            font=TacticalTheme.FONT_CODE_SMALL,
+            text_color=TacticalTheme.TEXT_WHITE,
+            fg_color="#080e1a",
+            border_width=1,
+            border_color=TacticalTheme.CYAN_DIM,
+            corner_radius=4,
+        )
+        self.hardening_log_textbox.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self._set_textbox_content(
+            self.hardening_log_textbox,
+            "Combat Armor Optimization:\n"
+            "• 'HARDEN VITAL CORES': Automatically detects coordinates of Reactors, Jump Drives,\n"
+            "  Fuel Tanks, and Cockpits, reinforcing surrounding light armor with heavy armor.\n"
+            "• 'LIGHTWEIGHT OUTER HULL': Strips heavy armor from non-vital peripheral areas to\n"
+            "  maximize jump range, thrust acceleration, and maneuverability."
+        )
+
+    def _on_split_subgrids_clicked(self):
+        if self._on_split_subgrids:
+            self._on_split_subgrids()
+
+    def _copy_tim_config(self):
+        if not self._latest_analytics_result:
+            messagebox.showwarning("Survival BOM", "No blueprint loaded to generate TIM config.")
+            return
+        cfg = BlueprintAnalyticsEngine.generate_tim_config(self._latest_analytics_result.component_totals)
+        self.clipboard_clear()
+        self.clipboard_append(cfg)
+        messagebox.showinfo("TIM Config", "TIM Inventory Master LCD config copied to clipboard!")
+
+    def _copy_isy_config(self):
+        if not self._latest_analytics_result:
+            messagebox.showwarning("Survival BOM", "No blueprint loaded to generate Isy config.")
+            return
+        cfg = BlueprintAnalyticsEngine.generate_isy_config(self._latest_analytics_result.component_totals)
+        self.clipboard_clear()
+        self.clipboard_append(cfg)
+        messagebox.showinfo("Isy Config", "Isy's Inventory Manager (IIM) Custom Data config copied to clipboard!")
+
+    def _export_bom_report(self):
+        if not self._latest_analytics_result:
+            messagebox.showwarning("Survival BOM", "No blueprint loaded to export BOM.")
+            return
+        report = BlueprintAnalyticsEngine.generate_survival_bom_report(self._latest_analytics_result)
+        path = filedialog.asksaveasfilename(
+            title="Export Survival Bill of Materials",
+            initialfile=f"BOM_{self._latest_analytics_result.blueprint_name}.md",
+            defaultextension=".md",
+            filetypes=[("Markdown", "*.md"), ("Text", "*.txt"), ("All Files", "*.*")],
+        )
+        if path:
+            try:
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(report)
+                messagebox.showinfo("Export Successful", f"Survival BOM exported to:\n{path}")
+            except Exception as exc:
+                messagebox.showerror("Export Failed", f"Could not save BOM: {exc}")
+
+    def _on_apply_skin_palette_clicked(self):
+        choice = self.skin_var.get()
+        skin_id = "None"
+        for k, v in OFFICIAL_SKINS.items():
+            if k in choice or v.display_name in choice:
+                skin_id = k
+                break
+
+        primary_hex = self.color_hex_var.get().strip()
+        armor_only = self.armor_only_var.get()
+
+        if self._on_apply_skin_palette:
+            self._on_apply_skin_palette(skin_id, primary_hex, None, armor_only)
+
+    def _on_harden_armor_clicked(self):
+        radius = int(self.radius_slider.get())
+        if self._on_harden_armor:
+            self._on_harden_armor(radius)
+
+    def _on_lightweight_armor_clicked(self):
+        radius = int(self.radius_slider.get())
+        if self._on_lightweight_armor:
+            self._on_lightweight_armor(radius)
+
+    def update_survival_bom(self, analytics_result: BlueprintAnalyticsResult, multi_grid_structure: Optional[MultiGridStructure] = None):
+        self._latest_analytics_result = analytics_result
+        self._latest_structure = multi_grid_structure
+
+        if multi_grid_structure:
+            grid_count = multi_grid_structure.total_grids
+            subgrid_count = grid_count - 1
+            if subgrid_count > 0:
+                self.survival_subgrid_status.configure(
+                    text=f"Multi-Grid Status: {grid_count} Grids Detected (1 Main Hull + {subgrid_count} Subgrids)",
+                    text_color=TacticalTheme.ORANGE_PRIMARY,
+                )
+                self.btn_split_subgrids.configure(state="normal")
+            else:
+                self.survival_subgrid_status.configure(
+                    text="Multi-Grid Status: Single Unified Grid (No subgrids detected)",
+                    text_color=TacticalTheme.GREEN_PRIMARY,
+                )
+                self.btn_split_subgrids.configure(state="normal")
+
+        # Populate BOM Textbox
+        bom_text = BlueprintAnalyticsEngine.generate_survival_bom_report(analytics_result)
+        self._set_textbox_content(self.survival_bom_textbox, bom_text)
 
     def _build_xml_tab(self):
         self.tab_xml = self.tabview.add("XML SOURCE")

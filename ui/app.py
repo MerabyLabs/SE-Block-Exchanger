@@ -182,6 +182,10 @@ class TacticalCommandCenter(ctk.CTk):
             on_workshop_sync=self.import_workshop_blueprint,
             on_selective_convert=self.selective_convert_blueprint,
             on_migrate_se2=self.migrate_se2_blueprint,
+            on_split_subgrids=self.split_active_blueprint_subgrids,
+            on_apply_skin_palette=self.apply_active_skin_palette,
+            on_harden_armor=self.harden_active_armor,
+            on_lightweight_armor=self.lightweight_active_armor,
         )
         self.preview_panel.grid(row=0, column=1, sticky="nsew", padx=3)
 
@@ -1069,8 +1073,108 @@ class TacticalCommandCenter(ctk.CTk):
                 matrix = GridMatrixVisualizer.analyze_grid_matrix(bp_file)
                 voxels = GridMatrixVisualizer.extract_all_voxels(bp_file)
                 self.preview_panel.update_subgrids(structure, matrix, voxels=voxels)
+                self.preview_panel.update_survival_bom(analytics, structure)
         except Exception:
             pass
+
+    def split_active_blueprint_subgrids(self):
+        """Splits the active multi-grid blueprint into individual printable sub-blueprints."""
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a multi-grid blueprint first.", level="warning")
+            return
+
+        from subgrid_engine import ProjectorSplitter
+        bp_path = self.selected_blueprint.path
+        result = ProjectorSplitter.split_blueprint(bp_path)
+
+        if not result.success:
+            self.toasts.toast(f"Split Error: {result.error_message}", level="error")
+            return
+
+        if result.total_subgrids <= 1:
+            self.toasts.toast("Single grid detected. No subgrid splitting required.", level="info")
+            return
+
+        self.toasts.toast(
+            f"Successfully generated {result.total_subgrids} printable sub-blueprints!",
+            level="success",
+            duration=5000,
+        )
+
+        # Update preview textbox with assembly guide
+        if hasattr(self.preview_panel, "survival_splitter_textbox"):
+            self.preview_panel._set_textbox_content(
+                self.preview_panel.survival_splitter_textbox,
+                result.assembly_guide_text,
+            )
+
+        # Refresh blueprint library to discover new sub-blueprints
+        self.load_blueprints_async()
+
+    def apply_active_skin_palette(self, skin_id: str, primary_hex: str, secondary_hex: str, armor_only: bool):
+        """Batch applies armor texture skin and HSV color palette across the vessel."""
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+
+        from mappings.skin_palette_engine import SkinPaletteEngine
+        bp_path = self.selected_blueprint.path
+
+        try:
+            reskinned, recolored = SkinPaletteEngine.apply_skin_and_palette(
+                source_bp_path=bp_path,
+                skin_id=skin_id if skin_id != "None" else None,
+                primary_hex=primary_hex,
+                armor_only=armor_only,
+            )
+            self.toasts.toast(
+                f"Reskinned {reskinned:,} blocks, Recolored {recolored:,} blocks!",
+                level="success",
+            )
+            self.load_blueprints_async()
+            self.refresh_analytics_async()
+        except Exception as exc:
+            self.toasts.toast(f"Reskin error: {exc}", level="error")
+
+    def harden_active_armor(self, radius: int):
+        """Reinforces armor surrounding vital reactor/jump/tank cores."""
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+
+        from mappings.armor_hardening import ArmorHardeningEngine
+        bp_path = self.selected_blueprint.path
+
+        try:
+            res = ArmorHardeningEngine.harden_vital_cores(bp_path, reinforce_radius=radius)
+            self.toasts.toast(
+                f"Hardened {res.armor_blocks_hardened:,} armor blocks around {res.critical_cores_found} critical cores!",
+                level="success",
+            )
+            self.load_blueprints_async()
+            self.refresh_analytics_async()
+        except Exception as exc:
+            self.toasts.toast(f"Hardening error: {exc}", level="error")
+
+    def lightweight_active_armor(self, preserve_radius: int):
+        """Lightweights peripheral non-vital armor to maximize jump range and acceleration."""
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+
+        from mappings.armor_hardening import ArmorHardeningEngine
+        bp_path = self.selected_blueprint.path
+
+        try:
+            res = ArmorHardeningEngine.lightweight_outer_hull(bp_path, preserve_radius=preserve_radius)
+            self.toasts.toast(
+                f"Lightened {res.armor_blocks_lightened:,} non-vital armor blocks!",
+                level="success",
+            )
+            self.load_blueprints_async()
+            self.refresh_analytics_async()
+        except Exception as exc:
+            self.toasts.toast(f"Lightweight error: {exc}", level="error")
 
     def export_comparison_csv(self):
         if not self._latest_comparison:

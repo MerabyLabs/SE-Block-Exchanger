@@ -588,3 +588,85 @@ class BlueprintAnalyticsEngine:
         if max(counts) / min(counts) >= 2.5:
             return "Thruster distribution appears heavily unbalanced across directions."
         return None
+
+    @staticmethod
+    def calculate_refining_time(ore_totals: Dict[str, float], refinery_speed_mult: float = 1.0) -> Dict[str, float]:
+        """
+        Calculates required refining time in seconds for each ore type based on vanilla Space Engineers
+        standard refinery throughput rates (kg/s).
+        """
+        # Vanilla base processing rates (kg/s)
+        ORE_RATES = {
+            "iron": 20.0,
+            "nickel": 2.0,
+            "silicon": 5.0,
+            "cobalt": 0.3,
+            "magnesium": 0.14,
+            "silver": 0.1,
+            "gold": 0.08,
+            "platinum": 0.005,
+            "uranium": 0.004,
+            "stone": 20.0,
+        }
+        mult = max(0.1, refinery_speed_mult)
+        times: Dict[str, float] = {}
+        for ore, amount in ore_totals.items():
+            rate = ORE_RATES.get(ore.lower(), 1.0) * mult
+            times[ore] = round(amount / rate, 1) if rate > 0 else 0.0
+        return times
+
+    @staticmethod
+    def generate_tim_config(component_totals: Dict[str, int]) -> str:
+        """Generates configuration string for TIM (Taleden's Inventory Master) LCD displays."""
+        lines = ["// TIM Inventory Master Autocrafting Target List"]
+        lines.append("!TIM-CLEAR")
+        for comp, count in sorted(component_totals.items()):
+            lines.append(f"Component:{comp.replace(' ', '')}:{count}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def generate_isy_config(component_totals: Dict[str, int]) -> str:
+        """Generates configuration string for Isy's Inventory Manager autocrafting."""
+        lines = ["// Isy's Inventory Manager (IIM) Autocrafting Targets", "// Paste into Custom Data of your Autocrafting LCD"]
+        lines.append("[Autocrafting]")
+        for comp, count in sorted(component_totals.items()):
+            lines.append(f"{comp}={count}")
+        return "\n".join(lines)
+
+    @classmethod
+    def generate_survival_bom_report(cls, result: BlueprintAnalyticsResult) -> str:
+        """Generates a rich, structured Bill of Materials markdown document for survival shipyards."""
+        refining_times = cls.calculate_refining_time(result.ore_totals)
+        total_refine_sec = sum(refining_times.values())
+        hours = int(total_refine_sec // 3600)
+        minutes = int((total_refine_sec % 3600) // 60)
+
+        lines = [
+            f"# 🏗️ SURVIVAL BILL OF MATERIALS: {result.blueprint_name.upper()}",
+            f"**Total Blocks**: {result.block_count:,} | **PCU**: {result.pcu_total:,} | **Dry Mass**: {result.mass_total:,.1f} kg",
+            f"**Est. Total Single-Refinery Refining Time**: {hours}h {minutes}m ({total_refine_sec:,.0f}s)",
+            "",
+            "## ⛏️ RAW ORE EXTRACTION REQUIREMENTS",
+            "| Ore Type | Required Ingot (kg) | Estimated Raw Ore Needed (kg) | Refine Time (1x) |",
+            "| :--- | :--- | :--- | :--- |",
+        ]
+
+        for ore, amount in sorted(result.ore_totals.items()):
+            ingot_val = result.ingot_totals.get(ore, 0.0)
+            sec = refining_times.get(ore, 0.0)
+            m = int(sec // 60)
+            s = int(sec % 60)
+            t_str = f"{m}m {s}s" if m < 60 else f"{m//60}h {m%60}m"
+            lines.append(f"| **{ore.capitalize()}** | {ingot_val:,.1f} kg | **{amount:,.1f} kg** | {t_str} |")
+
+        lines.extend([
+            "",
+            "## 📦 FABRICATED COMPONENT CHECKLIST",
+            "| Component | Quantity Needed |",
+            "| :--- | :--- |",
+        ])
+
+        for comp, qty in sorted(result.component_totals.items(), key=lambda x: x[1], reverse=True):
+            lines.append(f"| {comp} | **{qty:,}** |")
+
+        return "\n".join(lines)
