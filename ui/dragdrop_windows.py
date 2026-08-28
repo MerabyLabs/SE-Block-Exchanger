@@ -7,6 +7,16 @@ from __future__ import annotations
 import sys
 from typing import Callable, List
 
+# Keep message ids at module level so close handling never depends on a
+# Windows-only import succeeding partway through subclassing.
+WM_DESTROY = 0x0002
+WM_CLOSE = 0x0010
+WM_SYSCOMMAND = 0x0112
+WM_DROPFILES = 0x0233
+SC_CLOSE = 0xF060
+GWLP_WNDPROC = -4
+GA_ROOT = 2
+
 
 if sys.platform.startswith("win"):
     import ctypes
@@ -14,11 +24,6 @@ if sys.platform.startswith("win"):
 
     user32 = ctypes.windll.user32
     shell32 = ctypes.windll.shell32
-
-    WM_DROPFILES = 0x0233
-    WM_CLOSE = 0x0010
-    WM_DESTROY = 0x0002
-    GWLP_WNDPROC = -4
     LONG_PTR = ctypes.c_ssize_t
     WNDPROC = ctypes.WINFUNCTYPE(
         LONG_PTR,
@@ -27,6 +32,15 @@ if sys.platform.startswith("win"):
         wintypes.WPARAM,
         wintypes.LPARAM,
     )
+
+
+def _is_close_message(msg: int, wparam: int) -> bool:
+    """True for the messages the title-bar X / Alt+F4 send on Windows."""
+    if msg == WM_CLOSE:
+        return True
+    if msg == WM_SYSCOMMAND and (int(wparam) & 0xFFF0) == SC_CLOSE:
+        return True
+    return False
 
 
 class WindowsFileDropTarget:
@@ -45,52 +59,73 @@ class WindowsFileDropTarget:
             return False
         if self.enabled:
             return True
-        self._hwnd = self.tk_window.winfo_id()
-        if not self._hwnd:
+        hwnd = self._resolve_hwnd()
+        if not hwnd:
             return False
 
+        self._hwnd = hwnd
         self._wndproc = WNDPROC(self._handle_window_message)
-        self._old_wndproc = user32.SetWindowLongPtrW(self._hwnd, GWLP_WNDPROC, self._wndproc)
+        previous = user32.SetWindowLongPtrW(self._hwnd, GWLP_WNDPROC, self._wndproc)
+        if not previous:
+            # Subclassing failed or there is no previous proc. Do not leave a
+            # window with a Python WndProc and nothing to forward close/paint to.
+            self._wndproc = None
+            self._hwnd = None
+            return False
+        self._old_wndproc = previous
         shell32.DragAcceptFiles(self._hwnd, True)
         self.enabled = True
         return True
+
+    def _resolve_hwnd(self) -> int:
+        hwnd = int(self.tk_window.winfo_id() or 0)
+        if not hwnd:
+            return 0
+        try:
+            root = int(user32.GetAncestor(hwnd, GA_ROOT) or 0)
+        except Exception:
+            root = 0
+        return root or hwnd
 
     def disable(self):
         if not self.enabled or not sys.platform.startswith("win"):
             return
         try:
             shell32.DragAcceptFiles(self._hwnd, False)
-            if self._old_wndproc:
+            if self._old_wndproc and self._hwnd:
                 user32.SetWindowLongPtrW(self._hwnd, GWLP_WNDPROC, self._old_wndproc)
         finally:
             self.enabled = False
             self._old_wndproc = None
             self._wndproc = None
+            self._hwnd = None
 
-    def _handle_window_message(self, hwnd, msg, wparam, lparam):
-        if msg == WM_DROPFILES:
-            files = self._extract_drop_files(wparam)
-            if files:
-                self.on_files(files)
-            return 0
-        if msg == WM_CLOSE:
-            try:
-                closer = getattr(self.tk_window, "_on_close", None)
-                if callable(closer):
-                    self.tk_window.after(0, closer)
-                else:
-                    self.tk_window.after(0, self.tk_window.destroy)
-            except Exception:
-                pass
-            return 0
-        if msg == WM_DESTROY:
-            try:
-                self.disable()
-            except Exception:
-                pass
+    def _forward(self, hwnd, msg, wparam, lparam):
         if self._old_wndproc:
             return user32.CallWindowProcW(self._old_wndproc, hwnd, msg, wparam, lparam)
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _handle_window_message(self, hwnd, msg, wparam, lparam):
+        # Never swallow close. The previous handler returned 0 for WM_CLOSE,
+        # which made the Windows title-bar X do nothing.
+        if _is_close_message(msg, wparam):
+            return self._forward(hwnd, msg, wparam, lparam)
+        if msg == WM_DROPFILES:
+            files = self._extract_drop_files(wparam)
+            if files:
+                try:
+                    self.on_files(files)
+                except Exception:
+                    pass
+            return 0
+        if msg == WM_DESTROY:
+            result = self._forward(hwnd, msg, wparam, lparam)
+            self.enabled = False
+            self._old_wndproc = None
+            self._wndproc = None
+            self._hwnd = None
+            return result
+        return self._forward(hwnd, msg, wparam, lparam)
 
     @staticmethod
     def _extract_drop_files(hdrop) -> List[str]:

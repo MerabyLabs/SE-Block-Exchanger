@@ -203,6 +203,12 @@ class TacticalCommandCenter(ctk.CTk):
         import tkinter as tk
 
         menubar = tk.Menu(self)
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Open folder…", command=self.browse_blueprint_dir, accelerator="Ctrl+O")
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close, accelerator="Alt+F4")
+        menubar.add_cascade(label="File", menu=file_menu)
+
         help_menu = tk.Menu(menubar, tearoff=0)
         self._auto_update_var = tk.BooleanVar(value=self.settings.auto_check_updates)
         help_menu.add_checkbutton(
@@ -230,6 +236,7 @@ class TacticalCommandCenter(ctk.CTk):
         self.bind_all("<Control-o>", lambda event: self.browse_blueprint_dir())
         self.bind_all("<Control-r>", lambda event: self.convert_blueprint())
         self.bind_all("<Control-z>", lambda event: self.undo_last_conversion())
+        self.bind_all("<Alt-F4>", lambda event: self._on_close())
 
     def _setup_drag_drop(self):
         self._drop_target = WindowsFileDropTarget(self, self._handle_dropped_paths)
@@ -965,8 +972,10 @@ class TacticalCommandCenter(ctk.CTk):
             pass
 
     def _on_close(self):
+        import tkinter as tk
+
         if self._closing:
-            return
+            os._exit(0)
         self._closing = True
         self._inspect_generation += 1
         for attr in ("_rescan_after_id", "_preview_after_id"):
@@ -986,32 +995,50 @@ class TacticalCommandCenter(ctk.CTk):
         except Exception:
             pass
         try:
-            self._drop_target.disable()
-        except Exception:
-            pass
-        try:
             if self._profile_editor is not None and self._profile_editor.winfo_exists():
                 self._profile_editor.grab_release()
                 self._profile_editor.destroy()
         except Exception:
             pass
         try:
-            self.quit()
+            for widget in list(self.winfo_children()):
+                if isinstance(widget, (ctk.CTkToplevel, tk.Toplevel)):
+                    try:
+                        widget.destroy()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            self._drop_target.disable()
         except Exception:
             pass
         try:
             self.destroy()
         except Exception:
             pass
+        os._exit(0)
 
 
 def main():
+    app = None
     try:
         app = TacticalCommandCenter()
         app.mainloop()
     except Exception as exc:
-        messagebox.showerror("Fatal Error", f"Application failed to start:\n{exc}")
-        sys.exit(1)
+        try:
+            messagebox.showerror("Fatal Error", f"Application failed to start:\n{exc}")
+        except Exception:
+            pass
+        os._exit(1)
+    finally:
+        if app is not None:
+            try:
+                if not getattr(app, "_closing", False):
+                    app.destroy()
+            except Exception:
+                pass
+        os._exit(0)
 
 if __name__ == "__main__":
     main()
