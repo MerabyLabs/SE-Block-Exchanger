@@ -20,7 +20,6 @@ class GridHierarchyView(ctk.CTkFrame):
         self._hit_rows = []
         self._structure = None
         self._last_width = 0
-
         self.canvas = tk.Canvas(
             self,
             bg="#0c1220",
@@ -32,14 +31,13 @@ class GridHierarchyView(ctk.CTkFrame):
         self.canvas.configure(yscrollcommand=scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-
         self.canvas.bind("<Button-1>", self._on_click)
         self.canvas.bind("<Configure>", self._on_configure)
-        self.canvas.bind("<Map>", lambda _e: self._draw())
+        self.canvas.bind("<Map>", lambda _e: self._paint_tree())
 
     def render(self, structure: Optional[MultiGridStructure]) -> None:
         self._structure = structure
-        self._draw()
+        self._paint_tree()
 
     def _on_configure(self, event) -> None:
         if event.width <= 20:
@@ -48,9 +46,11 @@ class GridHierarchyView(ctk.CTkFrame):
             self.canvas.configure(scrollregion=self.canvas.bbox("all") or (0, 0, 0, 0))
             return
         self._last_width = event.width
-        self._draw()
+        self._paint_tree()
 
-    def _draw(self) -> None:
+    def _paint_tree(self) -> None:
+        if not hasattr(self, "canvas"):
+            return
         self.canvas.delete("all")
         self._hit_rows = []
         width = max(self.canvas.winfo_width(), 240)
@@ -89,7 +89,7 @@ class GridHierarchyView(ctk.CTkFrame):
         self.canvas.configure(scrollregion=(0, 0, width, y + 16))
 
     def _draw_node(self, node: SubgridNode, depth: int, y: int, width: int, is_last: bool) -> int:
-        connector = "Main" if depth == 0 and node.is_main_grid else ("└" if is_last else "├")
+        connector = "Main" if depth == 0 and node.is_main_grid else "↳"
         title = f"{connector}  {node.grid_name}"
         extra = f" via {node.attachment_via}" if node.attachment_via else ""
         subtitle = f"{node.grid_size} grid  ·  {node.block_count:,} blocks{extra}"
