@@ -136,3 +136,9 @@ class ToastManager:
             self._toasts.remove(toast)
         if not self._toasts:
             self._container.place_forget()
+
+    def dismiss_all(self) -> None:
+        for toast in list(self._toasts):
+            toast.dismiss()
+        self._toasts.clear()
+        self._container.place_forget()

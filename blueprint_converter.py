@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
+from mappings import MappingRegistry
 from se_armor_replacer import ArmorBlockReplacer
 
 
@@ -25,6 +26,7 @@ class BlueprintConverter:
         enabled_categories: Optional[Sequence[str]] = None,
         include_profiles: bool = True,
         profile_dir: Path = Path("profiles"),
+        registry: Optional[MappingRegistry] = None,
     ):
         self.verbose = verbose
         self.reverse = reverse
@@ -33,6 +35,7 @@ class BlueprintConverter:
             verbose=verbose,
             reverse=reverse,
             enabled_categories=self.enabled_categories,
+            registry=registry,
             include_profiles=include_profiles,
             profile_dir=profile_dir,
         )

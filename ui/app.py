@@ -57,6 +57,7 @@ class TacticalCommandCenter(ctk.CTk):
         self.geometry("1360x900")
         self.configure(fg_color=TacticalTheme.BG_DARK)
         self.minsize(1080, 700)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._set_icon()
 
         self.profile_manager = ProfileManager(Path("profiles"))
@@ -89,6 +90,7 @@ class TacticalCommandCenter(ctk.CTk):
         self._rescan_after_id = None
         self._preview_after_id = None
         self._inspect_generation = 0
+        self._closing = False
 
         self._build_ui()
         self.toasts = ToastManager(self)
@@ -119,8 +121,8 @@ class TacticalCommandCenter(ctk.CTk):
             verbose=False,
             reverse=(self.conversion_mode == "heavy_to_light"),
             enabled_categories=self.enabled_categories,
-            include_profiles=True,
-            profile_dir=Path("profiles"),
+            include_profiles=False,
+            registry=self.registry,
         )
 
     def _resolve_enabled_categories(self, requested: List[str]) -> List[str]:
@@ -301,7 +303,7 @@ class TacticalCommandCenter(ctk.CTk):
         def task():
             try:
                 info = self.update_checker.check_for_updates(force=False)
-                self.after(0, lambda: self._on_update_checked(info))
+                self._ui(lambda: self._on_update_checked(info))
             except Exception:
                 pass
 
@@ -385,12 +387,12 @@ class TacticalCommandCenter(ctk.CTk):
             try:
                 scan_dir = self.custom_blueprint_dir or None
                 self.blueprints = self.scanner.scan_blueprints(scan_dir)
-                self.after(0, self._on_blueprints_loaded)
+                self._ui(self._on_blueprints_loaded)
             except FileNotFoundError:
-                self.after(0, self._on_scan_not_found)
+                self._ui(self._on_scan_not_found)
             except Exception as exc:
                 error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._show_error(f"Scan failed: {msg}"))
+                self._ui(lambda msg=error_message: self._show_error(f"Scan failed: {msg}"))
 
         threading.Thread(target=load_task, daemon=True).start()
 
@@ -465,9 +467,6 @@ class TacticalCommandCenter(ctk.CTk):
         self.scanner.set_reverse(mode == "heavy_to_light")
         self.converter = self._build_converter()
         if self.selected_blueprint:
-            bp_file = self.selected_blueprint.path / "bp.sbc"
-            if bp_file.exists():
-                self.selected_blueprint = self.scanner.parse_folder(self.selected_blueprint.path)
             self.preview_panel.update_intel(self.selected_blueprint, mode)
             self._inspect_blueprint_async()
         self._update_convert_state()
@@ -509,7 +508,15 @@ class TacticalCommandCenter(ctk.CTk):
         self._inspect_blueprint_async()
 
     def _inspect_blueprint_async(self):
-        if not self.selected_blueprint:
+        if not self.selected_blueprint or self._closing:
+            return
+        if self._preview_after_id is not None:
+            self.after_cancel(self._preview_after_id)
+        self._preview_after_id = self.after(90, self._run_inspect_now)
+
+    def _run_inspect_now(self):
+        self._preview_after_id = None
+        if not self.selected_blueprint or self._closing:
             return
         self._inspect_generation += 1
         generation = self._inspect_generation
@@ -545,8 +552,7 @@ class TacticalCommandCenter(ctk.CTk):
                 root = tree.getroot()
                 structure = SubgridHierarchyParser.parse_element(root)
                 voxels = GridMatrixVisualizer.extract_voxels_from_root(root)
-                self.after(
-                    0,
+                self._ui(
                     lambda: self._on_inspect_ready(
                         generation,
                         bp,
@@ -557,14 +563,11 @@ class TacticalCommandCenter(ctk.CTk):
                         comparison,
                         structure,
                         voxels,
-                    ),
+                    )
                 )
             except Exception as exc:
                 error_message = str(exc)
-                self.after(
-                    0,
-                    lambda msg=error_message: self._on_inspect_error(generation, msg),
-                )
+                self._ui(lambda msg=error_message: self._on_inspect_error(generation, msg))
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -580,7 +583,7 @@ class TacticalCommandCenter(ctk.CTk):
         structure,
         voxels,
     ):
-        if generation != self._inspect_generation:
+        if self._closing or generation != self._inspect_generation:
             return
         if not self.selected_blueprint or self.selected_blueprint.path != bp.path:
             return
@@ -596,7 +599,7 @@ class TacticalCommandCenter(ctk.CTk):
         self.preview_panel.load_xml(bp.path / "bp.sbc", f"Source: {bp.name}")
 
     def _on_inspect_error(self, generation: int, message: str):
-        if generation != self._inspect_generation:
+        if self._closing or generation != self._inspect_generation:
             return
         self._show_error(f"Preview failed: {message}")
 
@@ -628,10 +631,10 @@ class TacticalCommandCenter(ctk.CTk):
         def task():
             try:
                 dest, scanned, converted = self.converter.create_converted_blueprint(bp.path)
-                self.after(0, lambda: self._on_conversion_complete(dest, scanned, converted))
+                self._ui(lambda: self._on_conversion_complete(dest, scanned, converted))
             except Exception as exc:
                 error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
+                self._ui(lambda msg=error_message: self._on_conversion_error(msg))
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -645,7 +648,6 @@ class TacticalCommandCenter(ctk.CTk):
         self._update_convert_state()
 
         self.preview_panel.load_xml(dest_path / "bp.sbc", f"Converted: {dest_path.name}")
-        self.preview_panel.switch_to_xml()
         self.toasts.toast(
             f"Created {dest_path.name} with {converted} block(s) converted.",
             level="success",
@@ -682,17 +684,17 @@ class TacticalCommandCenter(ctk.CTk):
             verbose=False,
             reverse=False,
             enabled_categories=["dlc_substitution"],
-            include_profiles=True,
-            profile_dir=Path("profiles"),
+            include_profiles=False,
+            registry=self.registry,
         )
 
         def task():
             try:
                 dest, scanned, converted = dlc_converter.create_converted_blueprint(bp.path)
-                self.after(0, lambda: self._on_vanillafy_complete(dest, scanned, converted))
+                self._ui(lambda: self._on_vanillafy_complete(dest, scanned, converted))
             except Exception as exc:
                 error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
+                self._ui(lambda msg=error_message: self._on_conversion_error(msg))
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -706,7 +708,6 @@ class TacticalCommandCenter(ctk.CTk):
         self._update_convert_state()
 
         self.preview_panel.load_xml(dest_path / "bp.sbc", f"Vanilla copy: {dest_path.name}")
-        self.preview_panel.switch_to_xml()
         self.toasts.toast(
             f"Created {dest_path.name} with {converted} DLC block(s) replaced.",
             level="success",
@@ -739,10 +740,10 @@ class TacticalCommandCenter(ctk.CTk):
         def task():
             try:
                 dest, scanned, converted = self.converter.scale_grid_size(bp.path, suggested_grid)
-                self.after(0, lambda: self._on_scale_complete(dest, scanned, converted, suggested_grid))
+                self._ui(lambda: self._on_scale_complete(dest, scanned, converted, suggested_grid))
             except Exception as exc:
                 error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
+                self._ui(lambda msg=error_message: self._on_conversion_error(msg))
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -756,7 +757,6 @@ class TacticalCommandCenter(ctk.CTk):
         self._update_convert_state()
 
         self.preview_panel.load_xml(dest_path / "bp.sbc", f"Scaled: {dest_path.name}")
-        self.preview_panel.switch_to_xml()
         self.toasts.toast(
             f"Created a {target_grid}-grid copy with {converted} blocks updated.",
             level="success",
@@ -791,8 +791,7 @@ class TacticalCommandCenter(ctk.CTk):
             created: List[Path] = []
 
             for index, bp in enumerate(selected_bps):
-                self.after(
-                    0,
+                self._ui(
                     lambda idx=index: self.control_panel.progress.set_progress(
                         (idx + 1) / total,
                         f"Converting {idx + 1}/{total}",
@@ -803,8 +802,8 @@ class TacticalCommandCenter(ctk.CTk):
                         verbose=False,
                         reverse=(self.conversion_mode == "heavy_to_light"),
                         enabled_categories=self.enabled_categories,
-                        include_profiles=True,
-                        profile_dir=Path("profiles"),
+                        include_profiles=False,
+                        registry=self.registry,
                     )
                     dest, scanned, converted = converter.create_converted_blueprint(bp.path)
                     created.append(dest)
@@ -813,8 +812,7 @@ class TacticalCommandCenter(ctk.CTk):
                 except Exception as exc:
                     errors.append(f"{bp.display_name}: {exc}")
 
-            self.after(
-                0,
+            self._ui(
                 lambda: self._on_batch_complete(total, total_scanned, total_converted, errors, created),
             )
 
@@ -927,7 +925,7 @@ class TacticalCommandCenter(ctk.CTk):
 
         textbox = ctk.CTkTextbox(
             win,
-            font=TacticalTheme.FONT_MONO_SMALL,
+            font=TacticalTheme.code_font(16),
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -957,6 +955,54 @@ class TacticalCommandCenter(ctk.CTk):
     def _show_error(self, message: str):
         self.footer.set_status("Error", TacticalTheme.RED_PRIMARY)
         self.toasts.toast(message, level="error", duration=5000)
+
+    def _ui(self, callback) -> None:
+        if self._closing:
+            return
+        try:
+            self.after(0, lambda: None if self._closing else callback())
+        except Exception:
+            pass
+
+    def _on_close(self):
+        if self._closing:
+            return
+        self._closing = True
+        self._inspect_generation += 1
+        for attr in ("_rescan_after_id", "_preview_after_id"):
+            job = getattr(self, attr, None)
+            if job is not None:
+                try:
+                    self.after_cancel(job)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        try:
+            self.control_panel.progress.stop()
+        except Exception:
+            pass
+        try:
+            self.toasts.dismiss_all()
+        except Exception:
+            pass
+        try:
+            self._drop_target.disable()
+        except Exception:
+            pass
+        try:
+            if self._profile_editor is not None and self._profile_editor.winfo_exists():
+                self._profile_editor.grab_release()
+                self._profile_editor.destroy()
+        except Exception:
+            pass
+        try:
+            self.quit()
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
 
 
 def main():

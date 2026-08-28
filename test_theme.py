@@ -13,6 +13,13 @@ from ui.theme import TacticalTheme
 from ui.widgets.toast import ToastManager
 
 
+class TestAppShutdown(unittest.TestCase):
+    def test_window_defines_close_handler(self):
+        from ui.app import TacticalCommandCenter
+
+        self.assertTrue(callable(TacticalCommandCenter._on_close))
+
+
 class TestTheme(unittest.TestCase):
     def test_normalize_appearance_mode(self):
         self.assertEqual(TacticalTheme.normalize_appearance_mode("dark"), "Dark")
@@ -78,6 +85,16 @@ class TestToastManager(unittest.TestCase):
         second.dismiss()
         self.app.update_idletasks()
         self.assertFalse(manager.visible)
+
+    def test_dismiss_all_hides_overlay(self):
+        manager = ToastManager(self.app)
+        manager.toast("One", duration=0)
+        manager.toast("Two", duration=0)
+        self.app.update_idletasks()
+        manager.dismiss_all()
+        self.app.update_idletasks()
+        self.assertFalse(manager.visible)
+        self.assertEqual(manager._toasts, [])
 
 
 if __name__ == "__main__":

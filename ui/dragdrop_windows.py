@@ -16,6 +16,8 @@ if sys.platform.startswith("win"):
     shell32 = ctypes.windll.shell32
 
     WM_DROPFILES = 0x0233
+    WM_CLOSE = 0x0010
+    WM_DESTROY = 0x0002
     GWLP_WNDPROC = -4
     LONG_PTR = ctypes.c_ssize_t
     WNDPROC = ctypes.WINFUNCTYPE(
@@ -71,7 +73,24 @@ class WindowsFileDropTarget:
             if files:
                 self.on_files(files)
             return 0
-        return user32.CallWindowProcW(self._old_wndproc, hwnd, msg, wparam, lparam)
+        if msg == WM_CLOSE:
+            try:
+                closer = getattr(self.tk_window, "_on_close", None)
+                if callable(closer):
+                    self.tk_window.after(0, closer)
+                else:
+                    self.tk_window.after(0, self.tk_window.destroy)
+            except Exception:
+                pass
+            return 0
+        if msg == WM_DESTROY:
+            try:
+                self.disable()
+            except Exception:
+                pass
+        if self._old_wndproc:
+            return user32.CallWindowProcW(self._old_wndproc, hwnd, msg, wparam, lparam)
+        return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
     @staticmethod
     def _extract_drop_files(hdrop) -> List[str]:
