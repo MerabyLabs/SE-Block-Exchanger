@@ -1,8 +1,25 @@
 @echo off
-echo Starting Space Engineers Tactical Command...
-python main.py
-if %errorlevel% neq 0 (
-    echo.
-    echo Error starting application. Please ensure Python is installed with dependencies: pip install -r requirements.txt
-    pause
+title Space Engineers Tactical Command
+cd /d "%~dp0"
+
+where python >nul 2>nul
+if %errorlevel% equ 0 (
+    set "PYTHON_EXE=python"
+    goto :RUN
 )
+
+where py >nul 2>nul
+if %errorlevel% equ 0 (
+    set "PYTHON_EXE=py"
+    goto :RUN
+)
+
+if exist "%LOCALAPPDATA%\Programs\Python\Python313\python.exe" (
+    set "PYTHON_EXE=%LOCALAPPDATA%\Programs\Python\Python313\python.exe"
+    goto :RUN
+)
+
+set "PYTHON_EXE=python"
+
+:RUN
+"%PYTHON_EXE%" main.py
