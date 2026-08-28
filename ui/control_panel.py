@@ -127,7 +127,7 @@ class ControlPanel(ctk.CTkFrame):
 
         # Arrow
         ctk.CTkLabel(cols, text="\u25B6\u25B6\u25B6",
-                     font=("Courier New", 16, "bold"),
+                     font=TacticalTheme.FONT_TITLE,
                      text_color=TacticalTheme.ORANGE_PRIMARY).grid(row=0, column=1, padx=4)
 
         # Heavy column

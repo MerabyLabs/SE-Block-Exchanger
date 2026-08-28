@@ -1067,7 +1067,8 @@ class TacticalCommandCenter(ctk.CTk):
                 from subgrid_engine import SubgridHierarchyParser, GridMatrixVisualizer
                 structure = SubgridHierarchyParser.parse_file(bp_file)
                 matrix = GridMatrixVisualizer.analyze_grid_matrix(bp_file)
-                self.preview_panel.update_subgrids(structure, matrix)
+                voxels = GridMatrixVisualizer.extract_all_voxels(bp_file)
+                self.preview_panel.update_subgrids(structure, matrix, voxels=voxels)
         except Exception:
             pass
 

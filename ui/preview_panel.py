@@ -1,11 +1,13 @@
 """
 Preview Panel Component
-Center tabview with Intel, XML Source, Preview Diff, and Analytics tabs.
+Center tabview with Intel, Selective Exchange, XML Source, Preview Diff, Analytics,
+PB Doctor Studio, Subgrids 2D/2.5D Map, and SE2 Transition tabs.
 """
 
 from __future__ import annotations
 
 import tkinter as tk
+from tkinter import filedialog, messagebox
 from typing import Dict, Iterable, List, Optional, Set
 
 import customtkinter as ctk
@@ -17,8 +19,16 @@ from blueprint_analytics import (
     SEVERITY_INFO,
     SEVERITY_WARNING,
 )
+from pb_doctor import (
+    ExtractedPBScript,
+    PBScriptReport,
+    PBScriptValidator,
+    ScriptFixer,
+)
+from subgrid_engine.hierarchy_parser import MultiGridStructure, SubgridNode
 from ui.selective_exchange_panel import SelectiveExchangePanel
 from ui.theme import TacticalTheme
+from ui.widgets.ship_canvas import ShipCanvas, VoxelBlock
 
 
 class PreviewPanel(ctk.CTkFrame):
@@ -61,6 +71,11 @@ class PreviewPanel(ctk.CTkFrame):
         self._on_migrate_se2 = on_migrate_se2
         self._latest_health_issues: List[HealthIssue] = []
 
+        # PB Doctor active data
+        self._pb_scripts: List[ExtractedPBScript] = []
+        self._pb_reports: List[PBScriptReport] = []
+        self._active_pb_index: int = 0
+
         self.tabview = ctk.CTkTabview(
             self,
             fg_color=TacticalTheme.BG_DARK,
@@ -69,7 +84,7 @@ class PreviewPanel(ctk.CTkFrame):
             segmented_button_selected_hover_color=TacticalTheme.ORANGE_DIM,
             segmented_button_unselected_color=TacticalTheme.BG_MEDIUM,
             segmented_button_unselected_hover_color=TacticalTheme.BG_GLASS,
-            text_color=TacticalTheme.TEXT_GRAY,
+            text_color=TacticalTheme.TEXT_WHITE,
             text_color_disabled=TacticalTheme.TEXT_GRAY,
             corner_radius=6,
         )
@@ -100,22 +115,36 @@ class PreviewPanel(ctk.CTkFrame):
     def _build_intel_tab(self):
         self.tab_intel = self.tabview.add("INTEL")
         self.tab_intel.configure(fg_color=TacticalTheme.BG_DARK)
+
+        scroll = ctk.CTkScrollableFrame(self.tab_intel, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=12, pady=10)
+
         ctk.CTkLabel(
-            self.tab_intel,
-            text=">> BLUEPRINT INTEL",
-            font=TacticalTheme.FONT_LARGE,
+            scroll,
+            text=">> BLUEPRINT TACTICAL INTEL",
+            font=TacticalTheme.FONT_TITLE,
             text_color=TacticalTheme.ORANGE_PRIMARY,
-        ).pack(pady=(8, 4))
-        self.intel_text = ctk.CTkLabel(
-            self.tab_intel,
-            text="Select a blueprint to review block totals, conversion readiness, and file location.",
-            font=TacticalTheme.FONT_NORMAL,
-            text_color=TacticalTheme.TEXT_CYAN,
-            wraplength=600,
-            anchor="nw",
-            justify="left",
+        ).pack(anchor="w", pady=(4, 8))
+
+        # Main Info Card
+        self.intel_info_card = ctk.CTkFrame(
+            scroll,
+            fg_color=TacticalTheme.BG_CARD,
+            corner_radius=8,
+            border_width=1,
+            border_color=TacticalTheme.BORDER_SUBTLE,
         )
-        self.intel_text.pack(fill="both", expand=True, padx=20, pady=10)
+        self.intel_info_card.pack(fill="x", pady=6)
+
+        self.intel_text = ctk.CTkLabel(
+            self.intel_info_card,
+            text="Select a blueprint in the database to review block totals, conversion readiness, and file location.",
+            font=TacticalTheme.FONT_NORMAL,
+            text_color=TacticalTheme.TEXT_WHITE,
+            justify="left",
+            anchor="w",
+        )
+        self.intel_text.pack(fill="both", expand=True, padx=16, pady=14)
 
     def _build_xml_tab(self):
         self.tab_xml = self.tabview.add("XML SOURCE")
@@ -804,155 +833,453 @@ class PreviewPanel(ctk.CTkFrame):
         self.tab_pb_doctor = self.tabview.add("PB DOCTOR")
         self.tab_pb_doctor.configure(fg_color=TacticalTheme.BG_DARK)
 
-        scroll = ctk.CTkScrollableFrame(self.tab_pb_doctor, fg_color="transparent")
-        scroll.pack(fill="both", expand=True, padx=10, pady=10)
-
-        header = ctk.CTkFrame(scroll, fg_color="transparent")
-        header.pack(fill="x", pady=(0, 10))
+        # Header toolbar with PB Selector and Health Status
+        top_bar = ctk.CTkFrame(self.tab_pb_doctor, fg_color=TacticalTheme.BG_GLASS, corner_radius=6)
+        top_bar.pack(fill="x", padx=12, pady=(10, 6))
 
         ctk.CTkLabel(
-            header,
-            text=">> PROGRAMMABLE BLOCK COMPILER DOCTOR",
-            font=TacticalTheme.FONT_LARGE,
-            text_color=TacticalTheme.ORANGE_PRIMARY,
-        ).pack(side="left")
+            top_bar,
+            text="PROGRAMMABLE BLOCK:",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.CYAN_PRIMARY,
+        ).pack(side="left", padx=(12, 6), pady=8)
+
+        self.pb_selector_var = ctk.StringVar(value="No PB Blocks Found")
+        self.pb_selector_menu = ctk.CTkOptionMenu(
+            top_bar,
+            values=["No PB Blocks Found"],
+            variable=self.pb_selector_var,
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_DARK,
+            button_color=TacticalTheme.BG_MEDIUM,
+            button_hover_color=TacticalTheme.CYAN_DIM,
+            text_color=TacticalTheme.TEXT_WHITE,
+            width=260,
+            command=self._on_pb_selection_changed,
+        )
+        self.pb_selector_menu.pack(side="left", padx=4, pady=8)
 
         self.pb_status_label = ctk.CTkLabel(
-            header,
+            top_bar,
             text="NO BLUEPRINT LOADED",
+            font=TacticalTheme.FONT_LARGE,
+            text_color=TacticalTheme.TEXT_GRAY,
+        )
+        self.pb_status_label.pack(side="right", padx=12, pady=8)
+
+        # Main Split Workspace
+        workspace = ctk.CTkFrame(self.tab_pb_doctor, fg_color="transparent")
+        workspace.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        workspace.columnconfigure(0, weight=4, minsize=300)
+        workspace.columnconfigure(1, weight=6, minsize=420)
+        workspace.rowconfigure(0, weight=1)
+
+        # --- LEFT PANE: Diagnostics & Health Gauges ---
+        left_pane = ctk.CTkScrollableFrame(
+            workspace,
+            fg_color=TacticalTheme.BG_CARD,
+            border_width=1,
+            border_color=TacticalTheme.BORDER_SUBTLE,
+            corner_radius=6,
+        )
+        left_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+
+        ctk.CTkLabel(
+            left_pane,
+            text="DIAGNOSTIC METRICS & COMPLIANCE",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.ORANGE_PRIMARY,
+        ).pack(anchor="w", padx=8, pady=(8, 4))
+
+        self.pb_score_lbl = ctk.CTkLabel(
+            left_pane,
+            text="Compliance Score: --",
             font=TacticalTheme.FONT_NORMAL,
             text_color=TacticalTheme.TEXT_CYAN,
         )
-        self.pb_status_label.pack(side="right")
+        self.pb_score_lbl.pack(anchor="w", padx=8, pady=2)
 
-        self.pb_report_textbox = ctk.CTkTextbox(
-            scroll,
-            height=240,
-            font=("Consolas", 11),
+        self.pb_instr_lbl = ctk.CTkLabel(
+            left_pane,
+            text="Est. Instructions: -- / tick",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.TEXT_GRAY,
+        )
+        self.pb_instr_lbl.pack(anchor="w", padx=8, pady=2)
+
+        # Char limit progress
+        ctk.CTkLabel(
+            left_pane,
+            text="SCRIPT SIZE (100,000 CHAR LIMIT):",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.TEXT_GRAY,
+        ).pack(anchor="w", padx=8, pady=(8, 2))
+
+        self.pb_char_progress = ctk.CTkProgressBar(
+            left_pane,
+            height=12,
+            progress_color=TacticalTheme.GREEN_PRIMARY,
+        )
+        self.pb_char_progress.pack(fill="x", padx=8, pady=2)
+        self.pb_char_progress.set(0)
+
+        self.pb_char_lbl = ctk.CTkLabel(
+            left_pane,
+            text="0 / 100,000 chars (0%)",
+            font=TacticalTheme.FONT_CODE_SMALL,
             text_color=TacticalTheme.TEXT_CYAN,
-            fg_color="#0c1220",
+        )
+        self.pb_char_lbl.pack(anchor="w", padx=8, pady=(0, 6))
+
+        # Method signatures checklist
+        self.pb_methods_lbl = ctk.CTkLabel(
+            left_pane,
+            text="Program() -  |  Main() -  |  Save() -",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.TEXT_CYAN,
+        )
+        self.pb_methods_lbl.pack(anchor="w", padx=8, pady=(4, 8))
+
+        ctk.CTkLabel(
+            left_pane,
+            text="COMPILER & WHITELIST ISSUES:",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.CYAN_PRIMARY,
+        ).pack(anchor="w", padx=8, pady=(8, 4))
+
+        self.pb_diagnostics_textbox = ctk.CTkTextbox(
+            left_pane,
+            height=180,
+            font=TacticalTheme.FONT_CODE_SMALL,
+            text_color=TacticalTheme.TEXT_WHITE,
+            fg_color="#080e1a",
             border_width=1,
             border_color=TacticalTheme.CYAN_DIM,
+            corner_radius=4,
+        )
+        self.pb_diagnostics_textbox.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        # --- RIGHT PANE: C# Code Inspector & Studio ---
+        right_pane = ctk.CTkFrame(
+            workspace,
+            fg_color=TacticalTheme.BG_CARD,
+            border_width=1,
+            border_color=TacticalTheme.BORDER_SUBTLE,
             corner_radius=6,
         )
-        self.pb_report_textbox.pack(fill="both", expand=True, pady=(0, 10))
-        self._set_textbox_content(
-            self.pb_report_textbox,
-            "Select a blueprint to extract and audit in-game Programmable Block scripts...\n"
+        right_pane.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+
+        code_toolbar = ctk.CTkFrame(right_pane, fg_color="transparent")
+        code_toolbar.pack(fill="x", padx=10, pady=8)
+
+        ctk.CTkLabel(
+            code_toolbar,
+            text="C# INGAME SCRIPT SOURCE",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.CYAN_PRIMARY,
+        ).pack(side="left")
+
+        # Action Buttons
+        self.btn_pb_autofix = ctk.CTkButton(
+            code_toolbar,
+            text="🛠️ APPLY AUTO-FIX",
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.GREEN_PRIMARY,
+            hover_color=TacticalTheme.GREEN_DIM,
+            text_color="#000000",
+            height=28,
+            command=self._apply_pb_autofix,
         )
+        self.btn_pb_autofix.pack(side="right", padx=3)
+
+        self.btn_pb_copy = ctk.CTkButton(
+            code_toolbar,
+            text="📋 COPY CODE",
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_GLASS,
+            hover_color=TacticalTheme.CYAN_DIM,
+            text_color=TacticalTheme.TEXT_CYAN,
+            height=28,
+            command=self._copy_pb_script,
+        )
+        self.btn_pb_copy.pack(side="right", padx=3)
+
+        self.btn_pb_export = ctk.CTkButton(
+            code_toolbar,
+            text="💾 EXPORT .CS",
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_GLASS,
+            hover_color=TacticalTheme.CYAN_DIM,
+            text_color=TacticalTheme.TEXT_CYAN,
+            height=28,
+            command=self._export_pb_script,
+        )
+        self.btn_pb_export.pack(side="right", padx=3)
+
+        self.pb_code_textbox = ctk.CTkTextbox(
+            right_pane,
+            font=TacticalTheme.FONT_CODE,
+            text_color="#a5f3fc",
+            fg_color="#070d19",
+            border_width=1,
+            border_color=TacticalTheme.CYAN_DIM,
+            corner_radius=4,
+        )
+        self.pb_code_textbox.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    def update_pb_doctor(self, scripts: List[ExtractedPBScript], reports: List[PBScriptReport]) -> None:
+        """Populate the interactive PB Doctor Studio with scripts and reports."""
+        self._pb_scripts = list(scripts)
+        self._pb_reports = list(reports)
+        self._active_pb_index = 0
+
+        if not self._pb_scripts:
+            self.pb_status_label.configure(text="0 PB SCRIPTS DETECTED", text_color=TacticalTheme.TEXT_GRAY)
+            self.pb_selector_menu.configure(values=["No Programmable Blocks Detected"])
+            self.pb_selector_var.set("No Programmable Blocks Detected")
+            self.pb_score_lbl.configure(text="Compliance Score: N/A")
+            self.pb_instr_lbl.configure(text="Est. Instructions: 0 / tick")
+            self.pb_char_progress.set(0)
+            self.pb_char_lbl.configure(text="0 / 100,000 chars (0%)")
+            self.pb_methods_lbl.configure(text="Program() -  |  Main() -  |  Save() -")
+            self._set_textbox_content(
+                self.pb_diagnostics_textbox,
+                "No Programmable Blocks with embedded scripts found in this blueprint.\n\n"
+                "Tip: You can use PB Doctor to inspect, clean, and fix in-game scripts on any PB vessel."
+            )
+            self._set_textbox_content(
+                self.pb_code_textbox,
+                "// No Programmable Block scripts detected on this vessel."
+            )
+            self.btn_pb_autofix.configure(state="disabled")
+            self.btn_pb_copy.configure(state="disabled")
+            self.btn_pb_export.configure(state="disabled")
+            return
+
+        # Build options for selector menu
+        menu_items = []
+        for idx, (script, report) in enumerate(zip(self._pb_scripts, self._pb_reports), 1):
+            name = script.custom_name or f"PB_{idx}"
+            menu_items.append(f"[{idx}] {name} ({report.compliance_score}%)")
+
+        self.pb_selector_menu.configure(values=menu_items)
+        self.pb_selector_var.set(menu_items[0])
+        self.btn_pb_autofix.configure(state="normal")
+        self.btn_pb_copy.configure(state="normal")
+        self.btn_pb_export.configure(state="normal")
+
+        self._render_active_pb()
+
+    def _on_pb_selection_changed(self, choice: str) -> None:
+        values = self.pb_selector_menu.cget("values")
+        if choice in values:
+            self._active_pb_index = values.index(choice)
+            self._render_active_pb()
+
+    def _render_active_pb(self) -> None:
+        if not self._pb_scripts or self._active_pb_index >= len(self._pb_scripts):
+            return
+
+        script = self._pb_scripts[self._active_pb_index]
+        report = self._pb_reports[self._active_pb_index]
+
+        # Overall Status Badge
+        if report.error_count == 0:
+            if report.warning_count > 0:
+                status_text = f"{report.warning_count} WARNING(S)"
+                status_color = TacticalTheme.ORANGE_PRIMARY
+            else:
+                status_text = "100% COMPLIANT ✓"
+                status_color = TacticalTheme.GREEN_PRIMARY
+        else:
+            status_text = f"{report.error_count} COMPILER ERROR(S) ✗"
+            status_color = TacticalTheme.RED_PRIMARY
+
+        self.pb_status_label.configure(text=status_text, text_color=status_color)
+        self.pb_score_lbl.configure(text=f"Compliance Score: {report.compliance_score}%", text_color=status_color)
+        self.pb_instr_lbl.configure(text=f"Est. Instructions: ~{report.estimated_instructions:,} / 50,000 per tick")
+
+        # Size progress
+        chars = len(script.program_code)
+        pct = min(1.0, chars / 100000.0)
+        self.pb_char_progress.set(pct)
+        if pct >= 0.9:
+            self.pb_char_progress.configure(progress_color=TacticalTheme.RED_PRIMARY)
+        elif pct >= 0.7:
+            self.pb_char_progress.configure(progress_color=TacticalTheme.ORANGE_PRIMARY)
+        else:
+            self.pb_char_progress.configure(progress_color=TacticalTheme.GREEN_PRIMARY)
+        self.pb_char_lbl.configure(text=f"{chars:,} / 100,000 chars ({pct*100:.1f}%)")
+
+        prog_chk = "✓" if report.has_program_constructor else "✗"
+        main_chk = "✓" if report.has_main_method else "✗"
+        save_chk = "✓" if report.has_save_method else "✗"
+        self.pb_methods_lbl.configure(text=f"Program() {prog_chk}  |  Main() {main_chk}  |  Save() {save_chk}")
+
+        # Diagnostics details
+        diag_lines = []
+        if not report.diagnostics:
+            diag_lines.append("[+] Script passes all Space Engineers in-game whitelist checks!")
+            diag_lines.append("[+] No prohibited reflection, file I/O, or threading detected.")
+        else:
+            for d in report.diagnostics:
+                line_str = f"L{d.line_number}: " if d.line_number else ""
+                diag_lines.append(f"[{d.severity.upper()}] {line_str}{d.rule_id}")
+                diag_lines.append(f"  -> {d.message}")
+                diag_lines.append(f"  -> Solution: {d.suggestion}\n")
+
+        self._set_textbox_content(self.pb_diagnostics_textbox, "\n".join(diag_lines))
+        self._set_textbox_content(self.pb_code_textbox, script.program_code)
+
+    def _apply_pb_autofix(self) -> None:
+        if not self._pb_scripts or self._active_pb_index >= len(self._pb_scripts):
+            return
+
+        script = self._pb_scripts[self._active_pb_index]
+        fixed_code, fixes = ScriptFixer.fix_script(script.program_code)
+
+        # Update in-memory script and re-validate
+        script.program_code = fixed_code
+        script.character_count = len(fixed_code)
+        script.line_count = len(fixed_code.splitlines())
+
+        new_report = PBScriptValidator.validate_script(script.custom_name, fixed_code)
+        self._pb_reports[self._active_pb_index] = new_report
+
+        self._render_active_pb()
+
+        fix_summary = "\n• " + "\n• ".join(fixes) if fixes else "No modifications required."
+        messagebox.showinfo(
+            "Auto-Fix Applied",
+            f"Successfully applied auto-fixes to '{script.custom_name}':{fix_summary}\n\n"
+            "The updated script has been loaded into the editor!",
+        )
+
+    def _copy_pb_script(self) -> None:
+        if not self._pb_scripts or self._active_pb_index >= len(self._pb_scripts):
+            return
+        code = self._pb_scripts[self._active_pb_index].program_code
+        self.clipboard_clear()
+        self.clipboard_append(code)
+        messagebox.showinfo("Clipboard", "C# Script copied to clipboard! You can paste it directly into Space Engineers.")
+
+    def _export_pb_script(self) -> None:
+        if not self._pb_scripts or self._active_pb_index >= len(self._pb_scripts):
+            return
+        script = self._pb_scripts[self._active_pb_index]
+        default_name = f"{script.custom_name.replace(' ', '_')}.cs"
+        path = filedialog.asksaveasfilename(
+            title="Export C# Script",
+            initialfile=default_name,
+            defaultextension=".cs",
+            filetypes=[("C# Script", "*.cs"), ("All Files", "*.*")],
+        )
+        if path:
+            try:
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(script.program_code)
+                messagebox.showinfo("Export Successful", f"Script exported to:\n{path}")
+            except Exception as exc:
+                messagebox.showerror("Export Failed", f"Could not save script: {exc}")
 
     def _build_subgrids_tab(self):
         self.tab_subgrids = self.tabview.add("SUBGRIDS & MAP")
         self.tab_subgrids.configure(fg_color=TacticalTheme.BG_DARK)
 
-        scroll = ctk.CTkScrollableFrame(self.tab_subgrids, fg_color="transparent")
-        scroll.pack(fill="both", expand=True, padx=10, pady=10)
+        container = ctk.CTkFrame(self.tab_subgrids, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=8, pady=8)
+        container.columnconfigure(0, weight=3, minsize=260)
+        container.columnconfigure(1, weight=7, minsize=480)
+        container.rowconfigure(0, weight=1)
 
-        header = ctk.CTkFrame(scroll, fg_color="transparent")
-        header.pack(fill="x", pady=(0, 10))
-
-        ctk.CTkLabel(
-            header,
-            text=">> MULTI-GRID HIERARCHY & ISOMETRIC MATRIX",
-            font=TacticalTheme.FONT_LARGE,
-            text_color=TacticalTheme.ORANGE_PRIMARY,
-        ).pack(side="left")
-
-        self.subgrid_summary_textbox = ctk.CTkTextbox(
-            scroll,
-            height=320,
-            font=("Consolas", 10),
-            text_color=TacticalTheme.TEXT_CYAN,
-            fg_color="#0c1220",
+        # Left Column: Mechanical Hierarchy Tree
+        left_box = ctk.CTkFrame(
+            container,
+            fg_color=TacticalTheme.BG_CARD,
             border_width=1,
-            border_color=TacticalTheme.CYAN_DIM,
+            border_color=TacticalTheme.BORDER_SUBTLE,
             corner_radius=6,
         )
-        self.subgrid_summary_textbox.pack(fill="both", expand=True, pady=(0, 10))
-        self._set_textbox_content(
-            self.subgrid_summary_textbox,
-            "Select a blueprint to inspect connected subgrids and 2.5D coordinate projection slices...\n"
+        left_box.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+
+        ctk.CTkLabel(
+            left_box,
+            text="MECHANICAL HIERARCHY TREE",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.ORANGE_PRIMARY,
+        ).pack(anchor="w", padx=10, pady=(8, 4))
+
+        self.subgrid_tree_scroll = ctk.CTkScrollableFrame(left_box, fg_color="transparent")
+        self.subgrid_tree_scroll.pack(fill="both", expand=True, padx=6, pady=4)
+
+        # Right Column: Interactive 2D/2.5D Graphical Ship Blueprint Canvas
+        self.ship_canvas = ShipCanvas(container)
+        self.ship_canvas.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+
+    def update_subgrids(self, structure: MultiGridStructure, matrix_summaries, voxels: Optional[List[dict]] = None):
+        """Update mechanical tree cards and load voxel blocks into the 2D/2.5D Ship Canvas."""
+        for child in self.subgrid_tree_scroll.winfo_children():
+            child.destroy()
+
+        # Build "All Grids" filter button
+        btn_all = ctk.CTkButton(
+            self.subgrid_tree_scroll,
+            text=f"■ ALL GRIDS ({structure.total_grids} Grids | {structure.total_blocks:,} Blocks)",
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_GLASS,
+            hover_color=TacticalTheme.CYAN_DIM,
+            text_color=TacticalTheme.TEXT_WHITE,
+            anchor="w",
+            command=lambda: self.ship_canvas.filter_by_grid(None),
         )
+        btn_all.pack(fill="x", pady=2)
 
-    def update_pb_doctor(self, scripts, reports):
-        if not scripts:
-            self.pb_status_label.configure(text="0 PB SCRIPTS DETECTED", text_color=TacticalTheme.TEXT_GRAY)
-            self._set_textbox_content(
-                self.pb_report_textbox,
-                "No Programmable Blocks with embedded scripts found in this blueprint.\n"
-            )
-            return
-
-        total_errors = sum(r.error_count for r in reports)
-        total_warnings = sum(r.warning_count for r in reports)
-
-        if total_errors == 0:
-            if total_warnings > 0:
-                status_text = f"{len(scripts)} SCRIPT(S) — {total_warnings} WARNING(S)"
-                color = TacticalTheme.ORANGE_PRIMARY
-            else:
-                status_text = f"{len(scripts)} SCRIPT(S) — 100% COMPLIANT"
-                color = TacticalTheme.GREEN_PRIMARY
-        else:
-            status_text = f"{len(scripts)} SCRIPT(S) — {total_errors} COMPILER ERROR(S)"
-            color = TacticalTheme.RED_PRIMARY
-
-        self.pb_status_label.configure(text=status_text, text_color=color)
-
-        lines = []
-        for idx, (script, report) in enumerate(zip(scripts, reports), 1):
-            lines.append("============================================================")
-            lines.append(f"[{idx}] PROGRAMMABLE BLOCK: {script.custom_name}")
-            lines.append(f"Grid: {script.grid_name} | Length: {script.character_count:,} chars | Lines: {script.line_count}")
-            lines.append(f"Compliance Score: {report.compliance_score}% | Est. Instructions: ~{report.estimated_instructions:,}/tick")
-            lines.append(f"Constructors: Program() {'✓' if report.has_program_constructor else '✗'} | Main() {'✓' if report.has_main_method else '✗'} | Save() {'✓' if report.has_save_method else '✗'}")
-            lines.append("------------------------------------------------------------")
-            if not report.diagnostics:
-                lines.append("  [+] Script passes all in-game whitelist and syntax checks!")
-            else:
-                for d in report.diagnostics:
-                    line_str = f"L{d.line_number}: " if d.line_number else ""
-                    lines.append(f"  [{d.severity.upper()}] {line_str}{d.rule_id} -> {d.message}")
-                    lines.append(f"         Suggestion: {d.suggestion}")
-            lines.append("")
-
-        self._set_textbox_content(self.pb_report_textbox, "\n".join(lines))
-
-    def update_subgrids(self, structure, matrix_summaries):
-        lines = []
-        lines.append("============================================================")
-        lines.append(f"TOTAL GRIDS: {structure.total_grids} | TOTAL BLOCKS: {structure.total_blocks:,} | MECHANICAL LINKS: {len(structure.mechanical_links)}")
-        lines.append("============================================================")
-        lines.append("")
-        lines.append(">> MECHANICAL HIERARCHY TREE:")
-
-        def format_node(node, depth=0):
-            indent = "  " * depth
+        def add_node_card(node: SubgridNode, depth: int = 0):
+            indent = "    " * depth
             prefix = "└── " if depth > 0 else "■ "
             link_desc = f" [{node.attachment_via}]" if node.attachment_via else ""
-            lines.append(f"{indent}{prefix}{node.grid_name} ({node.grid_size} Grid, {node.block_count:,} blocks){link_desc}")
+
+            card = ctk.CTkFrame(self.subgrid_tree_scroll, fg_color=TacticalTheme.BG_GLASS, corner_radius=4)
+            card.pack(fill="x", pady=2)
+
+            lbl_text = f"{indent}{prefix}{node.grid_name}\n{indent}   ({node.grid_size} Grid, {node.block_count:,} blks){link_desc}"
+            btn = ctk.CTkButton(
+                card,
+                text=lbl_text,
+                font=TacticalTheme.FONT_SMALL,
+                fg_color="transparent",
+                hover_color=TacticalTheme.BG_MEDIUM,
+                text_color=TacticalTheme.TEXT_CYAN if depth == 0 else TacticalTheme.TEXT_GRAY,
+                anchor="w",
+                justify="left",
+                command=lambda g=node.grid_name: self.ship_canvas.filter_by_grid(g),
+            )
+            btn.pack(fill="x", padx=4, pady=4)
+
             for child in node.children:
-                format_node(child, depth + 1)
+                add_node_card(child, depth + 1)
 
         if structure.root_node:
-            format_node(structure.root_node)
+            add_node_card(structure.root_node)
 
         for orphan in structure.orphaned_grids:
-            format_node(orphan, depth=0)
+            add_node_card(orphan, depth=0)
 
-        lines.append("")
-        lines.append("============================================================")
-        lines.append(">> 2.5D GRID DENSITY & PROJECTION MAPS:")
-        lines.append("============================================================")
-
-        for summary in matrix_summaries:
-            lines.append(f"\n--- GRID: {summary.grid_name} ---")
-            lines.append(f"Bounding Box: X[{summary.bounds.min_x}..{summary.bounds.max_x}] Y[{summary.bounds.min_y}..{summary.bounds.max_y}] Z[{summary.bounds.min_z}..{summary.bounds.max_z}] (Size: {summary.bounds.size_x}x{summary.bounds.size_y}x{summary.bounds.size_z})")
-            lines.append(summary.ascii_top_down_view)
-            lines.append("")
-            lines.append(summary.ascii_side_view)
-
-        self._set_textbox_content(self.subgrid_summary_textbox, "\n".join(lines))
+        # Load voxels into ShipCanvas
+        if voxels:
+            voxel_blocks = [
+                VoxelBlock(
+                    x=v["x"],
+                    y=v["y"],
+                    z=v["z"],
+                    subtype=v["subtype"],
+                    grid_name=v["grid_name"],
+                    grid_size=v.get("grid_size", "Large"),
+                    is_subgrid=v.get("is_subgrid", False),
+                )
+                for v in voxels
+            ]
+            self.ship_canvas.load_structure_data(voxel_blocks)
 
     def _vanillafy_clicked(self):
         if self._on_vanillafy:

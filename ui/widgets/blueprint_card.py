@@ -40,7 +40,7 @@ class BlueprintCard(ctk.CTkFrame):
         ctk.CTkLabel(
             thumbnail,
             text=bp_info.grid_size[0] if bp_info.grid_size else "?",
-            font=("Courier New", 12, "bold"),
+            font=TacticalTheme.FONT_LARGE,
             text_color=TacticalTheme.ORANGE_PRIMARY if bp_info.grid_size == "Large" else TacticalTheme.CYAN_PRIMARY,
         ).place(relx=0.5, rely=0.5, anchor="center")
 
@@ -50,11 +50,11 @@ class BlueprintCard(ctk.CTkFrame):
             self,
             text=bp_info.grid_size.upper() if bp_info.grid_size else "UNK",
             width=68,
-            height=18,
+            height=20,
             corner_radius=4,
             fg_color=badge_color,
             text_color=TacticalTheme.BG_DARK,
-            font=("Courier New", 9, "bold"),
+            font=TacticalTheme.FONT_SMALL,
         )
         badge.grid(row=0, column=1, padx=(0, 6), pady=(8, 0), sticky="w")
 
@@ -62,7 +62,7 @@ class BlueprintCard(ctk.CTkFrame):
         name_label = ctk.CTkLabel(
             self,
             text=bp_info.display_name,
-            font=("Courier New", 11, "bold"),
+            font=TacticalTheme.FONT_LARGE,
             text_color=TacticalTheme.TEXT_WHITE,
             anchor="w",
         )

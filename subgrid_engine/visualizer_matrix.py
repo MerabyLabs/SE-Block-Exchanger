@@ -216,3 +216,57 @@ class GridMatrixVisualizer:
             lines.append("|" + "".join(row) + "|")
         lines.append("+" + "-" * width + "+")
         return "\n".join(lines)
+
+    @classmethod
+    def extract_all_voxels(cls, blueprint_path: Path) -> List[dict]:
+        """Extracts voxel data for all blocks across all grids in a blueprint."""
+        blueprint_path = Path(blueprint_path)
+        if not blueprint_path.is_file():
+            return []
+
+        try:
+            tree = safe_xml.parse(blueprint_path)
+            root = tree.getroot()
+        except Exception:
+            return []
+
+        grids = root.findall(".//CubeGrid")
+        grid_targets = grids if grids else [root]
+        voxels: List[dict] = []
+
+        for idx, grid in enumerate(grid_targets):
+            name_elem = grid.find("CustomName")
+            grid_name = name_elem.text.strip() if (name_elem is not None and name_elem.text) else f"Grid_{idx+1}"
+            grid_size_elem = grid.find("GridSizeEnum")
+            grid_size = grid_size_elem.text.strip() if (grid_size_elem is not None and grid_size_elem.text) else "Large"
+            is_subgrid = (idx > 0)
+
+            blocks = grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock") or grid.findall(".//MyObjectBuilder_CubeBlock")
+            for b_idx, block in enumerate(blocks):
+                min_elem = block.find("Min")
+                if min_elem is not None:
+                    x = int(min_elem.attrib.get("x", 0))
+                    y = int(min_elem.attrib.get("y", 0))
+                    z = int(min_elem.attrib.get("z", 0))
+                else:
+                    x = b_idx % 5
+                    y = (b_idx // 25)
+                    z = (b_idx // 5) % 5
+
+                sub_name = block.find("SubtypeName")
+                sub_id = block.find("SubtypeId")
+                subtype_elem = sub_name if sub_name is not None else sub_id
+                subtype = subtype_elem.text.strip() if (subtype_elem is not None and subtype_elem.text) else "Block"
+
+                voxels.append({
+                    "x": x,
+                    "y": y,
+                    "z": z,
+                    "subtype": subtype,
+                    "grid_name": grid_name,
+                    "grid_size": grid_size,
+                    "is_subgrid": is_subgrid,
+                })
+
+        return voxels
+

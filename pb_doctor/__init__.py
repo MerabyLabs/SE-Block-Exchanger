@@ -5,6 +5,7 @@ Provides embedded script extraction, compliance diagnostics, and in-game whiteli
 
 from pb_doctor.script_extractor import PBScriptExtractor, ExtractedPBScript
 from pb_doctor.script_validator import PBScriptValidator, PBScriptReport, PBDiagnostic
+from pb_doctor.script_fixer import ScriptFixer
 from pb_doctor.whitelist_rules import (
     MAX_PROGRAM_CHARACTERS,
     ESTIMATED_INSTRUCTION_LIMIT,
@@ -18,6 +19,7 @@ __all__ = [
     "PBScriptValidator",
     "PBScriptReport",
     "PBDiagnostic",
+    "ScriptFixer",
     "MAX_PROGRAM_CHARACTERS",
     "ESTIMATED_INSTRUCTION_LIMIT",
     "FORBIDDEN_NAMESPACES",
