@@ -21,7 +21,9 @@ from blueprint_converter import BlueprintConverter
 from blueprint_scanner import BlueprintInfo, BlueprintScanner
 from mapping_profiles import ProfileManager
 from mappings import build_registry
+import safe_xml
 from se_armor_replacer import ArmorBlockReplacer
+from subgrid_engine import GridMatrixVisualizer, SubgridHierarchyParser
 from ui.blueprint_panel import BlueprintPanel
 from ui.control_panel import ControlPanel
 from ui.dragdrop_windows import WindowsFileDropTarget
@@ -86,6 +88,7 @@ class TacticalCommandCenter(ctk.CTk):
         self._profile_editor: Optional[ProfileEditorDialog] = None
         self._rescan_after_id = None
         self._preview_after_id = None
+        self._inspect_generation = 0
 
         self._build_ui()
         self.toasts = ToastManager(self)
@@ -363,7 +366,7 @@ class TacticalCommandCenter(ctk.CTk):
                 "Categories: " + ", ".join(category_label(name) for name in categories)
             )
             if self.selected_blueprint:
-                self.refresh_analytics_async()
+                self._inspect_blueprint_async()
             self._schedule_rescan()
         except Exception as exc:
             self.scanner.set_enabled_categories(previous)
@@ -444,11 +447,9 @@ class TacticalCommandCenter(ctk.CTk):
 
         self.control_panel.update_details(bp)
         self.preview_panel.update_intel(bp, self.conversion_mode)
-        self.preview_panel.load_xml(bp.path / "bp.sbc", f"SOURCE: {bp.name}")
         self._update_convert_state()
         self.footer.set_status(f"Selected: {bp.display_name}")
-        self.refresh_analytics_async()
-        self._schedule_preview()
+        self._inspect_blueprint_async()
 
     def _get_selected_blueprint_file(self) -> Optional[str]:
         if not self.selected_blueprint:
@@ -468,10 +469,9 @@ class TacticalCommandCenter(ctk.CTk):
             if bp_file.exists():
                 self.selected_blueprint = self.scanner.parse_folder(self.selected_blueprint.path)
             self.preview_panel.update_intel(self.selected_blueprint, mode)
-            self.refresh_analytics_async()
+            self._inspect_blueprint_async()
         self._update_convert_state()
         self.footer.set_status("Heavy → Light" if mode == "heavy_to_light" else "Light → Heavy")
-        self._schedule_rescan()
 
     def _update_convert_state(self):
         if not self.selected_blueprint:
@@ -493,7 +493,7 @@ class TacticalCommandCenter(ctk.CTk):
     def _schedule_rescan(self):
         if self._rescan_after_id is not None:
             self.after_cancel(self._rescan_after_id)
-        self._rescan_after_id = self.after(400, self._run_scheduled_rescan)
+        self._rescan_after_id = self.after(800, self._run_scheduled_rescan)
 
     def _run_scheduled_rescan(self):
         self._rescan_after_id = None
@@ -502,14 +502,100 @@ class TacticalCommandCenter(ctk.CTk):
         self.load_blueprints_async()
 
     def _schedule_preview(self):
-        if self._preview_after_id is not None:
-            self.after_cancel(self._preview_after_id)
-        self._preview_after_id = self.after(80, self._run_scheduled_preview)
+        self._inspect_blueprint_async()
 
     def _run_scheduled_preview(self):
         self._preview_after_id = None
-        if self.selected_blueprint:
-            self.run_dry_run_preview()
+        self._inspect_blueprint_async()
+
+    def _inspect_blueprint_async(self):
+        if not self.selected_blueprint:
+            return
+        self._inspect_generation += 1
+        generation = self._inspect_generation
+        bp = self.selected_blueprint
+        bp_file = bp.path / "bp.sbc"
+        mode = self.conversion_mode
+        categories = list(self.enabled_categories)
+        reverse = mode == "heavy_to_light"
+
+        def task():
+            try:
+                replacer = ArmorBlockReplacer(
+                    verbose=False,
+                    reverse=reverse,
+                    enabled_categories=categories,
+                    registry=self.registry,
+                    include_profiles=False,
+                )
+                replacer.process_blueprint(str(bp_file), create_backup=False, dry_run=True)
+                before_counts: Dict[str, int] = {}
+                after_counts: Dict[str, int] = {}
+                for source, target in replacer.change_log:
+                    before_counts[source] = before_counts.get(source, 0) + 1
+                    after_counts[target] = after_counts.get(target, 0) + 1
+                report = replacer.get_dry_run_report()
+                analytics = self.analytics_engine.analyze_blueprint(bp_file)
+                comparison = self.analytics_engine.compare_conversion_cost(
+                    bp_file,
+                    replacer.mapping,
+                    mode,
+                )
+                tree = safe_xml.parse(bp_file)
+                root = tree.getroot()
+                structure = SubgridHierarchyParser.parse_element(root)
+                voxels = GridMatrixVisualizer.extract_voxels_from_root(root)
+                self.after(
+                    0,
+                    lambda: self._on_inspect_ready(
+                        generation,
+                        bp,
+                        before_counts,
+                        after_counts,
+                        report,
+                        analytics,
+                        comparison,
+                        structure,
+                        voxels,
+                    ),
+                )
+            except Exception as exc:
+                error_message = str(exc)
+                self.after(
+                    0,
+                    lambda msg=error_message: self._on_inspect_error(generation, msg),
+                )
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_inspect_ready(
+        self,
+        generation: int,
+        bp: BlueprintInfo,
+        before_counts,
+        after_counts,
+        report,
+        analytics,
+        comparison,
+        structure,
+        voxels,
+    ):
+        if generation != self._inspect_generation:
+            return
+        if not self.selected_blueprint or self.selected_blueprint.path != bp.path:
+            return
+        self._latest_analytics = analytics
+        self._latest_comparison = comparison
+        self.preview_panel.show_preview_diff(before_counts, after_counts, report, switch_tab=False)
+        self.preview_panel.update_analytics(analytics, comparison)
+        self.preview_panel.update_se2_transition(bp, compute_se2_readiness(analytics.block_counts))
+        self.preview_panel.update_subgrids(structure, voxels=voxels)
+        self.preview_panel.load_xml(bp.path / "bp.sbc", f"Source: {bp.name}")
+
+    def _on_inspect_error(self, generation: int, message: str):
+        if generation != self._inspect_generation:
+            return
+        self._show_error(f"Preview failed: {message}")
 
     # ------------------------------------------------------------------
     # Conversion operations
@@ -774,70 +860,10 @@ class TacticalCommandCenter(ctk.CTk):
         if not self.selected_blueprint:
             self.toasts.toast("Select a blueprint first.", level="warning")
             return
-        bp_file = self.selected_blueprint.path / "bp.sbc"
-
-        try:
-            replacer = ArmorBlockReplacer(
-                verbose=False,
-                reverse=(self.conversion_mode == "heavy_to_light"),
-                enabled_categories=self.enabled_categories,
-                include_profiles=True,
-                profile_dir=Path("profiles"),
-            )
-            replacer.process_blueprint(str(bp_file), create_backup=False, dry_run=True)
-
-            before_counts: Dict[str, int] = {}
-            after_counts: Dict[str, int] = {}
-            for source, target in replacer.change_log:
-                before_counts[source] = before_counts.get(source, 0) + 1
-                after_counts[target] = after_counts.get(target, 0) + 1
-
-            report = replacer.get_dry_run_report()
-            self.preview_panel.show_preview_diff(before_counts, after_counts, report)
-
-            self._latest_analytics = self.analytics_engine.analyze_blueprint(bp_file)
-            self._latest_comparison = self.analytics_engine.compare_conversion_cost(
-                bp_file,
-                replacer.mapping,
-                self.conversion_mode,
-            )
-            self.preview_panel.update_analytics(self._latest_analytics, self._latest_comparison)
-        except Exception as exc:
-            self.toasts.toast(f"Dry-run failed: {exc}", level="error", duration=5000)
+        self._inspect_blueprint_async()
 
     def refresh_analytics_async(self):
-        if not self.selected_blueprint:
-            return
-        bp_file = self.selected_blueprint.path / "bp.sbc"
-
-        def task():
-            try:
-                replacer = ArmorBlockReplacer(
-                    verbose=False,
-                    reverse=(self.conversion_mode == "heavy_to_light"),
-                    enabled_categories=self.enabled_categories,
-                    include_profiles=True,
-                    profile_dir=Path("profiles"),
-                )
-                analytics = self.analytics_engine.analyze_blueprint(bp_file)
-                comparison = self.analytics_engine.compare_conversion_cost(
-                    bp_file,
-                    replacer.mapping,
-                    self.conversion_mode,
-                )
-                self.after(0, lambda: self._on_analytics_ready(analytics, comparison))
-            except Exception as exc:
-                error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._show_error(f"Analytics failed: {msg}"))
-
-        threading.Thread(target=task, daemon=True).start()
-
-    def _on_analytics_ready(self, analytics, comparison):
-        self._latest_analytics = analytics
-        self._latest_comparison = comparison
-        self.preview_panel.update_analytics(analytics, comparison)
-        readiness = compute_se2_readiness(analytics.block_counts)
-        self.preview_panel.update_se2_transition(self.selected_blueprint, readiness)
+        self._inspect_blueprint_async()
 
     def export_comparison_csv(self):
         if not self._latest_comparison:

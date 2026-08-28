@@ -26,6 +26,15 @@ class TacticalTheme:
     BORDER_SUBTLE = "#2a364a"
     GREEN_PRIMARY = "#22c55e"
     RED_PRIMARY = "#ef4444"
+    TEXT_MUTED = "#64748b"
+    COLOR_ARMOR = "#64748b"
+    COLOR_PROPULSION = "#22d3ee"
+    COLOR_WEAPONS = "#ef4444"
+    COLOR_POWER = "#eab308"
+    COLOR_COCKPIT = "#f59e0b"
+    COLOR_UTILITY = "#8b5cf6"
+    COLOR_SUBGRID = "#22c55e"
+    COLOR_DLC = "#ec4899"
 
     UI_FONT_CANDIDATES = (
         "Inter",
@@ -46,12 +55,14 @@ class TacticalTheme:
 
     FONT_FAMILY = "Segoe UI"
     FONT_MONO = "Consolas"
-    FONT_SMALL = ("Segoe UI", 11)
-    FONT_NORMAL = ("Segoe UI", 13)
-    FONT_LARGE = ("Segoe UI", 15, "bold")
-    FONT_TITLE = ("Segoe UI", 18, "bold")
-    FONT_HEADER = ("Segoe UI", 20, "bold")
-    FONT_MONO_SMALL = ("Consolas", 11)
+    FONT_SMALL = ("Segoe UI", 13)
+    FONT_NORMAL = ("Segoe UI", 15)
+    FONT_LARGE = ("Segoe UI", 18, "bold")
+    FONT_TITLE = ("Segoe UI", 22, "bold")
+    FONT_HEADER = ("Segoe UI", 24, "bold")
+    FONT_MONO_SMALL = ("Consolas", 14)
+    FONT_CODE = ("Consolas", 14)
+    FONT_CODE_SMALL = ("Consolas", 14)
 
     @classmethod
     def normalize_appearance_mode(cls, mode: str) -> str:
@@ -85,12 +96,14 @@ class TacticalTheme:
                 cls.FONT_MONO = name
                 break
 
-        cls.FONT_SMALL = (cls.FONT_FAMILY, 11)
-        cls.FONT_NORMAL = (cls.FONT_FAMILY, 13)
-        cls.FONT_LARGE = (cls.FONT_FAMILY, 15, "bold")
-        cls.FONT_TITLE = (cls.FONT_FAMILY, 18, "bold")
-        cls.FONT_HEADER = (cls.FONT_FAMILY, 20, "bold")
-        cls.FONT_MONO_SMALL = (cls.FONT_MONO, 11)
+        cls.FONT_SMALL = (cls.FONT_FAMILY, 13)
+        cls.FONT_NORMAL = (cls.FONT_FAMILY, 15)
+        cls.FONT_LARGE = (cls.FONT_FAMILY, 18, "bold")
+        cls.FONT_TITLE = (cls.FONT_FAMILY, 22, "bold")
+        cls.FONT_HEADER = (cls.FONT_FAMILY, 24, "bold")
+        cls.FONT_MONO_SMALL = (cls.FONT_MONO, 14)
+        cls.FONT_CODE = (cls.FONT_MONO, 14)
+        cls.FONT_CODE_SMALL = (cls.FONT_MONO, 14)
 
     @classmethod
     def panel_kwargs(cls) -> dict:

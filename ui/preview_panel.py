@@ -5,6 +5,7 @@ Center tabview with Intel, XML Source, Preview Diff, and Analytics tabs.
 
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 from typing import Dict, Iterable, List, Optional
 
@@ -18,8 +19,10 @@ from blueprint_analytics import (
     SEVERITY_INFO,
     SEVERITY_WARNING,
 )
+from subgrid_engine.hierarchy_parser import MultiGridStructure, SubgridNode
 from ui.labels import category_label
 from ui.theme import TacticalTheme
+from ui.widgets.ship_canvas import ShipCanvas, VoxelBlock
 
 
 class PreviewPanel(ctk.CTkFrame):
@@ -51,6 +54,8 @@ class PreviewPanel(ctk.CTkFrame):
         self._on_vanillafy = on_vanillafy
         self._on_scale_grid = on_scale_grid
         self._latest_health_issues: List[HealthIssue] = []
+        self._xml_path = None
+        self._xml_loaded_path = None
 
         self.tabview = ctk.CTkTabview(
             self,
@@ -68,6 +73,7 @@ class PreviewPanel(ctk.CTkFrame):
 
         self._build_intel_tab()
         self._build_preview_tab()
+        self._build_subgrids_tab()
         self._build_analytics_tab()
         self._build_se2_tab()
         self._build_xml_tab()
@@ -86,7 +92,7 @@ class PreviewPanel(ctk.CTkFrame):
             text="Select a blueprint on the left. We'll show block totals, conversion readiness, and where the file lives — no XML editing required.",
             font=TacticalTheme.FONT_NORMAL,
             text_color=TacticalTheme.TEXT_GRAY,
-            wraplength=600,
+            wraplength=760,
             anchor="nw",
             justify="left",
         )
@@ -204,6 +210,131 @@ class PreviewPanel(ctk.CTkFrame):
             state="disabled",
         )
         self.preview_summary_text.pack(fill="x", padx=8, pady=(0, 8))
+
+    def _build_subgrids_tab(self):
+        self.tab_subgrids = self.tabview.add("Map")
+        self.tab_subgrids.configure(fg_color=TacticalTheme.BG_DARK)
+
+        container = ctk.CTkFrame(self.tab_subgrids, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=8, pady=8)
+        container.columnconfigure(0, weight=2, minsize=240)
+        container.columnconfigure(1, weight=5, minsize=420)
+        container.rowconfigure(0, weight=1)
+
+        left_box = ctk.CTkFrame(
+            container,
+            fg_color=TacticalTheme.BG_GLASS,
+            border_width=1,
+            border_color=TacticalTheme.BORDER_SUBTLE,
+            corner_radius=10,
+        )
+        left_box.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+
+        ctk.CTkLabel(
+            left_box,
+            text="Grid hierarchy",
+            font=TacticalTheme.FONT_LARGE,
+            text_color=TacticalTheme.TEXT_WHITE,
+        ).pack(anchor="w", padx=12, pady=(12, 2))
+        ctk.CTkLabel(
+            left_box,
+            text="Click a grid to isolate it on the map.",
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.TEXT_GRAY,
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
+        self.subgrid_tree_scroll = ctk.CTkScrollableFrame(left_box, fg_color="transparent")
+        self.subgrid_tree_scroll.pack(fill="both", expand=True, padx=8, pady=(0, 10))
+        self._subgrid_empty_hint()
+
+        self.ship_canvas = ShipCanvas(container)
+        self.ship_canvas.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+
+    def _subgrid_empty_hint(self):
+        ctk.CTkLabel(
+            self.subgrid_tree_scroll,
+            text="Select a blueprint to list its CubeGrids, rotors, hinges, and pistons.",
+            font=TacticalTheme.FONT_NORMAL,
+            text_color=TacticalTheme.TEXT_GRAY,
+            wraplength=220,
+            justify="left",
+        ).pack(anchor="w", padx=6, pady=10)
+
+    def update_subgrids(self, structure: MultiGridStructure, matrix_summaries=None, voxels: Optional[List[dict]] = None):
+        for child in self.subgrid_tree_scroll.winfo_children():
+            child.destroy()
+
+        if structure is None or (structure.total_grids == 0 and not (voxels or [])):
+            self._subgrid_empty_hint()
+            self.ship_canvas.clear()
+            return
+
+        btn_all = ctk.CTkButton(
+            self.subgrid_tree_scroll,
+            text=f"All grids  ·  {structure.total_grids}  ·  {structure.total_blocks:,} blocks",
+            font=TacticalTheme.FONT_NORMAL,
+            fg_color=TacticalTheme.BG_DARK,
+            hover_color=TacticalTheme.CYAN_DIM,
+            text_color=TacticalTheme.TEXT_WHITE,
+            anchor="w",
+            height=36,
+            command=lambda: self.ship_canvas.filter_by_grid(None),
+        )
+        btn_all.pack(fill="x", pady=(0, 6))
+
+        def add_node_card(node: SubgridNode, depth: int = 0):
+            prefix = "Main  " if depth == 0 else ("    " * depth) + "↳ "
+            link = f"  ·  {node.attachment_via}" if node.attachment_via else ""
+            card = ctk.CTkFrame(
+                self.subgrid_tree_scroll,
+                fg_color=TacticalTheme.BG_DARK,
+                corner_radius=8,
+                border_width=1,
+                border_color=TacticalTheme.BORDER_SUBTLE,
+            )
+            card.pack(fill="x", pady=3)
+            ctk.CTkButton(
+                card,
+                text=f"{prefix}{node.grid_name}\n{node.grid_size} grid  ·  {node.block_count:,} blocks{link}",
+                font=TacticalTheme.FONT_NORMAL,
+                fg_color="transparent",
+                hover_color=TacticalTheme.BG_MEDIUM,
+                text_color=TacticalTheme.TEXT_WHITE if depth == 0 else TacticalTheme.TEXT_GRAY,
+                anchor="w",
+                justify="left",
+                command=lambda name=node.grid_name: self.ship_canvas.filter_by_grid(name),
+            ).pack(fill="x", padx=6, pady=6)
+            for child in node.children:
+                add_node_card(child, depth + 1)
+
+        if structure.root_node:
+            add_node_card(structure.root_node)
+        for orphan in structure.orphaned_grids:
+            add_node_card(orphan, depth=0)
+
+        if voxels:
+            self.ship_canvas.load_structure_data(
+                [
+                    VoxelBlock(
+                        x=int(v["x"]),
+                        y=int(v["y"]),
+                        z=int(v["z"]),
+                        subtype=v["subtype"],
+                        grid_name=v["grid_name"],
+                        grid_size=v.get("grid_size", "Large"),
+                        is_subgrid=bool(v.get("is_subgrid", False)),
+                    )
+                    for v in voxels
+                ]
+            )
+        else:
+            self.ship_canvas.clear()
+
+    def clear_subgrids(self):
+        for child in self.subgrid_tree_scroll.winfo_children():
+            child.destroy()
+        self._subgrid_empty_hint()
+        self.ship_canvas.clear()
 
     def _build_analytics_tab(self):
         self.tab_analytics = self.tabview.add("Analytics")
@@ -381,35 +512,51 @@ class PreviewPanel(ctk.CTkFrame):
             text_color=TacticalTheme.TEXT_GRAY,
         )
         self.clear_analytics()
-        self.show_preview_diff({}, {}, "Select a blueprint. A live before/after preview appears automatically.")
+        self.clear_subgrids()
+        self.show_preview_diff(
+            {},
+            {},
+            "Select a blueprint. A live before/after preview appears automatically.",
+            switch_tab=False,
+        )
 
     def load_xml(self, file_path, status_text: str):
-        try:
-            with open(file_path, "r", encoding="utf-8") as handle:
-                content = handle.read()
-            self.xml_textbox.configure(state="normal")
-            self.xml_textbox.delete("1.0", "end")
-            self.xml_textbox.insert("end", content)
-            self.xml_textbox.configure(state="disabled")
-            self.xml_status.configure(text=status_text)
-        except Exception as exc:
-            self.xml_textbox.configure(state="normal")
-            self.xml_textbox.delete("1.0", "end")
-            self.xml_textbox.insert("end", f"Error reading file: {exc}")
-            self.xml_textbox.configure(state="disabled")
+        self._xml_path = str(file_path)
+        self.xml_status.configure(text="Opening…")
+        path = str(file_path)
+
+        def task():
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    content = handle.read(120000)
+                    truncated = bool(handle.read(1))
+                if truncated:
+                    content += "\n\n… truncated so the UI stays responsive. Open the .sbc file in an editor for the full XML."
+            except Exception as exc:
+                content = f"Error reading file: {exc}"
+            self.after(0, lambda: self._apply_xml(content, status_text, path))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _apply_xml(self, content: str, status_text: str, path: str):
+        if self._xml_path != path:
+            return
+        self._xml_loaded_path = path
+        self._set_textbox_content(self.xml_textbox, content)
+        self.xml_status.configure(text=status_text)
 
     def show_preview_report(self, bp_name: str, mode: str, report: str):
         """
         Backward-compatible API with richer rendering.
         """
         self.show_preview_diff({}, {}, f"Preview: {bp_name}\nDirection: {mode}\n\n{report}")
-        self.tabview.set("Preview")
 
     def show_preview_diff(
         self,
         before_counts: Dict[str, int],
         after_counts: Dict[str, int],
         summary_text: str,
+        switch_tab: bool = False,
     ):
         self._set_textbox_content(
             self.preview_before_text,
@@ -420,7 +567,8 @@ class PreviewPanel(ctk.CTkFrame):
             self._format_counts(after_counts, "Nothing would change."),
         )
         self._set_textbox_content(self.preview_summary_text, summary_text or "No changes with the current settings.")
-        self.tabview.set("Preview")
+        if switch_tab:
+            self.tabview.set("Preview")
 
     def update_analytics(self, analytics_result, comparison: Optional[ConversionComparison] = None):
         self.metric_labels["Blocks"].configure(text=f"{analytics_result.block_count:,}")
