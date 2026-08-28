@@ -42,6 +42,22 @@ class MultiGridStructure:
     mechanical_links: List[MechanicalLink]
     orphaned_grids: List[SubgridNode] = field(default_factory=list)
 
+    def iter_nodes(self) -> List[tuple]:
+        """Yield (depth, node) in display order, including orphans."""
+        rows: List[tuple] = []
+
+        def walk(node: Optional[SubgridNode], depth: int) -> None:
+            if node is None:
+                return
+            rows.append((depth, node))
+            for child in node.children:
+                walk(child, depth + 1)
+
+        walk(self.root_node, 0)
+        for orphan in self.orphaned_grids:
+            walk(orphan, 0)
+        return rows
+
 
 class SubgridHierarchyParser:
     """Parses blueprint XML into a connected tree of CubeGrids."""
@@ -93,7 +109,7 @@ class SubgridHierarchyParser:
             grid_name = cls._grid_label(grid, fallback=f"Grid {len(grid_data) + 1}")
             grid_size = cls._get_text(grid, "GridSizeEnum") or "Large"
 
-            blocks = grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
+            blocks = cls._findall_blocks(grid)
             block_count = len(blocks)
 
             # Detect mechanical bases and top parts in this grid
@@ -107,6 +123,7 @@ class SubgridHierarchyParser:
                     or cls._get_text(block, "TopPartEntityId")
                     or cls._get_text(block, "RotorEntityId")
                     or cls._get_text(block, "AttachedSubgridId")
+                    or cls._get_text(block, "TopGridId")
                 )
                 if top_part_id and top_part_id != "0":
                     link_type = "Mechanical"
@@ -138,16 +155,30 @@ class SubgridHierarchyParser:
         parent_child_map: Dict[str, List[tuple]] = {gid: [] for gid in grid_data}
         child_grid_ids: Set[str] = set()
 
+        def _link(parent_grid_id: str, child_grid_id: str, desc: str) -> None:
+            if parent_grid_id == child_grid_id:
+                return
+            if parent_grid_id not in parent_child_map or child_grid_id not in grid_data:
+                return
+            existing = parent_child_map[parent_grid_id]
+            if any(cid == child_grid_id for cid, _ in existing):
+                return
+            existing.append((child_grid_id, desc))
+            child_grid_ids.add(child_grid_id)
+
         for grid_id, data in grid_data.items():
             grid_elem = data["element"]
-            for block in grid_elem.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock"):
+            for block in cls._findall_blocks(grid_elem):
                 block_id = cls._get_text(block, "EntityId")
                 if block_id in top_to_base_map:
                     parent_grid_id = top_to_base_map[block_id]
-                    if parent_grid_id != grid_id:
-                        desc = top_id_to_link_desc.get(block_id, "Mechanical Link")
-                        parent_child_map[parent_grid_id].append((grid_id, desc))
-                        child_grid_ids.add(grid_id)
+                    desc = top_id_to_link_desc.get(block_id, "Mechanical Link")
+                    _link(parent_grid_id, grid_id, desc)
+
+        # Some blueprints store TopBlockId / TopGridId as the child CubeGrid EntityId.
+        for top_id, base_grid_id in top_to_base_map.items():
+            if top_id in grid_data:
+                _link(base_grid_id, top_id, top_id_to_link_desc.get(top_id, "Mechanical Link"))
 
         # Identify primary root grid (largest block count among non-children)
         root_candidates = [gid for gid in grid_data if gid not in child_grid_ids]
@@ -193,9 +224,20 @@ class SubgridHierarchyParser:
         )
 
     @staticmethod
+    def _findall_blocks(grid: ET.Element) -> List[ET.Element]:
+        blocks = grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
+        if not blocks:
+            blocks = grid.findall(".//{*}CubeBlocks/{*}MyObjectBuilder_CubeBlock")
+        if not blocks:
+            blocks = grid.findall(".//MyObjectBuilder_CubeBlock")
+        return blocks
+
+    @staticmethod
     def _grid_label(grid: ET.Element, fallback: str) -> str:
         for tag in ("DisplayName", "CustomName", "Name"):
             child = grid.find(tag)
+            if child is None:
+                child = grid.find(f"{{*}}{tag}")
             if child is not None and child.text and child.text.strip():
                 return child.text.strip()
         return fallback
@@ -203,6 +245,8 @@ class SubgridHierarchyParser:
     @staticmethod
     def _get_text(element: ET.Element, tag: str) -> Optional[str]:
         child = element.find(tag)
+        if child is None:
+            child = element.find(f"{{*}}{tag}")
         if child is not None and child.text:
             return child.text.strip()
         return None

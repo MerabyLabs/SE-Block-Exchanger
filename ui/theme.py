@@ -55,14 +55,14 @@ class TacticalTheme:
 
     FONT_FAMILY = "Segoe UI"
     FONT_MONO = "Consolas"
-    FONT_SMALL = ("Segoe UI", 13)
-    FONT_NORMAL = ("Segoe UI", 15)
-    FONT_LARGE = ("Segoe UI", 18, "bold")
-    FONT_TITLE = ("Segoe UI", 22, "bold")
-    FONT_HEADER = ("Segoe UI", 24, "bold")
-    FONT_MONO_SMALL = ("Consolas", 14)
-    FONT_CODE = ("Consolas", 14)
-    FONT_CODE_SMALL = ("Consolas", 14)
+    FONT_SMALL = ("Segoe UI", 15)
+    FONT_NORMAL = ("Segoe UI", 17)
+    FONT_LARGE = ("Segoe UI", 20, "bold")
+    FONT_TITLE = ("Segoe UI", 24, "bold")
+    FONT_HEADER = ("Segoe UI", 26, "bold")
+    FONT_MONO_SMALL = ("Consolas", 16)
+    FONT_CODE = ("Consolas", 16)
+    FONT_CODE_SMALL = ("Consolas", 16)
 
     @classmethod
     def normalize_appearance_mode(cls, mode: str) -> str:
@@ -96,14 +96,22 @@ class TacticalTheme:
                 cls.FONT_MONO = name
                 break
 
-        cls.FONT_SMALL = (cls.FONT_FAMILY, 13)
-        cls.FONT_NORMAL = (cls.FONT_FAMILY, 15)
-        cls.FONT_LARGE = (cls.FONT_FAMILY, 18, "bold")
-        cls.FONT_TITLE = (cls.FONT_FAMILY, 22, "bold")
-        cls.FONT_HEADER = (cls.FONT_FAMILY, 24, "bold")
-        cls.FONT_MONO_SMALL = (cls.FONT_MONO, 14)
-        cls.FONT_CODE = (cls.FONT_MONO, 14)
-        cls.FONT_CODE_SMALL = (cls.FONT_MONO, 14)
+        cls.FONT_SMALL = (cls.FONT_FAMILY, 15)
+        cls.FONT_NORMAL = (cls.FONT_FAMILY, 17)
+        cls.FONT_LARGE = (cls.FONT_FAMILY, 20, "bold")
+        cls.FONT_TITLE = (cls.FONT_FAMILY, 24, "bold")
+        cls.FONT_HEADER = (cls.FONT_FAMILY, 26, "bold")
+        cls.FONT_MONO_SMALL = (cls.FONT_MONO, 16)
+        cls.FONT_CODE = (cls.FONT_MONO, 16)
+        cls.FONT_CODE_SMALL = (cls.FONT_MONO, 16)
+
+    @classmethod
+    def ui_font(cls, size: int = 17, weight: str = "normal"):
+        return ctk.CTkFont(family=cls.FONT_FAMILY, size=size, weight=weight)
+
+    @classmethod
+    def code_font(cls, size: int = 16, weight: str = "normal"):
+        return ctk.CTkFont(family=cls.FONT_MONO, size=size, weight=weight)
 
     @classmethod
     def panel_kwargs(cls) -> dict:

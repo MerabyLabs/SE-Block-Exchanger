@@ -19,9 +19,10 @@ from blueprint_analytics import (
     SEVERITY_INFO,
     SEVERITY_WARNING,
 )
-from subgrid_engine.hierarchy_parser import MultiGridStructure, SubgridNode
+from subgrid_engine.hierarchy_parser import MultiGridStructure
 from ui.labels import category_label
 from ui.theme import TacticalTheme
+from ui.widgets.grid_tree import GridHierarchyView
 from ui.widgets.ship_canvas import ShipCanvas, VoxelBlock
 
 
@@ -56,6 +57,12 @@ class PreviewPanel(ctk.CTkFrame):
         self._latest_health_issues: List[HealthIssue] = []
         self._xml_path = None
         self._xml_loaded_path = None
+        self._xml_status_text = ""
+        self._pending_structure = None
+        self._pending_voxels: List[dict] = []
+        self._subgrids_rendered_for = None
+        self._pending_analytics = None
+        self._pending_se2 = None
 
         self.tabview = ctk.CTkTabview(
             self,
@@ -77,6 +84,7 @@ class PreviewPanel(ctk.CTkFrame):
         self._build_analytics_tab()
         self._build_se2_tab()
         self._build_xml_tab()
+        self.tabview.configure(command=self._on_tab_changed)
 
     def _build_intel_tab(self):
         self.tab_intel = self.tabview.add("Overview")
@@ -119,7 +127,7 @@ class PreviewPanel(ctk.CTkFrame):
         self.xml_status.pack(side="right")
         self.xml_textbox = ctk.CTkTextbox(
             self.tab_xml,
-            font=TacticalTheme.FONT_MONO_SMALL,
+            font=TacticalTheme.code_font(16),
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -177,7 +185,7 @@ class PreviewPanel(ctk.CTkFrame):
 
         self.preview_before_text = ctk.CTkTextbox(
             preview_split,
-            font=TacticalTheme.FONT_MONO_SMALL,
+            font=TacticalTheme.code_font(16),
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -188,7 +196,7 @@ class PreviewPanel(ctk.CTkFrame):
         self.preview_before_text.grid(row=1, column=0, sticky="nsew", padx=(0, 4))
         self.preview_after_text = ctk.CTkTextbox(
             preview_split,
-            font=TacticalTheme.FONT_MONO_SMALL,
+            font=TacticalTheme.code_font(16),
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -200,8 +208,8 @@ class PreviewPanel(ctk.CTkFrame):
 
         self.preview_summary_text = ctk.CTkTextbox(
             self.tab_preview,
-            height=120,
-            font=TacticalTheme.FONT_MONO_SMALL,
+            height=140,
+            font=TacticalTheme.code_font(16),
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -212,12 +220,12 @@ class PreviewPanel(ctk.CTkFrame):
         self.preview_summary_text.pack(fill="x", padx=8, pady=(0, 8))
 
     def _build_subgrids_tab(self):
-        self.tab_subgrids = self.tabview.add("Map")
+        self.tab_subgrids = self.tabview.add("Subgrids")
         self.tab_subgrids.configure(fg_color=TacticalTheme.BG_DARK)
 
         container = ctk.CTkFrame(self.tab_subgrids, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=8, pady=8)
-        container.columnconfigure(0, weight=2, minsize=240)
+        container.columnconfigure(0, weight=2, minsize=260)
         container.columnconfigure(1, weight=5, minsize=420)
         container.rowconfigure(0, weight=1)
 
@@ -238,86 +246,68 @@ class PreviewPanel(ctk.CTkFrame):
         ).pack(anchor="w", padx=12, pady=(12, 2))
         ctk.CTkLabel(
             left_box,
-            text="Click a grid to isolate it on the map.",
+            text="Main hull first, then rotors, hinges, and pistons. Click a row to isolate it on the map.",
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.TEXT_GRAY,
+            wraplength=240,
+            justify="left",
         ).pack(anchor="w", padx=12, pady=(0, 8))
 
-        self.subgrid_tree_scroll = ctk.CTkScrollableFrame(left_box, fg_color="transparent")
-        self.subgrid_tree_scroll.pack(fill="both", expand=True, padx=8, pady=(0, 10))
-        self._subgrid_empty_hint()
+        self.hierarchy_view = GridHierarchyView(
+            left_box,
+            on_select=self._on_hierarchy_select,
+        )
+        self.hierarchy_view.pack(fill="both", expand=True, padx=8, pady=(0, 10))
+        self.hierarchy_view.render(None)
 
         self.ship_canvas = ShipCanvas(container)
         self.ship_canvas.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
-    def _subgrid_empty_hint(self):
-        ctk.CTkLabel(
-            self.subgrid_tree_scroll,
-            text="Select a blueprint to list its CubeGrids, rotors, hinges, and pistons.",
-            font=TacticalTheme.FONT_NORMAL,
-            text_color=TacticalTheme.TEXT_GRAY,
-            wraplength=220,
-            justify="left",
-        ).pack(anchor="w", padx=6, pady=10)
+    def current_tab(self) -> str:
+        try:
+            return self.tabview.get()
+        except Exception:
+            return "Overview"
+
+    def _on_tab_changed(self):
+        name = self.current_tab()
+        if name == "Subgrids":
+            self._render_subgrids()
+            self.after(40, self.ship_canvas.refresh)
+        elif name == "XML":
+            self._ensure_xml_loaded()
+        elif name == "Analytics":
+            self._apply_pending_analytics()
+        elif name == "SE2":
+            self._apply_pending_se2()
+
+    def _on_hierarchy_select(self, grid_name: Optional[str]):
+        self.ship_canvas.filter_by_grid(grid_name)
 
     def update_subgrids(self, structure: MultiGridStructure, matrix_summaries=None, voxels: Optional[List[dict]] = None):
-        for child in list(self.subgrid_tree_scroll.winfo_children()):
-            try:
-                child.destroy()
-            except Exception:
-                pass
+        self._pending_structure = structure
+        self._pending_voxels = list(voxels or [])
+        self._subgrids_rendered_for = None
+        if self.current_tab() == "Subgrids":
+            self._render_subgrids()
 
-        if structure is None or (structure.total_grids == 0 and not (voxels or [])):
-            self._subgrid_empty_hint()
+    def _render_subgrids(self):
+        structure = self._pending_structure
+        voxels = self._pending_voxels
+        render_key = (id(structure), len(voxels))
+        force_canvas = True
+        if self._subgrids_rendered_for == render_key:
+            self.ship_canvas.refresh()
+            self.hierarchy_view.render(structure)
+            return
+        self._subgrids_rendered_for = render_key
+
+        if structure is None or (getattr(structure, "total_grids", 0) == 0 and not voxels):
+            self.hierarchy_view.render(None)
             self.ship_canvas.clear()
             return
 
-        btn_all = ctk.CTkButton(
-            self.subgrid_tree_scroll,
-            text=f"All grids  ·  {structure.total_grids}  ·  {structure.total_blocks:,} blocks",
-            font=TacticalTheme.FONT_NORMAL,
-            fg_color=TacticalTheme.BG_DARK,
-            hover_color=TacticalTheme.CYAN_DIM,
-            text_color=TacticalTheme.TEXT_WHITE,
-            anchor="w",
-            height=36,
-            command=lambda: self.ship_canvas.filter_by_grid(None),
-        )
-        btn_all.pack(fill="x", pady=(0, 6))
-
-        def add_node_card(node: SubgridNode, depth: int = 0):
-            prefix = "Main  " if depth == 0 else ("    " * depth) + "↳ "
-            link = f"  ·  {node.attachment_via}" if node.attachment_via else ""
-            card = ctk.CTkFrame(
-                self.subgrid_tree_scroll,
-                fg_color=TacticalTheme.BG_DARK,
-                corner_radius=8,
-                border_width=1,
-                border_color=TacticalTheme.BORDER_SUBTLE,
-            )
-            card.pack(fill="x", pady=3)
-            ctk.CTkLabel(
-                card,
-                text=f"{prefix}{node.grid_name}\n{node.grid_size} grid  ·  {node.block_count:,} blocks{link}",
-                font=TacticalTheme.FONT_NORMAL,
-                text_color=TacticalTheme.TEXT_WHITE if depth == 0 else TacticalTheme.TEXT_GRAY,
-                anchor="w",
-                justify="left",
-            ).pack(fill="x", padx=8, pady=8)
-            card.bind("<Button-1>", lambda _e, name=node.grid_name: self.ship_canvas.filter_by_grid(name))
-            for grandchild in card.winfo_children():
-                grandchild.bind(
-                    "<Button-1>",
-                    lambda _e, name=node.grid_name: self.ship_canvas.filter_by_grid(name),
-                )
-            for child in node.children:
-                add_node_card(child, depth + 1)
-
-        if structure.root_node:
-            add_node_card(structure.root_node)
-        for orphan in structure.orphaned_grids:
-            add_node_card(orphan, depth=0)
-
+        self.hierarchy_view.render(structure)
         if voxels:
             self.ship_canvas.load_structure_data(
                 [
@@ -333,17 +323,16 @@ class PreviewPanel(ctk.CTkFrame):
                     for v in voxels
                 ]
             )
-            self.after(150, self.ship_canvas.fit_to_view)
+            if force_canvas:
+                self.after(50, self.ship_canvas.refresh)
         else:
             self.ship_canvas.clear()
 
     def clear_subgrids(self):
-        for child in list(self.subgrid_tree_scroll.winfo_children()):
-            try:
-                child.destroy()
-            except Exception:
-                pass
-        self._subgrid_empty_hint()
+        self._pending_structure = None
+        self._pending_voxels = []
+        self._subgrids_rendered_for = None
+        self.hierarchy_view.render(None)
         self.ship_canvas.clear()
 
     def _build_analytics_tab(self):
@@ -451,7 +440,7 @@ class PreviewPanel(ctk.CTkFrame):
 
         self.resource_tree = ctk.CTkTextbox(
             body,
-            font=TacticalTheme.FONT_MONO_SMALL,
+            font=TacticalTheme.code_font(16),
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -532,8 +521,20 @@ class PreviewPanel(ctk.CTkFrame):
 
     def load_xml(self, file_path, status_text: str):
         self._xml_path = str(file_path)
+        self._xml_status_text = status_text
+        if self._xml_loaded_path != self._xml_path:
+            self.xml_status.configure(text="Ready — open the XML tab to view it")
+        if self.current_tab() == "XML":
+            self._ensure_xml_loaded()
+
+    def _ensure_xml_loaded(self):
+        path = self._xml_path
+        if not path:
+            return
+        if self._xml_loaded_path == path:
+            return
         self.xml_status.configure(text="Opening…")
-        path = str(file_path)
+        status_text = getattr(self, "_xml_status_text", "Blueprint XML")
 
         def task():
             try:
@@ -581,6 +582,15 @@ class PreviewPanel(ctk.CTkFrame):
             self.tabview.set("Preview")
 
     def update_analytics(self, analytics_result, comparison: Optional[ConversionComparison] = None):
+        self._pending_analytics = (analytics_result, comparison)
+        if self.current_tab() == "Analytics":
+            self._apply_pending_analytics()
+
+    def _apply_pending_analytics(self):
+        pending = self._pending_analytics
+        if not pending:
+            return
+        analytics_result, comparison = pending
         self.metric_labels["Blocks"].configure(text=f"{analytics_result.block_count:,}")
         self.metric_labels["PCU"].configure(text=f"{analytics_result.pcu_total:,}")
         self.metric_labels["Mass"].configure(text=f"{analytics_result.mass_total:,.2f}")
@@ -664,6 +674,7 @@ class PreviewPanel(ctk.CTkFrame):
                 20,
                 text="No category data available.",
                 fill=TacticalTheme.TEXT_GRAY,
+                font=TacticalTheme.FONT_NORMAL,
                 anchor="w",
             )
             return
@@ -688,7 +699,7 @@ class PreviewPanel(ctk.CTkFrame):
             bar_w = int((width - 180) * ratio)
             color = palette[idx % len(palette)]
             self.chart_canvas.create_rectangle(150, y, 150 + bar_w, y + bar_h, fill=color, outline="")
-            self.chart_canvas.create_text(10, y + (bar_h / 2), text=category_label(name), fill=TacticalTheme.TEXT_CYAN, anchor="w")
+            self.chart_canvas.create_text(10, y + (bar_h / 2), text=category_label(name), fill=TacticalTheme.TEXT_CYAN, anchor="w", font=TacticalTheme.FONT_SMALL)
             self.chart_canvas.create_text(
                 160 + bar_w,
                 y + (bar_h / 2),
@@ -874,8 +885,8 @@ class PreviewPanel(ctk.CTkFrame):
         
         self.se2_audit_textbox = ctk.CTkTextbox(
             self.se2_audit_frame,
-            height=200,
-            font=TacticalTheme.FONT_MONO_SMALL,
+            height=220,
+            font=TacticalTheme.code_font(16),
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_width=0,
@@ -895,6 +906,15 @@ class PreviewPanel(ctk.CTkFrame):
             self._on_scale_grid()
 
     def update_se2_transition(self, info, readiness: SE2Readiness):
+        self._pending_se2 = (info, readiness)
+        if self.current_tab() == "SE2":
+            self._apply_pending_se2()
+
+    def _apply_pending_se2(self):
+        pending = self._pending_se2
+        if not pending:
+            return
+        info, readiness = pending
         self.btn_vanillafy.configure(state="normal")
         self.btn_gridsizer.configure(state="normal")
 

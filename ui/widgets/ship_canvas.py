@@ -98,6 +98,7 @@ class ShipCanvas(ctk.CTkFrame):
         self.canvas.bind("<Button-4>", lambda _e: self._zoom(1.15))
         self.canvas.bind("<Button-5>", lambda _e: self._zoom(0.85))
         self.canvas.bind("<Configure>", self._on_configure)
+        self.canvas.bind("<Map>", self._on_mapped)
 
         legend = ctk.CTkFrame(self, fg_color="transparent")
         legend.pack(fill="x", padx=10, pady=(0, 8))
@@ -175,6 +176,19 @@ class ShipCanvas(ctk.CTkFrame):
     def _on_configure(self, _event=None) -> None:
         self._schedule_redraw()
 
+    def _on_mapped(self, _event=None) -> None:
+        if self.blocks:
+            self.fit_to_view()
+        else:
+            self._schedule_redraw()
+
+    def refresh(self) -> None:
+        """Redraw after the Map/Subgrids tab becomes visible."""
+        if self.blocks:
+            self.fit_to_view()
+        else:
+            self._schedule_redraw()
+
     def _schedule_redraw(self) -> None:
         if self._redraw_job is not None:
             self.after_cancel(self._redraw_job)
@@ -229,16 +243,30 @@ class ShipCanvas(ctk.CTkFrame):
                 key = (b.z, -b.y)
             cells[key] = (fill, outline)
 
-        for (gx, gy), (fill, outline) in cells.items():
+        def project(gx: int, gy: int) -> Tuple[float, float]:
             if self.projection_mode == "Top":
-                px = cx + (gx - mid_x) * step
-                py = cy + (gy - mid_z) * step
-            elif self.projection_mode == "Side":
-                px = cx + (gx - mid_x) * step
-                py = cy - ((-gy) - mid_y) * step
-            else:
-                px = cx + (gx - mid_z) * step
-                py = cy - ((-gy) - mid_y) * step
+                return cx + (gx - mid_x) * step, cy + (gy - mid_z) * step
+            if self.projection_mode == "Side":
+                return cx + (gx - mid_x) * step, cy - ((-gy) - mid_y) * step
+            return cx + (gx - mid_z) * step, cy - ((-gy) - mid_y) * step
+
+        xs = [key[0] for key in cells]
+        ys = [key[1] for key in cells]
+        min_gx, max_gx = min(xs), max(xs)
+        min_gy, max_gy = min(ys), max(ys)
+        if (max_gx - min_gx) <= 80 and (max_gy - min_gy) <= 80:
+            grid_color = "#1e293b"
+            for gx in range(min_gx, max_gx + 2):
+                x0, y0 = project(gx, min_gy)
+                x1, y1 = project(gx, max_gy + 1)
+                self.canvas.create_line(x0, y0, x1, y1, fill=grid_color, width=1)
+            for gy in range(min_gy, max_gy + 2):
+                x0, y0 = project(min_gx, gy)
+                x1, y1 = project(max_gx + 1, gy)
+                self.canvas.create_line(x0, y0, x1, y1, fill=grid_color, width=1)
+
+        for (gx, gy), (fill, outline) in cells.items():
+            px, py = project(gx, gy)
             self.canvas.create_rectangle(
                 px, py, px + step - 1, py + step - 1,
                 fill=fill,

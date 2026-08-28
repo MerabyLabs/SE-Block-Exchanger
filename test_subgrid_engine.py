@@ -75,6 +75,43 @@ class TestSubgridHierarchy(unittest.TestCase):
             names = {v["grid_name"] for v in voxels}
             self.assertEqual(names, {"Hull", "Turret"})
             self.assertTrue(any(v["is_subgrid"] for v in voxels))
+            walked = structure.iter_nodes()
+            self.assertEqual([node.grid_name for _, node in walked], ["Hull", "Turret"])
+            self.assertEqual(walked[1][0], 1)
+
+    def test_top_grid_id_links_child_cubegrid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bp.sbc"
+            ET.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
+            root = ET.Element("Definitions")
+            ship = ET.SubElement(ET.SubElement(root, "ShipBlueprints"), "ShipBlueprint")
+            grids = ET.SubElement(ship, "CubeGrids")
+
+            main = ET.SubElement(grids, "CubeGrid")
+            ET.SubElement(main, "EntityId").text = "100"
+            ET.SubElement(main, "DisplayName").text = "Hull"
+            ET.SubElement(main, "GridSizeEnum").text = "Large"
+            main_blocks = ET.SubElement(main, "CubeBlocks")
+            stator = ET.SubElement(main_blocks, "MyObjectBuilder_CubeBlock")
+            stator.set("{http://www.w3.org/2001/XMLSchema-instance}type", "MyObjectBuilder_MotorStator")
+            ET.SubElement(stator, "SubtypeName").text = "LargeStator"
+            ET.SubElement(stator, "TopGridId").text = "200"
+            ET.SubElement(stator, "Min").attrib.update({"x": "0", "y": "0", "z": "0"})
+
+            turret = ET.SubElement(grids, "CubeGrid")
+            ET.SubElement(turret, "EntityId").text = "200"
+            ET.SubElement(turret, "DisplayName").text = "Turret"
+            ET.SubElement(turret, "GridSizeEnum").text = "Small"
+            turret_blocks = ET.SubElement(turret, "CubeBlocks")
+            block = ET.SubElement(turret_blocks, "MyObjectBuilder_CubeBlock")
+            ET.SubElement(block, "SubtypeName").text = "SmallBlockArmorBlock"
+            ET.SubElement(block, "Min").attrib.update({"x": "0", "y": "0", "z": "0"})
+
+            ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+            structure = SubgridHierarchyParser.parse_file(path)
+            self.assertEqual(structure.total_grids, 2)
+            self.assertEqual(structure.root_node.grid_name, "Hull")
+            self.assertEqual(structure.root_node.children[0].grid_name, "Turret")
 
 
 class TestVoxelsAndCanvas(unittest.TestCase):
@@ -103,11 +140,11 @@ class TestVoxelsAndCanvas(unittest.TestCase):
 
 
 class TestReadableFonts(unittest.TestCase):
-    def test_box_fonts_are_at_least_13pt(self):
-        self.assertGreaterEqual(TacticalTheme.FONT_SMALL[1], 13)
-        self.assertGreaterEqual(TacticalTheme.FONT_NORMAL[1], 15)
-        self.assertGreaterEqual(TacticalTheme.FONT_MONO_SMALL[1], 14)
-        self.assertGreaterEqual(TacticalTheme.FONT_CODE_SMALL[1], 14)
+    def test_box_fonts_are_at_least_15pt(self):
+        self.assertGreaterEqual(TacticalTheme.FONT_SMALL[1], 15)
+        self.assertGreaterEqual(TacticalTheme.FONT_NORMAL[1], 17)
+        self.assertGreaterEqual(TacticalTheme.FONT_MONO_SMALL[1], 16)
+        self.assertGreaterEqual(TacticalTheme.FONT_CODE_SMALL[1], 16)
 
 
 if __name__ == "__main__":
