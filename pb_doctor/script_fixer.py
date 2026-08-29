@@ -146,8 +146,20 @@ public void Main(string argument, UpdateType updateSource) {
         return code.strip(), fixes
 
     @staticmethod
-    def _is_forbidden_using(target: str) -> bool:
+    def _using_target_namespace(clause: str) -> str:
+        text = clause.strip()
+        if text.startswith("static "):
+            text = text[7:].strip()
+        if "=" in text:
+            text = text.split("=", 1)[1].strip()
+        if text.startswith("global::"):
+            text = text[8:]
+        return text
+
+    @classmethod
+    def _is_forbidden_using(cls, target: str) -> bool:
+        namespace = cls._using_target_namespace(target)
         for ns in FORBIDDEN_NAMESPACES:
-            if target == ns or target.startswith(ns + "."):
+            if namespace == ns or namespace.startswith(ns + "."):
                 return True
         return False

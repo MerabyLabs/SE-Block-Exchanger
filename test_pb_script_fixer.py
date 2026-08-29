@@ -29,6 +29,26 @@ public void Main(string arg, UpdateType src) {}
         self.assertEqual(report.error_count, 0)
         self.assertEqual(report.compliance_score, 100)
 
+    def test_08_strip_static_and_alias_forbidden_usings(self):
+        code = """using System;
+using static System.IO;
+using IO = System.IO;
+using static System.IO.File;
+using global::System.Net;
+using VRage.Game;
+
+public Program() {}
+public void Main(string arg, UpdateType src) {}
+"""
+        fixed, fixes = ScriptFixer.fix_script(code)
+        self.assertNotIn("System.IO", fixed)
+        self.assertNotIn("System.Net", fixed)
+        self.assertIn("using System;", fixed)
+        self.assertIn("using VRage.Game;", fixed)
+        self.assertTrue(any("using" in f for f in fixes))
+        report = PBScriptValidator.validate_script("AliasUsings", fixed)
+        self.assertEqual(report.error_count, 0)
+
     def test_06_allowed_usings_pass_validator(self):
         code = """using System;
 using System.Collections.Generic;
