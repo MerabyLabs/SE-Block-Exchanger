@@ -547,21 +547,24 @@ class TacticalCommandCenter(ctk.CTk):
                     registry=self.registry,
                     include_profiles=False,
                 )
-                replacer.process_blueprint(str(bp_file), create_backup=False, dry_run=True)
+                tree = safe_xml.parse(bp_file)
+                root = tree.getroot()
+                replacer.blocks_scanned = 0
+                replacer.replacements_made = 0
+                replacer.change_log = []
+                replacer.replace_blocks(tree, dry_run=True)
                 before_counts: Dict[str, int] = {}
                 after_counts: Dict[str, int] = {}
                 for source, target in replacer.change_log:
                     before_counts[source] = before_counts.get(source, 0) + 1
                     after_counts[target] = after_counts.get(target, 0) + 1
                 report = replacer.get_dry_run_report()
-                analytics = self.analytics_engine.analyze_blueprint(bp_file)
-                comparison = self.analytics_engine.compare_conversion_cost(
-                    bp_file,
+                analytics = self.analytics_engine.analyze_root(root, blueprint_name=bp.name)
+                comparison = self.analytics_engine.compare_conversion_cost_from_result(
+                    analytics,
                     replacer.mapping,
                     mode,
                 )
-                tree = safe_xml.parse(bp_file)
-                root = tree.getroot()
                 structure = SubgridHierarchyParser.parse_element(root)
                 voxels = GridMatrixVisualizer.extract_voxels_from_root(root)
                 self._ui(

@@ -56,6 +56,24 @@ class TestBlueprintAnalytics(unittest.TestCase):
         self.assertIn("LargeBlockArmorBlock -> LargeHeavyBlockArmorBlock", comparison.block_changes)
         self.assertGreater(comparison.component_delta.get("SteelPlate", 0), 0)
 
+    def test_compare_conversion_cost_reuses_precomputed_result(self):
+        self._write_blueprint(["LargeBlockArmorBlock", "LargeBlockArmorBlock", "LargeBlockCockpit"])
+        mapping = {"LargeBlockArmorBlock": "LargeHeavyBlockArmorBlock"}
+        result = self.engine.analyze_blueprint(self.bp_file)
+        from_file = self.engine.compare_conversion_cost(
+            self.bp_file,
+            mapping=mapping,
+            mode="light_to_heavy",
+        )
+        from_result = self.engine.compare_conversion_cost_from_result(
+            result,
+            mapping,
+            "light_to_heavy",
+        )
+        self.assertEqual(from_file.block_changes, from_result.block_changes)
+        self.assertEqual(from_file.pcu_delta, from_result.pcu_delta)
+        self.assertEqual(from_file.mass_delta, from_result.mass_delta)
+
     def test_export_reports(self):
         self._write_blueprint(["LargeBlockArmorBlock", "LargeBlockCockpit"])
         comparison = self.engine.compare_conversion_cost(

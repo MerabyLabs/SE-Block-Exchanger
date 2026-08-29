@@ -199,7 +199,12 @@ class BlueprintAnalyticsEngine:
 
     def analyze_blueprint(self, blueprint_file: Path) -> BlueprintAnalyticsResult:
         tree = safe_xml.parse(blueprint_file)
-        root = tree.getroot()
+        return self.analyze_root(
+            tree.getroot(),
+            blueprint_name=Path(blueprint_file).parent.name,
+        )
+
+    def analyze_root(self, root: ET.Element, *, blueprint_name: str) -> BlueprintAnalyticsResult:
         grid_size = self._detect_grid_size(root)
 
         blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
@@ -234,7 +239,7 @@ class BlueprintAnalyticsEngine:
         issues = self._run_health_audit(root, subtype_counts, sorted(unknown_subtypes))
 
         return BlueprintAnalyticsResult(
-            blueprint_name=Path(blueprint_file).parent.name,
+            blueprint_name=blueprint_name,
             block_count=sum(subtype_counts.values()),
             block_counts=dict(sorted(subtype_counts.items())),
             category_counts=dict(sorted(category_totals.items())),
@@ -254,8 +259,18 @@ class BlueprintAnalyticsEngine:
         mapping: Dict[str, str],
         mode: str,
     ) -> ConversionComparison:
-        result = self.analyze_blueprint(blueprint_file)
+        return self.compare_conversion_cost_from_result(
+            self.analyze_blueprint(blueprint_file),
+            mapping,
+            mode,
+        )
 
+    def compare_conversion_cost_from_result(
+        self,
+        result: BlueprintAnalyticsResult,
+        mapping: Dict[str, str],
+        mode: str,
+    ) -> ConversionComparison:
         after_components: Dict[str, int] = defaultdict(int)
         after_pcu = 0
         after_mass = 0.0
