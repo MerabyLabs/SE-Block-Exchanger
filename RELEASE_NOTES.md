@@ -58,7 +58,7 @@ A Meraby Labs product. Free for personal, non-commercial use. Commercial use req
 ### Reliability
 - Production blueprint writes go through `safe_xml.safe_write` (unique temp names, replace). An interrupted conversion cannot leave a truncated `bp.sbc`.
 - XML parse path uses `defusedxml` (XXE / entity expansion).
-- Pillow ≥ 12.3.0 for the header logo. Tagged Windows builds embed `logo.png`, `app_icon.ico`, README, LICENSE, RELEASE_NOTES, `profiles/`, and `data/`.
+- Pillow >= 12.3.0 for the header logo. Tagged Windows builds embed `logo.png`, `app_icon.ico`, `README.md`, `LICENSE`, `RELEASE_NOTES.md`, `profiles/`, and `data/`.
 - Official README is the 3.2.0 user guide. The public GitHub tree is the runtime app (test suite and internal planning notes are not published). GitHub Releases use this version’s notes as the release body and publish `SHA256SUMS.txt`.
 
 ## v3.1.2 (2026-05-24)
