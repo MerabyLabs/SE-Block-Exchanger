@@ -1,4 +1,4 @@
-"""Clickable CubeGrid hierarchy with visible parent/child tree lines."""
+"""Clickable CubeGrid hierarchy of the main hull and attached subgrids."""
 
 from __future__ import annotations
 
@@ -82,13 +82,13 @@ class GridHierarchyView(ctk.CTkFrame):
         y += 8
 
         if structure.root_node:
-            y = self._draw_node(structure.root_node, depth=0, y=y, width=width, is_last=not structure.orphaned_grids)
-        for index, orphan in enumerate(structure.orphaned_grids):
-            y = self._draw_node(orphan, depth=0, y=y, width=width, is_last=index == len(structure.orphaned_grids) - 1)
+            y = self._draw_node(structure.root_node, depth=0, y=y, width=width)
+        for orphan in structure.orphaned_grids:
+            y = self._draw_node(orphan, depth=0, y=y, width=width)
 
         self.canvas.configure(scrollregion=(0, 0, width, y + 16))
 
-    def _draw_node(self, node: SubgridNode, depth: int, y: int, width: int, is_last: bool) -> int:
+    def _draw_node(self, node: SubgridNode, depth: int, y: int, width: int) -> int:
         connector = "Main" if depth == 0 and node.is_main_grid else "↳"
         title = f"{connector}  {node.grid_name}"
         extra = f" via {node.attachment_via}" if node.attachment_via else ""
@@ -103,9 +103,8 @@ class GridHierarchyView(ctk.CTkFrame):
             grid_name=node.grid_name,
             accent=accent,
         )
-        child_count = len(node.children)
-        for index, child in enumerate(node.children):
-            y = self._draw_node(child, depth + 1, y, width, is_last=index == child_count - 1)
+        for child in node.children:
+            y = self._draw_node(child, depth + 1, y, width)
         return y
 
     def _draw_row(
