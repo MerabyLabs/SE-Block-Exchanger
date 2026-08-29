@@ -94,7 +94,7 @@ class SteamWorkshopFetcher:
                 sbc_file = entry / "bp.sbc"
                 if not sbc_file.is_file():
                     # Check for any .sbc file in the folder
-                    sbc_candidates = list(entry.glob("*.sbc"))
+                    sbc_candidates = sorted(entry.glob("*.sbc"))
                     if sbc_candidates:
                         sbc_file = sbc_candidates[0]
                     else:

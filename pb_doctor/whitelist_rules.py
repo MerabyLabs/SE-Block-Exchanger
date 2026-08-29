@@ -35,7 +35,6 @@ COMPILED_FORBIDDEN_NAMESPACES: List[Tuple[Pattern, str]] = [
 # Forbidden keywords / patterns raw definitions
 FORBIDDEN_PATTERNS: List[Tuple[str, str, str]] = [
     (r"\bnamespace\s+[A-Za-z0-9_]+", "Namespaces cannot be declared inside a PB script.", "Remove the namespace wrapper."),
-    (r"\busing\s+[A-Za-z0-9_.]+\s*;", "Using directives cannot be placed inside PB scripts directly.", "Remove using directives and use fully qualified type names if needed."),
     (r"\basync\b", "Async methods are not supported in the PB sandbox.", "Use state machines with Runtime.UpdateFrequency instead of async/await."),
     (r"\bawait\b", "Await expressions are forbidden in PB scripts.", "Use sequential state execution in Main(string argument, UpdateType updateSource)."),
     (r"\bdynamic\b", "Dynamic typing is prohibited in PB scripts.", "Use strong typing or object casts."),

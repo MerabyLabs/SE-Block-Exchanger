@@ -53,7 +53,7 @@ class ModioFetcher:
                 member_path = member.filename.replace("\\", "/")
                 if member_path.startswith("/") or ".." in Path(member_path).parts:
                     raise ValueError(f"Illegal zip entry path: {member.filename}")
-                target_resolved = (destination_folder / member.filename).resolve()
+                target_resolved = (destination_folder / member_path).resolve()
                 if not cls._is_within_dest(dest_resolved, target_resolved):
                     raise ValueError(f"Illegal zip entry path: {member.filename}")
                 if member.is_dir() or member_path.endswith("/"):

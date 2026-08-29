@@ -13,11 +13,14 @@ import re
 from typing import List, Tuple
 
 
+from pb_doctor.whitelist_rules import FORBIDDEN_NAMESPACES
+
+
 class ScriptFixer:
     """Automated C# Ingame Script repair and modernization engine."""
 
-    ALL_USINGS_REGEX = re.compile(
-        r"^\s*using\s+[^;]+;\s*",
+    USING_LINE_REGEX = re.compile(
+        r"^\s*using\s+([^;]+);\s*$",
         re.MULTILINE,
     )
 
@@ -92,11 +95,23 @@ public void Main(string argument, UpdateType updateSource) {
         fixes: List[str] = []
         code = raw_code
 
-        # 1. Strip using directives (not valid inside in-game PB code)
-        usings_found = cls.ALL_USINGS_REGEX.findall(code)
-        if usings_found:
-            code = cls.ALL_USINGS_REGEX.sub("", code)
-            fixes.append(f"Stripped {len(usings_found)} 'using' directive(s) for in-game PB compatibility.")
+        # 1. Strip only sandbox-forbidden using directives (keep System, VRage, etc.)
+        def _keep_or_drop_using(match: re.Match) -> str:
+            target = match.group(1).strip()
+            if cls._is_forbidden_using(target):
+                return ""
+            return match.group(0)
+
+        stripped = 0
+        for match in cls.USING_LINE_REGEX.finditer(code):
+            if cls._is_forbidden_using(match.group(1).strip()):
+                stripped += 1
+        if stripped:
+            code = cls.USING_LINE_REGEX.sub(_keep_or_drop_using, code)
+            code = re.sub(r"\n{3,}", "\n\n", code)
+            fixes.append(
+                f"Removed {stripped} forbidden 'using' directive(s) (IO/threading/net/reflection)."
+            )
 
         # 2. Check and fix missing Main()
         if not re.search(r"\bvoid\s+Main\s*\(", code, re.IGNORECASE):
@@ -127,3 +142,10 @@ public void Main(string argument, UpdateType updateSource) {
             fixes.append(f"Appended {diff} missing '#endregion' directive(s).")
 
         return code.strip(), fixes
+
+    @staticmethod
+    def _is_forbidden_using(target: str) -> bool:
+        for ns in FORBIDDEN_NAMESPACES:
+            if target == ns or target.startswith(ns + "."):
+                return True
+        return False

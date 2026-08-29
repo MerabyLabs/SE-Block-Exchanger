@@ -106,6 +106,43 @@ class TestWorkshopSync(unittest.TestCase):
                 else:
                     os.environ["APPDATA"] = previous
 
+    def test_zip_backslash_entries_extract_as_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "win.zip"
+            dest = Path(tmp) / "out"
+            dest.mkdir()
+            posix_name = "subdir/nested/file.txt"
+            win_name = "subdir\\nested\\file.txt"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr(posix_name, "ok")
+            raw = zip_path.read_bytes()
+            zip_path.write_bytes(
+                raw.replace(posix_name.encode("ascii"), win_name.encode("ascii"))
+            )
+            ModioFetcher.extract_zip_blueprint(zip_path, dest)
+            extracted = dest / "subdir" / "nested" / "file.txt"
+            self.assertTrue(extracted.is_file())
+            self.assertEqual(extracted.read_text(encoding="utf-8"), "ok")
+
+    def test_list_cached_workshop_items_picks_sorted_sbc(self):
+        previous = os.environ.get("APPDATA")
+        with tempfile.TemporaryDirectory() as tmp:
+            workshop = Path(tmp) / "SpaceEngineers" / "Blueprints" / "workshop" / "4242"
+            workshop.mkdir(parents=True)
+            (workshop / "zebra.sbc").write_text("<Definitions/>", encoding="utf-8")
+            (workshop / "alpha.sbc").write_text("<Definitions/>", encoding="utf-8")
+            os.environ["APPDATA"] = tmp
+            try:
+                items = SteamWorkshopFetcher.list_cached_workshop_items()
+                matching = [item for item in items if item.workshop_id == "4242"]
+                self.assertEqual(len(matching), 1)
+                self.assertEqual(matching[0].sbc_path.name, "alpha.sbc")
+            finally:
+                if previous is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = previous
+
 
 if __name__ == "__main__":
     unittest.main()

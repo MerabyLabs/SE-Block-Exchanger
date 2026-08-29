@@ -21,12 +21,27 @@ public void Main(string arg, UpdateType src) {}
         self.assertNotIn("System.IO", fixed)
         self.assertNotIn("System.Threading", fixed)
         self.assertNotIn("System.Net", fixed)
-        self.assertNotIn("using ", fixed)
+        self.assertIn("using System;", fixed)
+        self.assertIn("using VRage.Game;", fixed)
         self.assertGreater(len(fixes), 0)
 
         report = PBScriptValidator.validate_script("TestPB", fixed)
         self.assertEqual(report.error_count, 0)
         self.assertEqual(report.compliance_score, 100)
+
+    def test_06_allowed_usings_pass_validator(self):
+        code = """using System;
+using System.Collections.Generic;
+using VRage.Game;
+
+public Program() {}
+public void Main(string arg, UpdateType src) {
+    var items = new List<int>();
+}
+"""
+        report = PBScriptValidator.validate_script("AllowedUsings", code)
+        self.assertEqual(report.error_count, 0)
+        self.assertTrue(report.is_valid)
 
     def test_02_inject_missing_main(self):
         code = """public Program() {
