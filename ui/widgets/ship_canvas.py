@@ -130,24 +130,49 @@ class ShipCanvas(ctk.CTkFrame):
             self.info_status.configure(text="No blocks to draw")
             self._schedule_redraw()
             return
-        xs = [b.x for b in self.blocks]
-        ys = [b.y for b in self.blocks]
-        zs = [b.z for b in self.blocks]
-        self.min_coords = (min(xs), min(ys), min(zs))
-        self.max_coords = (max(xs), max(ys), max(zs))
-        dim = (
-            self.max_coords[0] - self.min_coords[0] + 1,
-            self.max_coords[1] - self.min_coords[1] + 1,
-            self.max_coords[2] - self.min_coords[2] + 1,
-        )
-        self.info_status.configure(
-            text=f"{len(self.blocks):,} blocks  ·  {dim[0]} × {dim[1]} × {dim[2]}"
-        )
+        self.min_coords, self.max_coords = self.bounds_for(self.blocks)
+        self._update_status_caption(self.blocks)
         self.fit_to_view()
 
     def filter_by_grid(self, grid_name: Optional[str]) -> None:
         self.selected_grid_filter = grid_name
-        self._schedule_redraw()
+        visible = self._visible_blocks()
+        self._update_status_caption(visible)
+        if self.blocks:
+            self.fit_to_view()
+        else:
+            self._schedule_redraw()
+
+    def _visible_blocks(self) -> List[VoxelBlock]:
+        if not self.selected_grid_filter:
+            return self.blocks
+        return [b for b in self.blocks if b.grid_name == self.selected_grid_filter]
+
+    @staticmethod
+    def bounds_for(blocks: List[VoxelBlock]) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
+        if not blocks:
+            return (0, 0, 0), (0, 0, 0)
+        xs = [b.x for b in blocks]
+        ys = [b.y for b in blocks]
+        zs = [b.z for b in blocks]
+        return (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
+
+    def _update_status_caption(self, blocks: List[VoxelBlock]) -> None:
+        if not blocks:
+            self.info_status.configure(
+                text="No blocks on this grid." if self.selected_grid_filter else "No blocks to draw"
+            )
+            return
+        min_c, max_c = self.bounds_for(blocks)
+        dim = (
+            max_c[0] - min_c[0] + 1,
+            max_c[1] - min_c[1] + 1,
+            max_c[2] - min_c[2] + 1,
+        )
+        prefix = f"{self.selected_grid_filter}  ·  " if self.selected_grid_filter else ""
+        self.info_status.configure(
+            text=f"{prefix}{len(blocks):,} blocks  ·  {dim[0]} × {dim[1]} × {dim[2]}"
+        )
 
     def clear(self) -> None:
         self.blocks = []
@@ -217,9 +242,7 @@ class ShipCanvas(ctk.CTkFrame):
 
         cx = w / 2 + self.pan_x
         cy = h / 2 + self.pan_y
-        active = self.blocks
-        if self.selected_grid_filter:
-            active = [b for b in active if b.grid_name == self.selected_grid_filter]
+        active = self._visible_blocks()
         if not active:
             self.canvas.create_text(
                 w // 2, h // 2,
@@ -229,9 +252,10 @@ class ShipCanvas(ctk.CTkFrame):
             )
             return
 
-        mid_x = (self.min_coords[0] + self.max_coords[0]) / 2.0
-        mid_y = (self.min_coords[1] + self.max_coords[1]) / 2.0
-        mid_z = (self.min_coords[2] + self.max_coords[2]) / 2.0
+        min_c, max_c = self.bounds_for(active)
+        mid_x = (min_c[0] + max_c[0]) / 2.0
+        mid_y = (min_c[1] + max_c[1]) / 2.0
+        mid_z = (min_c[2] + max_c[2]) / 2.0
         step = max(4.0, self.scale)
         cells: Dict[Tuple[int, int], Tuple[str, str]] = {}
         for b in active:
@@ -278,15 +302,17 @@ class ShipCanvas(ctk.CTkFrame):
     def fit_to_view(self) -> None:
         w = max(self.canvas.winfo_width(), 320)
         h = max(self.canvas.winfo_height(), 240)
-        if not self.blocks:
+        visible = self._visible_blocks()
+        if not visible:
             self.scale = 16.0
             self.pan_x = 0.0
             self.pan_y = 0.0
             self._schedule_redraw()
             return
-        dim_x = max(1, self.max_coords[0] - self.min_coords[0] + 1)
-        dim_y = max(1, self.max_coords[1] - self.min_coords[1] + 1)
-        dim_z = max(1, self.max_coords[2] - self.min_coords[2] + 1)
+        min_c, max_c = self.bounds_for(visible)
+        dim_x = max(1, max_c[0] - min_c[0] + 1)
+        dim_y = max(1, max_c[1] - min_c[1] + 1)
+        dim_z = max(1, max_c[2] - min_c[2] + 1)
         if self.projection_mode == "Top":
             span_w, span_h = dim_x, dim_z
         elif self.projection_mode == "Side":
