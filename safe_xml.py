@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover - exercised only when defusedxml absent
 
 
 def safe_write(
-    tree: ET.ElementTree,
+    tree: ET.ElementTree[ET.Element],
     file_path: Union[Path, str],
     encoding: str = "utf-8",
     xml_declaration: bool = True,
