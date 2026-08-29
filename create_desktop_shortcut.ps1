@@ -10,8 +10,12 @@ $WshShell = New-Object -ComObject WScript.Shell
 $DesktopPath = [System.Environment]::GetFolderPath('Desktop')
 $ShortcutPath = Join-Path $DesktopPath "SE Tactical Command.lnk"
 
+$Launcher = Join-Path $TargetFolder "launch.bat"
+if (-not (Test-Path $Launcher)) {
+    $Launcher = Join-Path $TargetFolder "launch_gui.bat"
+}
 $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
-$Shortcut.TargetPath = Join-Path $TargetFolder "SE Tactical Command.bat"
+$Shortcut.TargetPath = $Launcher
 $Shortcut.WorkingDirectory = $TargetFolder
 $Shortcut.IconLocation = Join-Path $TargetFolder "app_icon.ico,0"
 $Shortcut.Description = "Space Engineers Tactical Command - Blueprint Conversion, PB Doctor & Subgrid Manager"

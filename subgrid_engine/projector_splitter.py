@@ -156,14 +156,18 @@ class ProjectorSplitter:
             sub_bp_dir.mkdir(parents=True, exist_ok=True)
             sub_sbc_file = sub_bp_dir / "bp.sbc"
 
-            # Construct clean standalone XML document
-            ET.register_namespace("xsd", "http://www.w3.org/2001/XMLSchema")
-            ET.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
+            # Construct clean standalone XML document.
+            # Use Clark notation so ElementTree binds xmlns:xsi instead of
+            # emitting a literal "xsi:type" attribute with no namespace.
+            xsi_ns = "http://www.w3.org/2001/XMLSchema-instance"
+            xsd_ns = "http://www.w3.org/2001/XMLSchema"
+            ET.register_namespace("xsi", xsi_ns)
+            ET.register_namespace("xsd", xsd_ns)
             standalone_root = ET.Element("Definitions")
 
             sbps = ET.SubElement(standalone_root, "ShipBlueprints")
             sbp = ET.SubElement(sbps, "ShipBlueprint")
-            sbp.set("xsi:type", "MyObjectBuilder_ShipBlueprintDefinition")
+            sbp.set(f"{{{xsi_ns}}}type", "MyObjectBuilder_ShipBlueprintDefinition")
 
             id_elem = ET.SubElement(sbp, "Id")
             id_elem.set("Type", "MyObjectBuilder_ShipBlueprintDefinition")

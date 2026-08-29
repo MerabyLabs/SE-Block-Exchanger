@@ -36,11 +36,17 @@ class TestProjectorSplitter(unittest.TestCase):
         self.assertTrue(any("Right Arm" in name for name in folder_names))
 
         # Check each sub-blueprint contains exactly 1 CubeGrid in valid XML format
+        xsi = "{http://www.w3.org/2001/XMLSchema-instance}type"
         for entry in result.sub_blueprints:
             self.assertTrue(entry.sbc_path.exists())
+            raw = entry.sbc_path.read_text(encoding="utf-8")
+            self.assertIn("xmlns:xsi=", raw)
             tree = safe_xml.parse(entry.sbc_path)
             cube_grids = tree.getroot().findall(".//CubeGrid")
             self.assertEqual(len(cube_grids), 1)
+            ship_bp = tree.getroot().find(".//ShipBlueprint")
+            self.assertIsNotNone(ship_bp)
+            self.assertEqual(ship_bp.get(xsi), "MyObjectBuilder_ShipBlueprintDefinition")
 
     def test_02_single_grid_reports_no_splitting_needed(self):
         battleship_dir = self.grids["Battleship_Vindicator"]

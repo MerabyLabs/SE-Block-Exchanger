@@ -135,12 +135,23 @@ class SteamWorkshopFetcher:
         if dest_dir.exists():
             shutil.rmtree(dest_dir)
         dest_dir.mkdir(parents=True)
+        dest_root = dest_dir.resolve()
 
-        for src in item.folder_path.rglob("*"):
-            if not src.is_file():
-                continue
-            dest_file = dest_dir / src.relative_to(item.folder_path)
-            dest_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest_file)
+        for dirpath, dirnames, filenames in os.walk(item.folder_path, followlinks=False):
+            dirnames[:] = [
+                name for name in dirnames
+                if not (Path(dirpath) / name).is_symlink()
+            ]
+            for name in filenames:
+                src = Path(dirpath) / name
+                if src.is_symlink() or not src.is_file():
+                    continue
+                dest_file = dest_dir / src.relative_to(item.folder_path)
+                try:
+                    dest_file.resolve().relative_to(dest_root)
+                except ValueError as exc:
+                    raise ValueError(f"Illegal workshop path: {src}") from exc
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest_file, follow_symlinks=False)
 
         return dest_dir

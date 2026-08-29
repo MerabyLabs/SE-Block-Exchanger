@@ -76,6 +76,36 @@ class TestWorkshopSync(unittest.TestCase):
                 else:
                     os.environ["APPDATA"] = previous
 
+    def test_import_skips_symlinks(self):
+        previous = os.environ.get("APPDATA")
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "99999"
+            src.mkdir()
+            (src / "bp.sbc").write_text("<Definitions/>", encoding="utf-8")
+            secret = Path(tmp) / "secret.txt"
+            secret.write_text("secret", encoding="utf-8")
+            link = src / "leak.txt"
+            try:
+                link.symlink_to(secret)
+            except OSError:
+                self.skipTest("symlinks are not available")
+            os.environ["APPDATA"] = tmp
+            try:
+                item = WorkshopItem(
+                    workshop_id="99999",
+                    folder_path=src,
+                    sbc_path=src / "bp.sbc",
+                    title="99999",
+                )
+                dest = SteamWorkshopFetcher.import_to_local_blueprints(item)
+                self.assertTrue((dest / "bp.sbc").exists())
+                self.assertFalse((dest / "leak.txt").exists())
+            finally:
+                if previous is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = previous
+
 
 if __name__ == "__main__":
     unittest.main()
