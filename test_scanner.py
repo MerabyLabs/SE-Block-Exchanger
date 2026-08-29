@@ -98,6 +98,15 @@ class TestBlueprintScanner(unittest.TestCase):
         self.assertEqual(info.block_count, 1)
         self.assertEqual(info.grid_size, "Unknown")
 
+    def test_category_members_are_reused_across_parses(self):
+        write_blueprint_dir(self.root, "One", ["LargeBlockArmorBlock"])
+        write_blueprint_dir(self.root, "Two", ["LargeBlockSmallThrust"])
+        self.scanner.scan_blueprints(self.root)
+        first = self.scanner._category_members_cache
+        self.assertIsNotNone(first)
+        self.scanner.scan_blueprints(self.root)
+        self.assertIs(first, self.scanner._category_members_cache)
+
     def test_default_paths_require_appdata(self):
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("APPDATA", None)

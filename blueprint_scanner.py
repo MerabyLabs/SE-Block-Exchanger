@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import safe_xml
 from mappings import MappingRegistry, build_registry
@@ -67,6 +67,8 @@ class BlueprintScanner:
         )
         self.reverse = reverse
         self.blueprints_cache: List[BlueprintInfo] = []
+        self._category_members_cache: Optional[List[Tuple[str, Set[str]]]] = None
+        self._category_members_fingerprint: Optional[Tuple[Tuple[str, int, int], ...]] = None
         self._rebuild_mapping()
 
     def _rebuild_mapping(self) -> None:
@@ -74,6 +76,20 @@ class BlueprintScanner:
             reverse=self.reverse,
             enabled_categories=self.enabled_categories,
         )
+
+    def _category_members(self) -> List[Tuple[str, Set[str]]]:
+        """Per-category subtype sets, rebuilt only when the registry changes."""
+        fingerprint = tuple(
+            (category.name, id(category.pairs), len(category.pairs))
+            for category in self.registry.list_categories()
+        )
+        if self._category_members_cache is None or self._category_members_fingerprint != fingerprint:
+            self._category_members_cache = [
+                (category.name, set(category.pairs) | set(category.pairs.values()))
+                for category in self.registry.list_categories()
+            ]
+            self._category_members_fingerprint = fingerprint
+        return self._category_members_cache
 
     def set_enabled_categories(self, enabled_categories: Sequence[str]) -> None:
         self.enabled_categories = list(enabled_categories)
@@ -141,10 +157,7 @@ class BlueprintScanner:
         light_armor_count = 0
         heavy_armor_count = 0
         # O(1) membership: sources and targets, not a linear scan of .values().
-        category_members = [
-            (category.name, set(category.pairs) | set(category.pairs.values()))
-            for category in self.registry.list_categories()
-        ]
+        category_members = self._category_members()
 
         for block in blocks:
             subtype = self._extract_subtype(block)
