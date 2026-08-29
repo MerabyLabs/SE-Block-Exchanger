@@ -135,6 +135,68 @@ class TestWorkshopSync(unittest.TestCase):
                 else:
                     os.environ["APPDATA"] = previous
 
+    def test_import_rejects_symlink_destination(self):
+        previous = os.environ.get("APPDATA")
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "12345"
+            src.mkdir()
+            (src / "bp.sbc").write_text("<Definitions/>", encoding="utf-8")
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            marker = outside / "keep.txt"
+            marker.write_text("keep", encoding="utf-8")
+            local = Path(tmp) / "SpaceEngineers" / "Blueprints" / "local"
+            local.mkdir(parents=True)
+            dest_link = local / "Workshop_12345"
+            try:
+                dest_link.symlink_to(outside)
+            except OSError:
+                self.skipTest("symlinks are not available")
+            os.environ["APPDATA"] = tmp
+            try:
+                item = WorkshopItem(
+                    workshop_id="12345",
+                    folder_path=src,
+                    sbc_path=src / "bp.sbc",
+                    title="12345",
+                )
+                with self.assertRaises(ValueError):
+                    SteamWorkshopFetcher.import_to_local_blueprints(item)
+                self.assertTrue(marker.exists())
+                self.assertTrue(dest_link.is_symlink())
+            finally:
+                if previous is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = previous
+
+    def test_import_replaces_file_destination(self):
+        previous = os.environ.get("APPDATA")
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "12345"
+            src.mkdir()
+            (src / "bp.sbc").write_text("<Definitions/>", encoding="utf-8")
+            local = Path(tmp) / "SpaceEngineers" / "Blueprints" / "local"
+            local.mkdir(parents=True)
+            dest_file = local / "Workshop_12345"
+            dest_file.write_text("not a folder", encoding="utf-8")
+            os.environ["APPDATA"] = tmp
+            try:
+                item = WorkshopItem(
+                    workshop_id="12345",
+                    folder_path=src,
+                    sbc_path=src / "bp.sbc",
+                    title="12345",
+                )
+                dest = SteamWorkshopFetcher.import_to_local_blueprints(item)
+                self.assertTrue(dest.is_dir())
+                self.assertTrue((dest / "bp.sbc").is_file())
+            finally:
+                if previous is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = previous
+
     def test_zip_drive_letter_entries_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             zip_path = Path(tmp) / "drive.zip"

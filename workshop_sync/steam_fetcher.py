@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -116,6 +117,55 @@ class SteamWorkshopFetcher:
 
         return items
 
+    @staticmethod
+    def _is_link_or_junction(path: Path) -> bool:
+        try:
+            info = path.lstat()
+        except OSError:
+            return False
+        if stat.S_ISLNK(info.st_mode):
+            return True
+        attributes = getattr(info, "st_file_attributes", 0)
+        return bool(attributes & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
+
+    @staticmethod
+    def _is_within_dir(root: Path, candidate: Path) -> bool:
+        root_key = os.path.normcase(os.path.normpath(str(root)))
+        cand_key = os.path.normcase(os.path.normpath(str(candidate)))
+        try:
+            return os.path.commonpath([root_key, cand_key]) == root_key
+        except ValueError:
+            return False
+
+    @classmethod
+    def _prepare_import_destination(cls, local_bp_dir: Path, dest_dir: Path) -> Path:
+        """Create dest_dir inside local_bp_dir, replacing a previous real folder only."""
+        local_root = local_bp_dir.resolve()
+        if os.path.normcase(str(dest_dir.parent.resolve())) != os.path.normcase(str(local_root)):
+            raise ValueError(f"Illegal workshop destination: {dest_dir}")
+
+        if cls._is_link_or_junction(dest_dir):
+            raise ValueError(
+                f"Refusing to replace a symlink or junction destination: {dest_dir}"
+            )
+        if dest_dir.is_file():
+            dest_dir.unlink()
+        elif dest_dir.is_dir():
+            dest_resolved = dest_dir.resolve()
+            if not cls._is_within_dir(local_root, dest_resolved):
+                raise ValueError(
+                    f"Refusing to delete a destination outside local blueprints: {dest_dir}"
+                )
+            shutil.rmtree(dest_dir)
+        elif dest_dir.exists():
+            raise ValueError(f"Cannot replace destination: {dest_dir}")
+
+        dest_dir.mkdir(parents=True)
+        dest_root = dest_dir.resolve()
+        if cls._is_link_or_junction(dest_dir) or not cls._is_within_dir(local_root, dest_root):
+            raise ValueError(f"Illegal workshop destination: {dest_dir}")
+        return dest_root
+
     @classmethod
     def import_to_local_blueprints(cls, item: WorkshopItem, custom_name: Optional[str] = None) -> Path:
         """Copies a workshop blueprint folder into the user's SpaceEngineers local blueprint directory."""
@@ -138,10 +188,7 @@ class SteamWorkshopFetcher:
             )
 
         dest_dir = local_bp_dir / target_name
-        if dest_dir.exists():
-            shutil.rmtree(dest_dir)
-        dest_dir.mkdir(parents=True)
-        dest_root = dest_dir.resolve()
+        dest_root = cls._prepare_import_destination(local_bp_dir, dest_dir)
 
         for dirpath, dirnames, filenames in os.walk(source_root, followlinks=False):
             dirnames[:] = [
