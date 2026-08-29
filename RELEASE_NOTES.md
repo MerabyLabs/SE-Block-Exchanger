@@ -1,5 +1,31 @@
 # Release Notes
 
+## v3.2.0 (2026-08-29)
+
+### Desktop app
+- Convert a ship from a clearer converter window: sentence-case labels, grouped categories, and a Convert button that states how many blocks will change.
+- Selecting a blueprint opens a live before/after preview. Convert writes a **new copy**; the original stays untouched.
+- Stays on CustomTkinter 5.x.
+
+### Import and tools
+- **File → Import Workshop / Mod.io blueprint** — paste a Steam Workshop URL or ID, or a Mod.io URL, and copy the ship into your local blueprints folder.
+- **Tools → Selective block exchange** — choose individual subtype swaps instead of a whole category.
+- **Tools → PB Doctor** — inspect and fix programmable-block scripts against the Space Engineers whitelist.
+- **Tools → Split into projector subgrids** — write projector-friendly copies of connected subgrids.
+- **Tools → Survival Sanity** — Prototech → vanilla copy for survival crafting.
+- **Tools → Upgrade to Prototech** — vanilla → Prototech copy.
+- **Tools → Harden armor around cores** and **Lightweight outer hull**.
+- **Tools → Export Space Engineers 2 JSON**.
+
+### Mappings
+- DLC substitution: 96 premium DLC → base-game pairs.
+- Opt-in Prototech category (23 pairs). It is off by default and is not included in `--all-categories`.
+
+### Reliability
+- Blueprint XML writes go through a hardened writer (unique temp files, no leftover half-written `bp.sbc`).
+- Workshop and Mod.io import refuse unsafe zip paths and Windows junctions/symlinks.
+- PB Doctor keeps valid `using` directives (`System`, VRage) and strips forbidden namespaces, including `using static` and aliases.
+
 ## v3.1.2 (2026-05-24)
 
 ### Fixes

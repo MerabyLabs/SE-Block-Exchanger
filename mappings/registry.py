@@ -169,6 +169,12 @@ def build_registry(include_builtin: bool = True) -> MappingRegistry:
         from mappings.thrusters import get_category as get_thrusters
         from mappings.weapons import get_category as get_weapons
         from mappings.dlc_substitution import get_category as get_dlc_sub
+        from mappings.prototech import (
+            CATEGORY_DESCRIPTION as PROTOTECH_DESCRIPTION,
+            CATEGORY_NAME as PROTOTECH_NAME,
+            CATEGORY_TAGS as PROTOTECH_TAGS,
+            VANILLA_TO_PROTOTECH_PAIRS,
+        )
 
         for category in (
             get_armor(),
@@ -178,5 +184,18 @@ def build_registry(include_builtin: bool = True) -> MappingRegistry:
             get_dlc_sub(),
         ):
             registry.register(category)
+
+        # Built here so mappings.prototech never imports this module.
+        registry.register(
+            MappingCategory(
+                name=PROTOTECH_NAME,
+                description=PROTOTECH_DESCRIPTION,
+                pairs=VANILLA_TO_PROTOTECH_PAIRS,
+                grid_sizes=("Large", "Small"),
+                source="endgame",
+                enabled_by_default=False,
+                tags=PROTOTECH_TAGS,
+            )
+        )
     return registry
 

@@ -12,6 +12,8 @@ datas_list = [
 ]
 if os.path.exists('app_icon.ico'):
     datas_list.append(('app_icon.ico', '.'))
+if os.path.exists('logo.png'):
+    datas_list.append(('logo.png', '.'))
 
 a = Analysis(
     ['gui_standalone.py'],

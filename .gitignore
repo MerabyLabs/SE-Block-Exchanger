@@ -57,3 +57,10 @@ tmp/
 # Agent/tool scratch artifacts
 tmpclaude-*
 nul
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+
+# Local-only development materials (not published)
+secrets/

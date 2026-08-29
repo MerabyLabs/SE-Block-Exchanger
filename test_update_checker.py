@@ -42,6 +42,82 @@ class TestUpdateChecker(unittest.TestCase):
             info = checker.check_for_updates(force=False)
             self.assertFalse(info.available)
 
+    def test_invalid_repo_rejected(self):
+        with self.assertRaises(ValueError):
+            UpdateChecker(repo="not a repo")
+        with self.assertRaises(ValueError):
+            UpdateChecker(repo="https://github.com/MerabyLabs/SE-Block-Exchanger")
+
+    def test_version_tuple_and_normalize(self):
+        self.assertEqual(UpdateChecker._normalize_version("v3.1.2"), "3.1.2")
+        self.assertEqual(UpdateChecker._version_tuple("3.1"), (3, 1, 0))
+        self.assertEqual(UpdateChecker._version_tuple("nope"), (0, 0, 0))
+        self.assertGreater(UpdateChecker._version_tuple("3.2.0"), UpdateChecker._version_tuple("3.1.2"))
+
+    def test_expired_cache_refetches(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "cache.json"
+            payload = {
+                "tag_name": "v0.0.1",
+                "html_url": "https://example.com/old",
+                "published_at": "2020-01-01T00:00:00Z",
+                "body": "old",
+                "cached_at": "2000-01-01T00:00:00+00:00",
+            }
+            cache_path.write_text(json.dumps(payload), encoding="utf-8")
+            checker = UpdateChecker(cache_path=cache_path, cache_hours=24)
+            fresh = {
+                "tag_name": "v99.9.9",
+                "html_url": "https://example.com/new",
+                "published_at": "2026-01-01T00:00:00Z",
+                "body": "new notes",
+            }
+            with patch.object(checker, "_fetch_release", return_value=fresh):
+                info = checker.check_for_updates(force=False)
+            self.assertTrue(info.available)
+            self.assertEqual(info.latest_version, "99.9.9")
+            self.assertEqual(info.changelog, "new notes")
+
+    def test_force_refetch_uses_latest_payload(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "cache.json"
+            checker = UpdateChecker(cache_path=cache_path, cache_hours=24)
+            fresh = {
+                "tag_name": "v4.0.0",
+                "html_url": "https://github.com/MerabyLabs/SE-Block-Exchanger/releases/tag/v4.0.0",
+                "published_at": "2026-01-01T00:00:00Z",
+                "body": "forced fetch",
+            }
+            with patch.object(checker, "_fetch_release", return_value=fresh):
+                info = checker.check_for_updates(force=True)
+            self.assertTrue(info.available)
+            self.assertEqual(info.latest_version, "4.0.0")
+            self.assertIn("github.com", info.release_url)
+
+    def test_fetch_release_uses_mocked_urlopen(self):
+        from io import BytesIO
+        from unittest.mock import patch
+
+        payload = {
+            "tag_name": "v88.0.0",
+            "html_url": "https://example.com/mocked",
+            "published_at": "2026-01-01T00:00:00Z",
+            "body": "mocked notes",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "cache.json"
+            checker = UpdateChecker(cache_path=cache_path, cache_hours=24)
+            fake_response = BytesIO(json.dumps(payload).encode("utf-8"))
+            with patch("update_checker.urllib.request.urlopen", return_value=fake_response):
+                info = checker.check_for_updates(force=True)
+            self.assertTrue(info.available)
+            self.assertEqual(info.latest_version, "88.0.0")
+            self.assertEqual(info.release_url, "https://example.com/mocked")
+
 
 if __name__ == "__main__":
     unittest.main()

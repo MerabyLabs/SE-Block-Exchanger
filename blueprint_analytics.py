@@ -19,6 +19,22 @@ SEVERITY_INFO = "Info"
 SEVERITY_WARNING = "Warning"
 SEVERITY_ERROR = "Error"
 
+DLC_KEYWORDS = (
+    "scifi",
+    "industrial",
+    "wasteland",
+    "warfare",
+    "reskin",
+    "decorative",
+    "desert",
+    "cab",
+    "buggy",
+    "sparks",
+    "vending",
+    "storeblock",
+)
+MECHANICAL_KEYWORDS = ("rotor", "stator", "hinge", "piston")
+
 
 @dataclass
 class HealthIssue:
@@ -43,6 +59,15 @@ class BlueprintAnalyticsResult:
     mass_total: float
     grid_size: str
     health_issues: List[HealthIssue] = field(default_factory=list)
+
+
+@dataclass
+class SE2Readiness:
+    dlc_count: int
+    script_count: int
+    subgrid_count: int
+    score: int
+    status: str
 
 
 @dataclass
@@ -174,10 +199,15 @@ class BlueprintAnalyticsEngine:
 
     def analyze_blueprint(self, blueprint_file: Path) -> BlueprintAnalyticsResult:
         tree = safe_xml.parse(blueprint_file)
-        root = tree.getroot()
+        return self.analyze_root(
+            tree.getroot(),
+            blueprint_name=Path(blueprint_file).parent.name,
+        )
+
+    def analyze_root(self, root: ET.Element, *, blueprint_name: str) -> BlueprintAnalyticsResult:
         grid_size = self._detect_grid_size(root)
 
-        blocks = root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock")
+        blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
         subtype_counts: Dict[str, int] = Counter()
         component_totals: Dict[str, int] = defaultdict(int)
         category_totals: Dict[str, int] = defaultdict(int)
@@ -209,7 +239,7 @@ class BlueprintAnalyticsEngine:
         issues = self._run_health_audit(root, subtype_counts, sorted(unknown_subtypes))
 
         return BlueprintAnalyticsResult(
-            blueprint_name=Path(blueprint_file).parent.name,
+            blueprint_name=blueprint_name,
             block_count=sum(subtype_counts.values()),
             block_counts=dict(sorted(subtype_counts.items())),
             category_counts=dict(sorted(category_totals.items())),
@@ -229,8 +259,18 @@ class BlueprintAnalyticsEngine:
         mapping: Dict[str, str],
         mode: str,
     ) -> ConversionComparison:
-        result = self.analyze_blueprint(blueprint_file)
+        return self.compare_conversion_cost_from_result(
+            self.analyze_blueprint(blueprint_file),
+            mapping,
+            mode,
+        )
 
+    def compare_conversion_cost_from_result(
+        self,
+        result: BlueprintAnalyticsResult,
+        mapping: Dict[str, str],
+        mode: str,
+    ) -> ConversionComparison:
         after_components: Dict[str, int] = defaultdict(int)
         after_pcu = 0
         after_mass = 0.0
@@ -359,7 +399,7 @@ class BlueprintAnalyticsEngine:
     def apply_fix(self, blueprint_file: Path, fix_id: str) -> bool:
         tree = safe_xml.parse(blueprint_file)
         root = tree.getroot()
-        cube_blocks = root.find(".//CubeGrid/CubeBlocks")
+        cube_blocks = root.find(".//CubeBlocks")
         if cube_blocks is None:
             return False
 
@@ -381,7 +421,7 @@ class BlueprintAnalyticsEngine:
         ET.SubElement(new_block, "BlockOrientation").attrib.update(
             {"Forward": "Forward", "Up": "Up"}
         )
-        tree.write(blueprint_file, encoding="utf-8", xml_declaration=True)
+        safe_xml.safe_write(tree, blueprint_file)
         return True
 
     @staticmethod
@@ -507,3 +547,48 @@ class BlueprintAnalyticsEngine:
         if max(counts) / min(counts) >= 2.5:
             return "Thruster distribution appears heavily unbalanced across directions."
         return None
+
+
+def compute_se2_readiness(block_counts: Dict[str, int]) -> SE2Readiness:
+    """
+    Score a blueprint for Space Engineers 2 / VRage 3 transition risk.
+
+    DLC reskins, programmable blocks, and mechanical subgrids each reduce
+    the score. The floor is 20 so even dense grids remain comparable.
+    """
+    dlc_count = 0
+    script_count = 0
+    subgrid_count = 0
+
+    for subtype, qty in block_counts.items():
+        subtype_lower = subtype.lower()
+        if any(keyword in subtype_lower for keyword in DLC_KEYWORDS):
+            dlc_count += qty
+        if "programmable" in subtype_lower:
+            script_count += qty
+        if any(keyword in subtype_lower for keyword in MECHANICAL_KEYWORDS):
+            subgrid_count += qty
+
+    score = 100
+    score -= min(25, dlc_count * 5)
+    score -= min(25, script_count * 10)
+    score -= min(30, subgrid_count * 15)
+    score = max(20, score)
+
+    if score >= 90:
+        status = "OPTIMAL"
+    elif score >= 60:
+        status = "STABLE"
+    elif score >= 40:
+        status = "COMPLEX"
+    else:
+        status = "FRAGILE"
+
+    return SE2Readiness(
+        dlc_count=dlc_count,
+        script_count=script_count,
+        subgrid_count=subgrid_count,
+        score=score,
+        status=status,
+    )
+
