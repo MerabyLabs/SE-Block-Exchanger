@@ -46,6 +46,23 @@ class TestSafeXml(unittest.TestCase):
             with self.assertRaises(Exception):
                 safe_xml.parse(payload)
 
+    def test_safe_write_and_get_subtype(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bp.sbc"
+            path.write_text(
+                '<?xml version="1.0"?><Definitions><CubeBlocks>'
+                "<MyObjectBuilder_CubeBlock><SubtypeName>LargeBlockArmorBlock</SubtypeName>"
+                "</MyObjectBuilder_CubeBlock></CubeBlocks></Definitions>",
+                encoding="utf-8",
+            )
+            tree = safe_xml.parse(path)
+            block = tree.getroot().find(".//MyObjectBuilder_CubeBlock")
+            self.assertEqual(safe_xml.get_subtype(block), "LargeBlockArmorBlock")
+            out = Path(tmp) / "out.sbc"
+            safe_xml.safe_write(tree, out)
+            self.assertTrue(out.exists())
+            self.assertEqual(safe_xml.parse(out).getroot().tag, "Definitions")
+
 
 if __name__ == "__main__":
     unittest.main()

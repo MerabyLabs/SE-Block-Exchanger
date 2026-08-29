@@ -9,7 +9,7 @@ import argparse
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import safe_xml
 from mapping_profiles import ProfileManager
@@ -148,9 +148,17 @@ class ArmorBlockReplacer:
         """
         return self.replace_blocks(tree, dry_run=dry_run)
 
-    def replace_blocks(self, tree: ET.ElementTree[ET.Element], dry_run: bool = False) -> int:
+    def replace_blocks(
+        self,
+        tree: ET.ElementTree[ET.Element],
+        dry_run: bool = False,
+        custom_mapping: Optional[Dict[str, str]] = None,
+        selected_subtypes: Optional[Iterable[str]] = None,
+    ) -> int:
         """
         Replace block subtype IDs according to the active mapping.
+        Optional custom_mapping overrides/extends the category map.
+        When selected_subtypes is set, only those source subtypes are rewritten.
         """
         root = tree.getroot()
         if root is None:
@@ -158,8 +166,14 @@ class ArmorBlockReplacer:
         replacements = 0
         self.change_log = []
 
+        effective_mapping = dict(self.mapping)
+        if custom_mapping:
+            effective_mapping.update(custom_mapping)
+
+        selected_set = set(selected_subtypes) if selected_subtypes is not None else None
+
         for cube_blocks in root.findall(".//CubeBlocks"):
-            for block in cube_blocks.findall("MyObjectBuilder_CubeBlock"):
+            for block in list(cube_blocks):
                 self.blocks_scanned += 1
                 subtype_name = block.find("SubtypeName")
                 subtype_id = block.find("SubtypeId")
@@ -167,17 +181,20 @@ class ArmorBlockReplacer:
                 current_subtype = None
                 if subtype_name is not None and subtype_name.text:
                     candidate = subtype_name.text.strip()
-                    if candidate in self.mapping:
+                    if candidate in effective_mapping:
                         current_subtype = candidate
-                elif subtype_name is None and subtype_id is not None and subtype_id.text:
+                if current_subtype is None and subtype_id is not None and subtype_id.text:
                     candidate = subtype_id.text.strip()
-                    if candidate in self.mapping:
+                    if candidate in effective_mapping:
                         current_subtype = candidate
 
                 if current_subtype is None:
                     continue
 
-                new_subtype = self.mapping[current_subtype]
+                if selected_set is not None and current_subtype not in selected_set:
+                    continue
+
+                new_subtype = effective_mapping[current_subtype]
                 self.change_log.append((current_subtype, new_subtype))
                 self.log(f"[MAP] {current_subtype} -> {new_subtype}")
 
@@ -196,6 +213,8 @@ class ArmorBlockReplacer:
         output_path: Optional[str] = None,
         create_backup: bool = True,
         dry_run: bool = False,
+        custom_mapping: Optional[Dict[str, str]] = None,
+        selected_subtypes: Optional[Iterable[str]] = None,
     ) -> Tuple[int, int]:
         """
         Process blueprint file and apply active mappings.
@@ -212,7 +231,12 @@ class ArmorBlockReplacer:
         except ET.ParseError as exc:
             raise ValueError(f"Failed to parse XML file: {exc}") from exc
 
-        self.replacements_made = self.replace_blocks(tree, dry_run=dry_run)
+        self.replacements_made = self.replace_blocks(
+            tree,
+            dry_run=dry_run,
+            custom_mapping=custom_mapping,
+            selected_subtypes=selected_subtypes,
+        )
         if dry_run:
             self.log(f"[INFO] Dry run complete: {self.replacements_made} blocks would change.")
             return self.blocks_scanned, self.replacements_made

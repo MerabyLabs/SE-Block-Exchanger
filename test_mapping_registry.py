@@ -41,6 +41,19 @@ class TestMappingRegistry(unittest.TestCase):
         self.assertTrue(registry.exists("ARMOR"))
         self.assertFalse(registry.exists("missing"))
 
+    def test_prototech_registered_but_excluded_from_all(self):
+        registry = build_registry(include_builtin=True)
+        self.assertTrue(registry.exists("prototech"))
+        self.assertEqual(registry.get("prototech").source, "endgame")
+        from se_armor_replacer import ArmorBlockReplacer
+
+        replacer = ArmorBlockReplacer(enabled_categories=["all"], include_profiles=False)
+        self.assertNotIn("prototech", replacer.enabled_categories)
+        self.assertEqual(
+            set(replacer.enabled_categories),
+            {"armor", "dlc_substitution", "functional", "thrusters", "weapons"},
+        )
+
     def test_enable_flags_and_unregister(self):
         registry = build_registry(include_builtin=True)
         registry.set_enabled("thrusters", True)

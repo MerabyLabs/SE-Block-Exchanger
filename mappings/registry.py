@@ -169,6 +169,7 @@ def build_registry(include_builtin: bool = True) -> MappingRegistry:
         from mappings.thrusters import get_category as get_thrusters
         from mappings.weapons import get_category as get_weapons
         from mappings.dlc_substitution import get_category as get_dlc_sub
+        from mappings.prototech import get_category as get_prototech
 
         for category in (
             get_armor(),
@@ -176,6 +177,7 @@ def build_registry(include_builtin: bool = True) -> MappingRegistry:
             get_weapons(),
             get_functional(),
             get_dlc_sub(),
+            get_prototech(),
         ):
             registry.register(category)
     return registry

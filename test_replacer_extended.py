@@ -151,7 +151,7 @@ class TestReplacerExtended(unittest.TestCase):
         self.assertEqual(len(THRUSTER_PAIRS), 6)
         self.assertEqual(len(WEAPON_PAIRS), 5)
         self.assertEqual(len(FUNCTIONAL_PAIRS), 6)
-        self.assertEqual(len(DLC_TO_BASE_PAIRS), 45)
+        self.assertEqual(len(DLC_TO_BASE_PAIRS), 96)
 
     def test_verify_mappings_passes(self):
         verify()

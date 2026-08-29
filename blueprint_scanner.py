@@ -60,11 +60,15 @@ class BlueprintScanner:
         reverse: bool = False,
     ):
         self.registry = registry if registry else build_registry(include_builtin=True)
-        self.enabled_categories = (
-            [category.name for category in self.registry.list_categories()]
-            if enabled_categories is None
-            else list(enabled_categories)
-        )
+        if enabled_categories is None:
+            # "All built-in" — skip endgame/profile categories that share sources.
+            self.enabled_categories = [
+                category.name
+                for category in self.registry.list_categories()
+                if category.source == "built-in"
+            ]
+        else:
+            self.enabled_categories = list(enabled_categories)
         self.reverse = reverse
         self.blueprints_cache: List[BlueprintInfo] = []
         self._category_members_cache: Optional[List[Tuple[str, Set[str]]]] = None

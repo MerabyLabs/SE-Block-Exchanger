@@ -15,6 +15,11 @@ from subgrid_engine.visualizer_matrix import (
     GridMatrixVisualizer,
     VoxelBlockPoint,
 )
+from subgrid_engine.projector_splitter import (
+    ProjectorSplitter,
+    ProjectorSplitResult,
+    SplitBlueprintEntry,
+)
 
 __all__ = [
     "SubgridHierarchyParser",
@@ -25,4 +30,7 @@ __all__ = [
     "GridMatrixSummary",
     "GridBoundingBox",
     "VoxelBlockPoint",
+    "ProjectorSplitter",
+    "ProjectorSplitResult",
+    "SplitBlueprintEntry",
 ]

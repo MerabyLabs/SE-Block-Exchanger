@@ -3,12 +3,33 @@ Blueprint Converter Module
 Handles safe copying and block conversion of Space Engineers blueprints.
 """
 
+from __future__ import annotations
+
 import shutil
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+import safe_xml
 from mappings import MappingRegistry
 from se_armor_replacer import ArmorBlockReplacer
+
+
+def _iter_cube_blocks(root):
+    blocks = []
+    for cube_blocks in root.findall(".//CubeBlocks"):
+        blocks.extend(list(cube_blocks))
+    if blocks:
+        return blocks
+    return root.findall(".//MyObjectBuilder_CubeBlock")
+
+
+def _apply_subtype_text(block, target: str) -> None:
+    subtype_name = block.find("SubtypeName")
+    subtype_id = block.find("SubtypeId")
+    if subtype_name is not None:
+        subtype_name.text = target
+    if subtype_id is not None:
+        subtype_id.text = target
 
 
 class BlueprintConverter:
@@ -55,41 +76,83 @@ class BlueprintConverter:
         if self.verbose:
             print(f"[CONVERTER] {message}")
 
-    def create_converted_blueprint(self, source_path: Path) -> Tuple[Path, int, int]:
-        """
-        Create a new blueprint folder with converted blocks.
-        """
+    def _require_blueprint_dir(self, source_path: Path) -> Path:
         source_path = Path(source_path)
         if not source_path.exists():
             raise FileNotFoundError(f"Source blueprint not found: {source_path}")
         if not source_path.is_dir():
             raise ValueError(f"Source must be a directory: {source_path}")
-
         bp_file = source_path / "bp.sbc"
         if not bp_file.exists():
             raise ValueError(f"No bp.sbc found in: {source_path}")
+        return source_path
 
-        dest_path = self.get_destination_path(source_path)
+    def _copy_blueprint_folder(self, source_path: Path, dest_path: Path) -> Path:
         if dest_path.exists():
             self.log(f"Destination exists, removing: {dest_path}")
             shutil.rmtree(dest_path)
-
         self.log(f"Copying blueprint folder: {source_path.name} -> {dest_path.name}")
         shutil.copytree(source_path, dest_path)
-
         binary_bp_file = dest_path / "bp.sbcB5"
         if binary_bp_file.exists():
             self.log(f"Removing binary blueprint cache: {binary_bp_file}")
             binary_bp_file.unlink()
+        return dest_path / "bp.sbc"
 
-        new_bp_file = dest_path / "bp.sbc"
+    def _rewrite_with_mapping(self, bp_file: Path, mapping: Dict[str, str]) -> Tuple[int, int]:
+        tree = safe_xml.parse(bp_file)
+        root = tree.getroot()
+        scanned = 0
+        converted = 0
+        for block in _iter_cube_blocks(root):
+            scanned += 1
+            current = safe_xml.get_subtype(block)
+            if current and current in mapping:
+                _apply_subtype_text(block, mapping[current])
+                converted += 1
+        tree.write(bp_file, encoding="utf-8", xml_declaration=True)
+        return scanned, converted
+
+    def create_converted_blueprint(
+        self,
+        source_path: Path,
+        custom_mapping: Optional[Dict[str, str]] = None,
+        selected_subtypes: Optional[Iterable[str]] = None,
+        custom_suffix: Optional[str] = None,
+    ) -> Tuple[Path, int, int]:
+        """
+        Create a new blueprint folder with converted blocks.
+        """
+        source_path = self._require_blueprint_dir(source_path)
+        if custom_suffix:
+            dest_path = source_path.parent / f"{custom_suffix}_{source_path.name}"
+        else:
+            dest_path = self.get_destination_path(source_path)
+
+        new_bp_file = self._copy_blueprint_folder(source_path, dest_path)
         blocks_scanned, replacements = self.replacer.process_blueprint(
             str(new_bp_file),
             create_backup=False,
+            custom_mapping=custom_mapping,
+            selected_subtypes=selected_subtypes,
         )
         self.log(f"Conversion complete ({replacements} replacement(s))")
         self._history.append(dest_path)
         return dest_path, blocks_scanned, replacements
+
+    def create_selective_converted_blueprint(
+        self,
+        source_path: Path,
+        custom_mapping: Dict[str, str],
+        selected_subtypes: Optional[Iterable[str]] = None,
+    ) -> Tuple[Path, int, int]:
+        """Create a custom converted copy using per-block source/target pairs."""
+        return self.create_converted_blueprint(
+            source_path=source_path,
+            custom_mapping=custom_mapping,
+            selected_subtypes=selected_subtypes,
+            custom_suffix="Custom",
+        )
 
     def create_heavy_armor_blueprint(self, source_path: Path) -> Tuple[Path, int, int]:
         """
@@ -135,15 +198,7 @@ class BlueprintConverter:
         Create a scaled blueprint copy (Large to Small or Small to Large)
         with block counterparts and grid size modifications.
         """
-        source_path = Path(source_path)
-        if not source_path.exists():
-            raise FileNotFoundError(f"Source blueprint not found: {source_path}")
-        if not source_path.is_dir():
-            raise ValueError(f"Source must be a directory: {source_path}")
-
-        bp_file = source_path / "bp.sbc"
-        if not bp_file.exists():
-            raise ValueError(f"No bp.sbc found in: {source_path}")
+        source_path = self._require_blueprint_dir(source_path)
 
         target_size = target_size.strip().capitalize()
         if target_size not in ("Large", "Small"):
@@ -151,19 +206,8 @@ class BlueprintConverter:
 
         prefix = "SCALED_SMALL_" if target_size == "Small" else "SCALED_LARGE_"
         dest_path = source_path.parent / f"{prefix}{source_path.name}"
+        new_bp_file = self._copy_blueprint_folder(source_path, dest_path)
 
-        if dest_path.exists():
-            shutil.rmtree(dest_path)
-
-        shutil.copytree(source_path, dest_path)
-
-        binary_bp_file = dest_path / "bp.sbcB5"
-        if binary_bp_file.exists():
-            binary_bp_file.unlink()
-
-        new_bp_file = dest_path / "bp.sbc"
-
-        import safe_xml
         tree = safe_xml.parse(new_bp_file)
         root = tree.getroot()
 
@@ -236,3 +280,24 @@ class BlueprintConverter:
         self._history.append(dest_path)
         return dest_path, blocks_scanned, replacements
 
+    def survival_sanity_prototech(self, source_path: Path) -> Tuple[Path, int, int]:
+        """Replace uncraftable Prototech blocks with survival-craftable vanilla counterparts."""
+        from mappings.prototech import get_survival_sanity_mapping
+
+        source_path = self._require_blueprint_dir(source_path)
+        dest_path = source_path.parent / f"SURVIVAL_READY_{source_path.name}"
+        new_bp_file = self._copy_blueprint_folder(source_path, dest_path)
+        scanned, converted = self._rewrite_with_mapping(new_bp_file, get_survival_sanity_mapping())
+        self._history.append(dest_path)
+        return dest_path, scanned, converted
+
+    def upgrade_to_prototech(self, source_path: Path) -> Tuple[Path, int, int]:
+        """Upgrade standard vanilla blocks to Factorum Prototech equivalents."""
+        from mappings.prototech import VANILLA_TO_PROTOTECH_PAIRS
+
+        source_path = self._require_blueprint_dir(source_path)
+        dest_path = source_path.parent / f"PROTOTECH_{source_path.name}"
+        new_bp_file = self._copy_blueprint_folder(source_path, dest_path)
+        scanned, converted = self._rewrite_with_mapping(new_bp_file, VANILLA_TO_PROTOTECH_PAIRS)
+        self._history.append(dest_path)
+        return dest_path, scanned, converted

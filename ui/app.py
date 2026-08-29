@@ -11,7 +11,7 @@ import threading
 import webbrowser
 from pathlib import Path
 from queue import Empty, SimpleQueue
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -33,6 +33,7 @@ from ui.header import Header
 from ui.labels import category_label, conversion_target_phrase, convertible_total
 from ui.preview_panel import PreviewPanel
 from ui.profile_editor import ProfileEditorDialog
+from ui.selective_exchange_panel import SelectiveExchangePanel
 from ui.theme import TacticalTheme
 from ui.widgets.toast import ToastManager
 from update_checker import UpdateChecker, UpdateInfo
@@ -209,9 +210,32 @@ class TacticalCommandCenter(ctk.CTk):
         menubar = tk.Menu(self)
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Open folder…", command=self.browse_blueprint_dir, accelerator="Ctrl+O")
+        file_menu.add_command(
+            label="Import Workshop / Mod.io blueprint…",
+            command=self.import_workshop_blueprint,
+        )
+        file_menu.add_command(label="Refresh blueprints", command=self.load_blueprints_async, accelerator="F5")
+        file_menu.add_separator()
+        file_menu.add_command(label="Create desktop shortcut", command=self.create_desktop_shortcut)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_close, accelerator="Alt+F4")
         menubar.add_cascade(label="File", menu=file_menu)
+
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        tools_menu.add_command(label="Selective block exchange…", command=self.open_selective_exchange)
+        tools_menu.add_command(label="PB Doctor…", command=self.open_pb_doctor)
+        tools_menu.add_command(label="Split into projector subgrids", command=self.split_active_blueprint_subgrids)
+        tools_menu.add_separator()
+        tools_menu.add_command(
+            label="Survival Sanity (Prototech → vanilla)",
+            command=self.survival_sanity_blueprint,
+        )
+        tools_menu.add_command(label="Upgrade to Prototech", command=self.upgrade_prototech_blueprint)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Harden armor around cores…", command=self.harden_active_armor)
+        tools_menu.add_command(label="Lightweight outer hull…", command=self.lightweight_active_armor)
+        tools_menu.add_command(label="Export Space Engineers 2 JSON", command=self.export_se2_blueprint)
+        menubar.add_cascade(label="Tools", menu=tools_menu)
 
         help_menu = tk.Menu(menubar, tearoff=0)
         self._auto_update_var = tk.BooleanVar(value=self.settings.auto_check_updates)
@@ -240,6 +264,7 @@ class TacticalCommandCenter(ctk.CTk):
         self.bind_all("<Control-o>", lambda event: self.browse_blueprint_dir())
         self.bind_all("<Control-r>", lambda event: self.convert_blueprint())
         self.bind_all("<Control-z>", lambda event: self.undo_last_conversion())
+        self.bind_all("<F5>", lambda event: self.load_blueprints_async())
         self.bind_all("<Alt-F4>", lambda event: self._on_close())
 
     def _setup_drag_drop(self):
@@ -686,7 +711,11 @@ class TacticalCommandCenter(ctk.CTk):
         self.footer.set_status("Copy created")
         self._update_convert_state()
 
-        self.preview_panel.load_xml(dest_path / "bp.sbc", f"Converted: {dest_path.name}")
+        preview_file = dest_path / "bp.sbc"
+        if not preview_file.exists():
+            preview_file = dest_path / "blueprint.json"
+        if preview_file.exists():
+            self.preview_panel.load_xml(preview_file, f"Converted: {dest_path.name}")
         self.toasts.toast(
             f"Created {dest_path.name} with {converted} block(s) converted.",
             level="success",
@@ -802,6 +831,307 @@ class TacticalCommandCenter(ctk.CTk):
         )
         self._pending_select_name = dest_path.name
         self.load_blueprints_async()
+
+    def import_workshop_blueprint(self):
+        dialog = ctk.CTkInputDialog(
+            text="Enter a Steam Workshop URL/ID or a Mod.io URL:",
+            title="Import Workshop / Mod.io blueprint",
+        )
+        url_or_id = dialog.get_input()
+        if not url_or_id:
+            return
+
+        from workshop_sync import SteamWorkshopFetcher, ModioFetcher
+
+        wid = SteamWorkshopFetcher.parse_workshop_id(url_or_id)
+        if wid:
+            self.footer.set_status("Looking up workshop cache…")
+
+            def task():
+                try:
+                    cached_items = SteamWorkshopFetcher.list_cached_workshop_items()
+                    matched = [item for item in cached_items if item.workshop_id == wid]
+                    if not matched:
+                        self._ui(
+                            lambda: self.toasts.toast(
+                                f"Workshop ID {wid} parsed. Download the item in Steam first, then retry.",
+                                level="info",
+                                duration=5000,
+                            )
+                        )
+                        return
+                    imported_path = SteamWorkshopFetcher.import_to_local_blueprints(matched[0])
+                    self._ui(
+                        lambda path=imported_path: (
+                            self.toasts.toast(f"Imported Workshop blueprint: {path.name}", level="success"),
+                            self.load_blueprints_async(),
+                        )
+                    )
+                except Exception as exc:
+                    self._ui(lambda msg=str(exc): self.toasts.toast(f"Import failed: {msg}", level="error"))
+
+            threading.Thread(target=task, daemon=True).start()
+            return
+
+        mod_slug = ModioFetcher.parse_modio_url(url_or_id)
+        if mod_slug:
+            self.toasts.toast(f"Mod.io item '{mod_slug}' detected. Choose the downloaded zip.", level="info")
+            zip_path = filedialog.askopenfilename(
+                title=f"Select the downloaded Mod.io zip for '{mod_slug}'",
+                filetypes=[("Zip archives", "*.zip"), ("All files", "*.*")],
+            )
+            if not zip_path:
+                return
+            appdata = os.environ.get("APPDATA")
+            local_bp = (
+                Path(appdata) / "SpaceEngineers" / "Blueprints" / "local"
+                if appdata
+                else Path.home() / "AppData" / "Roaming" / "SpaceEngineers" / "Blueprints" / "local"
+            )
+            dest = local_bp / f"Modio_{mod_slug}"
+            try:
+                ModioFetcher.extract_zip_blueprint(Path(zip_path), dest)
+                self.toasts.toast(f"Imported Mod.io blueprint: {dest.name}", level="success")
+                self.load_blueprints_async()
+            except Exception as exc:
+                self.toasts.toast(f"Mod.io import failed: {exc}", level="error")
+            return
+
+        self.toasts.toast("Could not parse a Workshop ID or Mod.io URL.", level="warning")
+
+    def create_desktop_shortcut(self):
+        try:
+            import subprocess
+
+            ps_script = Path(get_resource_path("create_desktop_shortcut.ps1"))
+            if not ps_script.exists():
+                ps_script = Path(__file__).resolve().parent.parent / "create_desktop_shortcut.ps1"
+            if ps_script.exists():
+                subprocess.run(
+                    ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(ps_script)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.toasts.toast("Desktop shortcut created.", level="success")
+            else:
+                self.toasts.toast("Shortcut script not found.", level="error")
+        except Exception as exc:
+            self.toasts.toast(f"Could not create desktop shortcut: {exc}", level="error")
+
+    def open_selective_exchange(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        win = ctk.CTkToplevel(self)
+        win.title(f"Selective exchange — {self.selected_blueprint.display_name}")
+        win.geometry("1120x740")
+        win.configure(fg_color=TacticalTheme.BG_DARK)
+        panel = SelectiveExchangePanel(
+            win,
+            on_selective_convert=lambda mapping, selected: self._run_selective_convert(mapping, selected),
+        )
+        panel.pack(fill="both", expand=True)
+        panel.load_blueprint(self.selected_blueprint)
+
+    def _run_selective_convert(self, mapping: Dict[str, str], selected: Set[str]):
+        if not self.selected_blueprint:
+            return
+        bp = self.selected_blueprint
+        self.control_panel.set_convert_enabled(False)
+        self.control_panel.progress.start_indeterminate("Selective conversion...")
+        self.footer.set_status("Selective convert…")
+
+        def task():
+            try:
+                dest, scanned, converted = self.converter.create_selective_converted_blueprint(
+                    bp.path,
+                    custom_mapping=mapping,
+                    selected_subtypes=selected,
+                )
+                self._ui(lambda: self._on_conversion_complete(dest, scanned, converted))
+            except Exception as exc:
+                error_message = str(exc)
+                self._ui(lambda msg=error_message: self._on_conversion_error(msg))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def open_pb_doctor(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        from pb_doctor import PBScriptExtractor, PBScriptValidator
+
+        bp_file = self.selected_blueprint.path / "bp.sbc"
+        scripts = PBScriptExtractor.extract_from_file(bp_file)
+        reports = [PBScriptValidator.validate_script(s.custom_name, s.program_code) for s in scripts]
+
+        win = ctk.CTkToplevel(self)
+        win.title(f"PB Doctor — {self.selected_blueprint.display_name}")
+        win.geometry("920x640")
+        win.configure(fg_color=TacticalTheme.BG_DARK)
+        textbox = ctk.CTkTextbox(
+            win,
+            font=TacticalTheme.FONT_MONO_SMALL,
+            text_color=TacticalTheme.TEXT_CYAN,
+            fg_color="#0c1220",
+            border_color=TacticalTheme.BG_MEDIUM,
+            border_width=1,
+            corner_radius=6,
+        )
+        textbox.pack(fill="both", expand=True, padx=10, pady=10)
+        if not scripts:
+            content = "No programmable-block scripts found in this blueprint."
+        else:
+            lines = [f"Found {len(scripts)} programmable block(s).\n"]
+            for script, report in zip(scripts, reports):
+                lines.append(f"=== {script.custom_name} ({script.subtype_name}) ===")
+                lines.append(f"Characters: {script.character_count}  Lines: {script.line_count}")
+                lines.append(
+                    f"Valid: {report.is_valid}  Score: {report.compliance_score}  Errors: {report.error_count}"
+                )
+                for diag in report.diagnostics:
+                    loc = f"L{diag.line_number} " if diag.line_number else ""
+                    lines.append(f"  [{diag.severity}] {loc}{diag.message}")
+                lines.append("")
+            content = "\n".join(lines)
+        textbox.insert("end", content)
+        textbox.configure(state="disabled")
+
+    def split_active_blueprint_subgrids(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a multi-grid blueprint first.", level="warning")
+            return
+
+        from subgrid_engine import ProjectorSplitter
+
+        result = ProjectorSplitter.split_blueprint(self.selected_blueprint.path)
+        if not result.success:
+            self.toasts.toast(f"Split failed: {result.error_message}", level="error")
+            return
+        if result.total_subgrids <= 1:
+            self.toasts.toast("Single grid detected. Nothing to split.", level="info")
+            return
+        self._undo_stack.append(result.output_directory)
+        self.toasts.toast(
+            f"Created {result.total_subgrids} printable sub-blueprints in {result.output_directory.name}.",
+            level="success",
+            duration=5000,
+        )
+        self.load_blueprints_async()
+
+    def survival_sanity_blueprint(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        bp = self.selected_blueprint
+        confirm = messagebox.askyesno(
+            "Survival Sanity",
+            f"Create a survival-craftable copy of '{bp.display_name}' by replacing Prototech blocks with vanilla equivalents?\n\n"
+            "The original blueprint is not changed.",
+        )
+        if not confirm:
+            return
+        self._start_named_conversion(
+            "Replacing Prototech blocks…",
+            lambda: self.converter.survival_sanity_prototech(bp.path),
+        )
+
+    def upgrade_prototech_blueprint(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        bp = self.selected_blueprint
+        confirm = messagebox.askyesno(
+            "Upgrade to Prototech",
+            f"Create a Prototech copy of '{bp.display_name}'?\n\nThe original blueprint is not changed.",
+        )
+        if not confirm:
+            return
+        self._start_named_conversion(
+            "Upgrading to Prototech…",
+            lambda: self.converter.upgrade_to_prototech(bp.path),
+        )
+
+    def harden_active_armor(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        dialog = ctk.CTkInputDialog(
+            text="Radius around reactors, tanks, and cockpits (blocks):",
+            title="Harden vital cores",
+        )
+        raw = dialog.get_input()
+        if raw is None:
+            return
+        try:
+            radius = int(raw.strip() or "2")
+        except ValueError:
+            self.toasts.toast("Radius must be a whole number.", level="warning")
+            return
+        bp = self.selected_blueprint
+
+        def worker():
+            from mappings.armor_hardening import ArmorHardeningEngine
+
+            res = ArmorHardeningEngine.harden_vital_cores(bp.path, reinforce_radius=radius)
+            return res.output_path, res.total_blocks_scanned, res.armor_blocks_hardened
+
+        self._start_named_conversion("Hardening armor…", worker)
+
+    def lightweight_active_armor(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        dialog = ctk.CTkInputDialog(
+            text="Keep heavy armor within this radius of vital cores (blocks):",
+            title="Lightweight outer hull",
+        )
+        raw = dialog.get_input()
+        if raw is None:
+            return
+        try:
+            radius = int(raw.strip() or "1")
+        except ValueError:
+            self.toasts.toast("Radius must be a whole number.", level="warning")
+            return
+        bp = self.selected_blueprint
+
+        def worker():
+            from mappings.armor_hardening import ArmorHardeningEngine
+
+            res = ArmorHardeningEngine.lightweight_outer_hull(bp.path, preserve_radius=radius)
+            return res.output_path, res.total_blocks_scanned, res.armor_blocks_lightened
+
+        self._start_named_conversion("Lightening outer hull…", worker)
+
+    def export_se2_blueprint(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        bp = self.selected_blueprint
+
+        def worker():
+            from engine_compat import SE2MigrationBridge
+
+            return SE2MigrationBridge.migrate_se1_to_se2(bp.path)
+
+        self._start_named_conversion("Exporting SE2 JSON…", worker)
+
+    def _start_named_conversion(self, status: str, worker):
+        self.control_panel.set_convert_enabled(False)
+        self.control_panel.progress.start_indeterminate(status)
+        self.footer.set_status(status)
+
+        def task():
+            try:
+                dest, scanned, converted = worker()
+                self._ui(lambda: self._on_conversion_complete(dest, scanned, converted))
+            except Exception as exc:
+                error_message = str(exc)
+                self._ui(lambda msg=error_message: self._on_conversion_error(msg))
+
+        threading.Thread(target=task, daemon=True).start()
 
     def batch_convert(self):
         selected_bps = self.blueprint_panel.get_selected_blueprints()

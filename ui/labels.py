@@ -19,6 +19,7 @@ _CATEGORY_TITLES: dict[str, str] = {
     "weapons": "Weapons",
     "advanced": "Advanced blocks",
     "dlc_substitution": "DLC → vanilla",
+    "prototech": "Prototech",
 }
 
 _CATEGORY_HINTS: dict[str, str] = {
@@ -37,13 +38,14 @@ _CATEGORY_HINTS: dict[str, str] = {
     "weapons": "Gatlings, missiles, interiors",
     "advanced": "Less common block swaps",
     "dlc_substitution": "Paid DLC blocks → free equivalents",
+    "prototech": "Vanilla ↔ Factorum Prototech",
 }
 
 # Scan / convert group headers used by ControlPanel
 CATEGORY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Core", ("armor", "thrusters", "gyros", "reactors", "batteries")),
     ("Ship systems", ("cargo", "cockpits", "doors", "windows", "lights", "conveyor")),
-    ("Combat & extra", ("functional", "weapons", "advanced", "dlc_substitution")),
+    ("Combat & extra", ("functional", "weapons", "advanced", "dlc_substitution", "prototech")),
 )
 
 
