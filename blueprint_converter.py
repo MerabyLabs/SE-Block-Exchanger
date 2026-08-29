@@ -225,10 +225,12 @@ class BlueprintConverter:
                             value = int(raw)
                         except ValueError:
                             continue
+                        # Large/small grid is 5:1. Truncate toward zero so
+                        # negative Min coords stay aligned (// floors toward -∞).
                         if target_size == "Small":
                             min_elem.attrib[axis] = str(value * 5)
                         else:
-                            min_elem.attrib[axis] = str(value // 5)
+                            min_elem.attrib[axis] = str(int(value / 5))
 
         tree.write(new_bp_file, encoding="utf-8", xml_declaration=True)
         self._history.append(dest_path)

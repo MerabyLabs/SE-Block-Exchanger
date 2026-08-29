@@ -153,6 +153,13 @@ class TestProfiles(unittest.TestCase):
         self.assertEqual(custom_exported, custom)
         self.assertTrue(custom.exists())
 
+        suffixless = self.profile_dir / "shareme"
+        suffixless.write_text("placeholder", encoding="utf-8")
+        suffixless_exported = self.manager.export_profile("Share Me", suffixless)
+        self.assertEqual(suffixless_exported, suffixless.with_suffix(".sebx-profile"))
+        self.assertTrue(suffixless_exported.exists())
+        self.assertIn("Share Me", suffixless_exported.read_text(encoding="utf-8"))
+
         share = self.manager.discord_share_text("Share Me")
         self.assertIn("**Share Me**", share)
         self.assertIn("```json", share)

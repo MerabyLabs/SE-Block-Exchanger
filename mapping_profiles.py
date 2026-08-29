@@ -201,11 +201,15 @@ class ProfileManager:
     def export_profile(self, name: str, destination: Path) -> Path:
         profile = self.get(name)
         destination = Path(destination)
+        file_name = f"{profile.name.replace(' ', '_')}{PROFILE_EXTENSION}"
         if destination.exists() and destination.is_dir():
-            destination = destination / f"{profile.name.replace(' ', '_')}{PROFILE_EXTENSION}"
+            destination = destination / file_name
+        elif destination.exists() and destination.is_file():
+            if not destination.suffix:
+                destination = destination.with_suffix(PROFILE_EXTENSION)
         elif not destination.suffix:
             destination.mkdir(parents=True, exist_ok=True)
-            destination = destination / f"{profile.name.replace(' ', '_')}{PROFILE_EXTENSION}"
+            destination = destination / file_name
         self.save_profile(profile, destination)
         return destination
 

@@ -188,6 +188,26 @@ class TestBlueprintConverter(unittest.TestCase):
         self.assertEqual(min_elem.attrib["x"], "2")
         self.assertEqual(min_elem.attrib["z"], "1")
 
+    def test_scale_grid_small_to_large_truncates_negative_mins_toward_zero(self):
+        source = write_blueprint_dir(
+            self.root,
+            "NegGrid",
+            [
+                {"subtype": "SmallBlockArmorBlock", "min": (-1, -5, -6)},
+                {"subtype": "SmallBlockArmorBlock", "min": (4, 0, -10)},
+            ],
+            grid_size="Small",
+        )
+        dest, scanned, converted = self.converter.scale_grid_size(source, "Large")
+        self.assertEqual(scanned, 2)
+        self.assertEqual(converted, 2)
+        tree = ET.parse(dest / "bp.sbc")
+        mins = {(m.attrib["x"], m.attrib["y"], m.attrib["z"]) for m in tree.findall(".//Min")}
+        # -1/5 → 0, -5/5 → -1, -6/5 → -1; 4/5 → 0, -10/5 → -2
+        self.assertIn(("0", "-1", "-1"), mins)
+        self.assertIn(("0", "0", "-2"), mins)
+        self.assertNotIn(("-1", "-1", "-2"), mins)
+
     def test_scale_invalid_size(self):
         source = write_blueprint_dir(self.root, "Ship", ["LargeBlockArmorBlock"])
         with self.assertRaises(ValueError):
