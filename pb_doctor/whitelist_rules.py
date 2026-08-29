@@ -76,3 +76,106 @@ ALLOWED_INGAME_NAMESPACES: Set[str] = {
     "System.Text.RegularExpressions",
     "System.Linq",
 }
+
+
+def mask_csharp_non_code(code: str) -> str:
+    """
+    Replace comments and string/char literals with spaces (newlines kept).
+
+    Brace and #region counts then ignore JSON/templates inside Echo() strings
+    and leftover tokens in comments.
+    """
+    out: List[str] = []
+    i = 0
+    n = len(code)
+
+    def emit_space(char: str) -> None:
+        out.append("\n" if char == "\n" else " ")
+
+    def consume_string(verbatim: bool) -> None:
+        nonlocal i
+        while i < n:
+            char = code[i]
+            if verbatim:
+                if char == '"' and i + 1 < n and code[i + 1] == '"':
+                    out.extend((" ", " "))
+                    i += 2
+                    continue
+                if char == '"':
+                    out.append(" ")
+                    i += 1
+                    return
+            else:
+                if char == "\\" and i + 1 < n:
+                    out.extend((" ", " "))
+                    i += 2
+                    continue
+                if char == '"':
+                    out.append(" ")
+                    i += 1
+                    return
+            emit_space(char)
+            i += 1
+
+    while i < n:
+        char = code[i]
+        nxt = code[i + 1] if i + 1 < n else ""
+        third = code[i + 2] if i + 2 < n else ""
+
+        if char == "/" and nxt == "/":
+            while i < n and code[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        if char == "/" and nxt == "*":
+            out.extend((" ", " "))
+            i += 2
+            while i < n and not (code[i] == "*" and i + 1 < n and code[i + 1] == "/"):
+                emit_space(code[i])
+                i += 1
+            if i < n:
+                out.extend((" ", " "))
+                i += 2
+            continue
+
+        if (char == "$" and nxt == "@" and third == '"') or (
+            char == "@" and nxt == "$" and third == '"'
+        ):
+            out.extend((" ", " ", " "))
+            i += 3
+            consume_string(verbatim=True)
+            continue
+        if char == "$" and nxt == '"':
+            out.extend((" ", " "))
+            i += 2
+            consume_string(verbatim=False)
+            continue
+        if char == "@" and nxt == '"':
+            out.extend((" ", " "))
+            i += 2
+            consume_string(verbatim=True)
+            continue
+        if char == '"':
+            out.append(" ")
+            i += 1
+            consume_string(verbatim=False)
+            continue
+        if char == "'":
+            out.append(" ")
+            i += 1
+            while i < n:
+                if code[i] == "\\" and i + 1 < n:
+                    out.extend((" ", " "))
+                    i += 2
+                    continue
+                closing = code[i] == "'"
+                out.append(" ")
+                i += 1
+                if closing:
+                    break
+            continue
+
+        out.append(char)
+        i += 1
+
+    return "".join(out)

@@ -13,7 +13,7 @@ import re
 from typing import List, Tuple
 
 
-from pb_doctor.whitelist_rules import FORBIDDEN_NAMESPACES
+from pb_doctor.whitelist_rules import FORBIDDEN_NAMESPACES, mask_csharp_non_code
 
 
 class ScriptFixer:
@@ -125,17 +125,19 @@ public void Main(string argument, UpdateType updateSource) {
             code = constructor_stub + code
             fixes.append("Added standard public Program() constructor with UpdateFrequency.")
 
-        # 4. Fix unbalanced braces
-        open_braces = code.count("{")
-        close_braces = code.count("}")
+        # 4. Fix unbalanced braces (ignore comments and string literals)
+        structure = mask_csharp_non_code(code)
+        open_braces = structure.count("{")
+        close_braces = structure.count("}")
         if open_braces > close_braces:
             diff = open_braces - close_braces
             code = code.rstrip() + "\n" + ("}" * diff) + "\n"
             fixes.append(f"Appended {diff} missing closing brace(s) '}}'.")
 
         # 5. Fix unmatched #region / #endregion
-        open_regions = len(re.findall(r"^\s*#region\b", code, re.MULTILINE))
-        close_regions = len(re.findall(r"^\s*#endregion\b", code, re.MULTILINE))
+        structure = mask_csharp_non_code(code)
+        open_regions = len(re.findall(r"^\s*#region\b", structure, re.MULTILINE))
+        close_regions = len(re.findall(r"^\s*#endregion\b", structure, re.MULTILINE))
         if open_regions > close_regions:
             diff = open_regions - close_regions
             code = code.rstrip() + "\n" + ("#endregion\n" * diff)

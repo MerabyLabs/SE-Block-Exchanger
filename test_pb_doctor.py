@@ -59,6 +59,31 @@ public void Main() {
         rule_ids = [d.rule_id for d in report.diagnostics]
         self.assertIn("UNBALANCED_BRACES", rule_ids)
 
+    def test_braces_in_strings_and_comments_are_ignored(self):
+        code = """
+public Program() {}
+public void Main(string argument, UpdateType updateSource) {
+    Echo("json { not code }");
+    // leftover { in a comment
+    var template = "{ template }";
+}
+"""
+        report = PBScriptValidator.validate_script("StringBraces", code)
+        rule_ids = [d.rule_id for d in report.diagnostics]
+        self.assertNotIn("UNBALANCED_BRACES", rule_ids)
+        self.assertEqual(report.error_count, 0)
+
+    def test_region_in_comment_is_ignored(self):
+        code = """
+public Program() {}
+public void Main() {
+    // #region not a real region
+}
+"""
+        report = PBScriptValidator.validate_script("CommentRegion", code)
+        rule_ids = [d.rule_id for d in report.diagnostics]
+        self.assertNotIn("UNBALANCED_REGIONS", rule_ids)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36,7 +36,9 @@ class ModioFetcher:
     @staticmethod
     def _is_within_dest(dest_resolved: Path, target_resolved: Path) -> bool:
         try:
-            return os.path.commonpath([str(dest_resolved), str(target_resolved)]) == str(dest_resolved)
+            dest_key = os.path.normcase(os.path.normpath(str(dest_resolved)))
+            target_key = os.path.normcase(os.path.normpath(str(target_resolved)))
+            return os.path.commonpath([dest_key, target_key]) == dest_key
         except ValueError:
             return False
 

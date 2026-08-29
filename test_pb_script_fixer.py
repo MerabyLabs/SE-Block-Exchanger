@@ -76,6 +76,16 @@ public void Main(string arg, UpdateType src) {
         self.assertEqual(fixed.count("{"), fixed.count("}"))
         self.assertTrue(any("brace" in f for f in fixes))
 
+    def test_07_fixer_ignores_braces_in_strings(self):
+        code = """public Program() {}
+public void Main(string arg, UpdateType src) {
+    Echo("{ } { }");
+}
+"""
+        fixed, fixes = ScriptFixer.fix_script(code)
+        self.assertFalse(any("brace" in f for f in fixes))
+        self.assertEqual(fixed.count("{"), code.count("{"))
+
     def test_05_empty_code_injects_template(self):
         fixed, fixes = ScriptFixer.fix_script("")
         self.assertIn("public Program()", fixed)

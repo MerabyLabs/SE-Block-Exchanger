@@ -147,6 +147,26 @@ class TestWorkshopSync(unittest.TestCase):
             self.assertFalse((dest / "Windows" / "file.txt").exists())
             self.assertFalse((dest / "C:" / "Windows" / "file.txt").exists())
 
+    def test_is_within_dest_uses_normcase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "Out"
+            dest.mkdir()
+            nested = dest / "nested" / "file.txt"
+            nested.parent.mkdir()
+            nested.write_text("ok", encoding="utf-8")
+            sibling = Path(tmp) / "escaped.txt"
+            sibling.write_text("nope", encoding="utf-8")
+            self.assertTrue(
+                ModioFetcher._is_within_dest(dest.resolve(), nested.resolve())
+            )
+            self.assertFalse(
+                ModioFetcher._is_within_dest(dest.resolve(), sibling.resolve())
+            )
+            mixed = Path(os.path.normcase(str(dest.resolve())))
+            self.assertTrue(
+                ModioFetcher._is_within_dest(mixed, nested.resolve())
+            )
+
     def test_zip_backslash_entries_extract_as_directories(self):
         with tempfile.TemporaryDirectory() as tmp:
             zip_path = Path(tmp) / "win.zip"

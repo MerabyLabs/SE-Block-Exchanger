@@ -18,6 +18,7 @@ from pb_doctor.whitelist_rules import (
     RE_PROGRAM_CTOR,
     RE_MAIN_METHOD,
     RE_SAVE_METHOD,
+    mask_csharp_non_code,
     RE_LOOPS,
     RE_CONDITIONALS,
     RE_METHOD_CALLS,
@@ -121,9 +122,10 @@ class PBScriptValidator:
                 )
             )
 
-        # 2. Brace and Region balance
-        open_braces = code.count("{")
-        close_braces = code.count("}")
+        # 2. Brace and Region balance (ignore comments and string literals)
+        structure = mask_csharp_non_code(code)
+        open_braces = structure.count("{")
+        close_braces = structure.count("}")
         if open_braces != close_braces:
             diagnostics.append(
                 PBDiagnostic(
@@ -135,8 +137,8 @@ class PBScriptValidator:
                 )
             )
 
-        open_regions = len(RE_REGION_OPEN.findall(code))
-        close_regions = len(RE_REGION_CLOSE.findall(code))
+        open_regions = len(RE_REGION_OPEN.findall(structure))
+        close_regions = len(RE_REGION_CLOSE.findall(structure))
         if open_regions != close_regions:
             diagnostics.append(
                 PBDiagnostic(
