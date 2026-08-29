@@ -94,7 +94,6 @@ class ProjectorSplitter:
                 source_blueprint_name=bp_name,
                 total_subgrids=1,
                 output_directory=source_bp_path,
-                error_message="Blueprint already contains only a single grid. No subgrid splitting required.",
             )
 
         # Parse hierarchy to determine order

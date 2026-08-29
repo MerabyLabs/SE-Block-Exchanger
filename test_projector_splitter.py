@@ -54,6 +54,7 @@ class TestProjectorSplitter(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(result.total_subgrids, 1)
+        self.assertIsNone(result.error_message)
 
 
 if __name__ == "__main__":
