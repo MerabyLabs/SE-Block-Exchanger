@@ -314,10 +314,23 @@ class PreviewPanel(ctk.CTkFrame):
         if self.current_tab() == "Subgrids":
             self._render_subgrids()
 
+    def _subgrids_render_key(self):
+        structure = self._pending_structure
+        voxels = self._pending_voxels
+        return (
+            id(structure),
+            len(voxels),
+            tuple(sorted({v.get("grid_name", "") for v in voxels})),
+        )
+
     def _render_subgrids(self):
         structure = self._pending_structure
         voxels = self._pending_voxels
-        render_key = (id(structure), len(voxels), tuple(sorted({v.get("grid_name", "") for v in voxels})))
+        render_key = self._subgrids_render_key()
+        if self._subgrids_rendered_for == render_key:
+            # Same ship, tab just reselected — keep the map, refresh after remap.
+            self.after_idle(self.ship_canvas.refresh)
+            return
         self.hierarchy_view.render(structure if structure and getattr(structure, "total_grids", 0) else None)
         if not voxels:
             self.ship_canvas.clear()
