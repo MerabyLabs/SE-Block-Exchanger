@@ -29,6 +29,7 @@ class AppSettings:
     enabled_categories: List[str] = field(default_factory=lambda: ["armor"])
     recent_blueprints: List[str] = field(default_factory=list)
     cache_hours: int = 24
+    space_engineers_install: str = ""
 
     @classmethod
     def from_dict(cls, data: Dict) -> "AppSettings":
@@ -39,6 +40,7 @@ class AppSettings:
             enabled_categories=list(data.get("enabled_categories", ["armor"])),
             recent_blueprints=list(data.get("recent_blueprints", [])),
             cache_hours=int(data.get("cache_hours", 24)),
+            space_engineers_install=str(data.get("space_engineers_install", "") or ""),
         )
 
     def to_dict(self) -> Dict:
@@ -49,6 +51,7 @@ class AppSettings:
             "enabled_categories": self.enabled_categories,
             "recent_blueprints": self.recent_blueprints,
             "cache_hours": self.cache_hours,
+            "space_engineers_install": self.space_engineers_install,
         }
 
 

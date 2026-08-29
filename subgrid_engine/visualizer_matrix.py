@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import xml.etree.ElementTree as ET
 import safe_xml
+from se_render.hsv import hsv_offset_to_rgb
 
 
 @dataclass
@@ -292,6 +293,20 @@ class GridMatrixVisualizer:
                 subtype_elem = sub_name if sub_name is not None else sub_id
                 subtype = subtype_elem.text.strip() if (subtype_elem is not None and subtype_elem.text) else "Block"
 
+                hsv_elem = block.find("ColorMaskHSV")
+                if hsv_elem is None:
+                    hsv_elem = block.find("{*}ColorMaskHSV")
+                if hsv_elem is not None:
+                    hsv = (
+                        float(hsv_elem.attrib.get("x", 0) or 0),
+                        float(hsv_elem.attrib.get("y", 0) or 0),
+                        float(hsv_elem.attrib.get("z", 0) or 0),
+                    )
+                    color_rgb = hsv_offset_to_rgb(*hsv)
+                else:
+                    hsv = (0.0, 0.0, 0.0)
+                    color_rgb = None
+
                 voxels.append({
                     "x": x,
                     "y": y,
@@ -300,6 +315,8 @@ class GridMatrixVisualizer:
                     "grid_name": grid_name,
                     "grid_size": grid_size,
                     "is_subgrid": is_subgrid,
+                    "hsv": hsv,
+                    "color_rgb": color_rgb,
                 })
 
         return voxels

@@ -20,6 +20,7 @@ class VoxelBlock:
     grid_name: str
     is_subgrid: bool
     grid_size: str = "Large"
+    color_rgb: Optional[Tuple[float, float, float]] = None
 
 
 class ShipCanvas(ctk.CTkFrame):
@@ -181,7 +182,21 @@ class ShipCanvas(ctk.CTkFrame):
         self._schedule_redraw()
 
     @staticmethod
-    def _get_block_color(subtype: str, is_subgrid: bool) -> Tuple[str, str]:
+    def _rgb_to_hex(rgb: Tuple[float, float, float]) -> str:
+        r = max(0, min(255, int(round(rgb[0] * 255))))
+        g = max(0, min(255, int(round(rgb[1] * 255))))
+        b = max(0, min(255, int(round(rgb[2] * 255))))
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    @staticmethod
+    def _get_block_color(
+        subtype: str,
+        is_subgrid: bool,
+        color_rgb: Optional[Tuple[float, float, float]] = None,
+    ) -> Tuple[str, str]:
+        if color_rgb is not None:
+            fill = ShipCanvas._rgb_to_hex(color_rgb)
+            return fill, "#0f172a"
         if is_subgrid:
             return TacticalTheme.COLOR_SUBGRID, "#047857"
         s = subtype.lower()
@@ -259,7 +274,7 @@ class ShipCanvas(ctk.CTkFrame):
         step = max(4.0, self.scale)
         cells: Dict[Tuple[int, int], Tuple[str, str]] = {}
         for b in active:
-            fill, outline = self._get_block_color(b.subtype, b.is_subgrid)
+            fill, outline = self._get_block_color(b.subtype, b.is_subgrid, b.color_rgb)
             if self.projection_mode == "Top":
                 key = (b.x, b.z)
             elif self.projection_mode == "Side":

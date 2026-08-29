@@ -19,6 +19,8 @@ class MechanicalLink:
     custom_name: str
     base_entity_id: str
     top_entity_id: Optional[str]
+    angle: float = 0.0
+    displacement: float = 0.0
 
 
 @dataclass
@@ -138,6 +140,8 @@ class SubgridHierarchyParser:
                         custom_name=custom_name,
                         base_entity_id=grid_entity_id,
                         top_entity_id=top_part_id,
+                        angle=_optional_float(block, "CurrentPosition"),
+                        displacement=_optional_float(block, "DummyDisplacement"),
                     )
                     all_links.append(link)
                     top_to_base_map[top_part_id] = grid_entity_id
@@ -250,3 +254,15 @@ class SubgridHierarchyParser:
         if child is not None and child.text:
             return child.text.strip()
         return None
+
+
+def _optional_float(element: ET.Element, tag: str) -> float:
+    child = element.find(tag)
+    if child is None:
+        child = element.find(f"{{*}}{tag}")
+    if child is None or not (child.text and child.text.strip()):
+        return 0.0
+    try:
+        return float(child.text.strip())
+    except ValueError:
+        return 0.0
