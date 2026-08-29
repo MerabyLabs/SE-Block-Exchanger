@@ -250,7 +250,7 @@ class ArmorBlockReplacer:
         else:
             output_file = input_file
 
-        tree.write(output_file, encoding="utf-8", xml_declaration=True)
+        safe_xml.safe_write(tree, output_file)
         self.log(f"[INFO] Output written: {output_file}")
 
         binary_file = output_file.with_name(output_file.name + "B5")

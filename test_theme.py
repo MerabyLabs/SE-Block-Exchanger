@@ -133,5 +133,27 @@ class TestToastManager(unittest.TestCase):
         self.assertEqual(manager._toasts, [])
 
 
+class TestGridHierarchyTheme(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not os.environ.get("DISPLAY"):
+            raise unittest.SkipTest("DISPLAY is required to construct GridHierarchyView")
+        cls.app = ctk.CTk()
+        cls.app.withdraw()
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls.app.destroy()
+        except Exception:
+            pass  # CTk destroy is racy after tests that already quit the window
+
+    def test_canvas_uses_theme_background(self):
+        from ui.widgets.grid_tree import GridHierarchyView
+
+        view = GridHierarchyView(self.app)
+        self.assertEqual(str(view.canvas.cget("bg")).lower(), TacticalTheme.BG_DARK.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

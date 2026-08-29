@@ -63,6 +63,24 @@ class TestSafeXml(unittest.TestCase):
             self.assertTrue(out.exists())
             self.assertEqual(safe_xml.parse(out).getroot().tag, "Definitions")
 
+    def test_replacer_write_leaves_no_temp_file(self):
+        from se_armor_replacer import ArmorBlockReplacer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bp.sbc"
+            path.write_text(
+                '<?xml version="1.0"?><Definitions><ShipBlueprints><ShipBlueprint>'
+                "<CubeGrids><CubeGrid><CubeBlocks>"
+                "<MyObjectBuilder_CubeBlock><SubtypeName>LargeBlockArmorBlock</SubtypeName>"
+                "</MyObjectBuilder_CubeBlock></CubeBlocks></CubeGrid></CubeGrids>"
+                "</ShipBlueprint></ShipBlueprints></Definitions>",
+                encoding="utf-8",
+            )
+            ArmorBlockReplacer(verbose=False).process_blueprint(str(path), create_backup=False)
+            self.assertEqual(list(Path(tmp).glob("*.tmp_*")), [])
+            self.assertTrue(path.exists())
+            self.assertEqual(safe_xml.parse(path).getroot().tag, "Definitions")
+
 
 if __name__ == "__main__":
     unittest.main()

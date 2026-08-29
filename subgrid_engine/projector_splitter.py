@@ -184,7 +184,7 @@ class ProjectorSplitter:
             # Write standalone SBC
             tree_out = ET.ElementTree(standalone_root)
             ET.indent(tree_out, space="  ", level=0)
-            tree_out.write(sub_sbc_file, encoding="utf-8", xml_declaration=True)
+            safe_xml.safe_write(tree_out, sub_sbc_file)
 
             entry = SplitBlueprintEntry(
                 sequence_number=seq_num,

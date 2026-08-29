@@ -110,7 +110,7 @@ class BlueprintConverter:
             if current and current in mapping:
                 _apply_subtype_text(block, mapping[current])
                 converted += 1
-        tree.write(bp_file, encoding="utf-8", xml_declaration=True)
+        safe_xml.safe_write(tree, bp_file)
         return scanned, converted
 
     def create_converted_blueprint(
@@ -276,7 +276,7 @@ class BlueprintConverter:
                         else:
                             min_elem.attrib[axis] = str(int(value / 5))
 
-        tree.write(new_bp_file, encoding="utf-8", xml_declaration=True)
+        safe_xml.safe_write(tree, new_bp_file)
         self._history.append(dest_path)
         return dest_path, blocks_scanned, replacements
 

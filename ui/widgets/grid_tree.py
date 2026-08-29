@@ -22,7 +22,7 @@ class GridHierarchyView(ctk.CTkFrame):
         self._last_width = 0
         self.canvas = tk.Canvas(
             self,
-            bg="#0c1220",
+            bg=TacticalTheme.BG_DARK,
             highlightthickness=0,
             bd=0,
             cursor="hand2",

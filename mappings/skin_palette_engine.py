@@ -152,6 +152,6 @@ class SkinPaletteEngine:
         dest_sbc = target_bp_path / "bp.sbc"
 
         ET.indent(tree, space="  ", level=0)
-        tree.write(dest_sbc, encoding="utf-8", xml_declaration=True)
+        safe_xml.safe_write(tree, dest_sbc)
 
         return reskinned_count, recolored_count
