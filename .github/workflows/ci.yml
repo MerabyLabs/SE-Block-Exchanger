@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  check:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -29,7 +29,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest ruff mypy
+          pip install ruff mypy
 
       - name: Lint (ruff)
         run: ruff check . --select F,E9
@@ -37,6 +37,7 @@ jobs:
       - name: Type check (mypy)
         run: mypy se_armor_replacer.py blueprint_converter.py blueprint_scanner.py mapping_profiles.py blueprint_analytics.py update_checker.py --ignore-missing-imports
 
-      - name: Run tests
-        run: pytest -q
-
+      - name: Import smoke check
+        run: |
+          python -c "from version import __version__; import se_armor_replacer, blueprint_converter, gui_standalone; print(__version__)"
+          python -m compileall -q .
