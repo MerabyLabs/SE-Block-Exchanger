@@ -84,6 +84,19 @@ public void Main() {
         rule_ids = [d.rule_id for d in report.diagnostics]
         self.assertNotIn("UNBALANCED_REGIONS", rule_ids)
 
+    def test_forbidden_tokens_in_strings_and_comments_are_ignored(self):
+        code = """
+public Program() {}
+public void Main() {
+    Echo("System.IO is mentioned only as text");
+    // using System.Threading;
+}
+"""
+        report = PBScriptValidator.validate_script("MentionOnly", code)
+        rule_ids = [d.rule_id for d in report.diagnostics]
+        self.assertNotIn("FORBIDDEN_NAMESPACE", rule_ids)
+        self.assertEqual(report.error_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

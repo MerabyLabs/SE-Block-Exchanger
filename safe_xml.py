@@ -11,6 +11,7 @@ serialization continue to use the standard library.
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from typing import Optional, Union, cast
@@ -40,7 +41,9 @@ def safe_write(
     """Atomically write an ElementTree using a sibling temp file and replace()."""
     target = Path(file_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = target.with_name(f"{target.name}.tmp_{os.getpid()}")
+    temp_file = target.with_name(
+        f"{target.name}.tmp_{os.getpid()}_{secrets.token_hex(8)}"
+    )
     try:
         tree.write(temp_file, encoding=encoding, xml_declaration=xml_declaration)
         temp_file.replace(target)

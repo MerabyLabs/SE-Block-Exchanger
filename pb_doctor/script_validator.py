@@ -150,8 +150,8 @@ class PBScriptValidator:
                 )
             )
 
-        # 3. Forbidden namespaces and patterns per line (precompiled)
-        for idx, line in enumerate(lines, 1):
+        # 3. Forbidden namespaces and patterns on code only (not comments/strings)
+        for idx, line in enumerate(structure.splitlines(), 1):
             for regex, ns in COMPILED_FORBIDDEN_NAMESPACES:
                 if regex.search(line):
                     diagnostics.append(

@@ -81,6 +81,34 @@ class TestSafeXml(unittest.TestCase):
             self.assertTrue(path.exists())
             self.assertEqual(safe_xml.parse(path).getroot().tag, "Definitions")
 
+    def test_safe_write_uses_unique_temp_names(self):
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bp.sbc"
+            path.write_text(
+                '<?xml version="1.0"?><Definitions><CubeBlocks/></Definitions>',
+                encoding="utf-8",
+            )
+            tree = safe_xml.parse(path)
+            errors: list[Exception] = []
+
+            def writer() -> None:
+                try:
+                    safe_xml.safe_write(tree, path)
+                except Exception as exc:
+                    errors.append(exc)
+
+            workers = [threading.Thread(target=writer) for _ in range(8)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join()
+            self.assertEqual(errors, [])
+            self.assertTrue(path.exists())
+            self.assertEqual(list(Path(tmp).glob("*.tmp_*")), [])
+            self.assertEqual(safe_xml.parse(path).getroot().tag, "Definitions")
+
 
 if __name__ == "__main__":
     unittest.main()
