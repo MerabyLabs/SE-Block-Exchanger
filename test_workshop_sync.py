@@ -266,6 +266,64 @@ class TestWorkshopSync(unittest.TestCase):
                 else:
                     os.environ["APPDATA"] = previous
 
+    def test_list_cached_skips_symlink_entries(self):
+        previous = os.environ.get("APPDATA")
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            real.mkdir()
+            (real / "bp.sbc").write_text("<Definitions/>", encoding="utf-8")
+            workshop = Path(tmp) / "SpaceEngineers" / "Blueprints" / "workshop"
+            workshop.mkdir(parents=True)
+            link = workshop / "77777"
+            try:
+                link.symlink_to(real)
+            except OSError:
+                self.skipTest("symlinks are not available")
+            os.environ["APPDATA"] = tmp
+            try:
+                items = SteamWorkshopFetcher.list_cached_workshop_items()
+                self.assertEqual(
+                    [item.workshop_id for item in items if item.workshop_id == "77777"],
+                    [],
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = previous
+
+    def test_import_skips_nested_directory_symlinks(self):
+        previous = os.environ.get("APPDATA")
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "55555"
+            src.mkdir()
+            (src / "bp.sbc").write_text("<Definitions/>", encoding="utf-8")
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "secret.txt").write_text("secret", encoding="utf-8")
+            nested = src / "linked"
+            try:
+                nested.symlink_to(outside)
+            except OSError:
+                self.skipTest("symlinks are not available")
+            os.environ["APPDATA"] = tmp
+            try:
+                item = WorkshopItem(
+                    workshop_id="55555",
+                    folder_path=src,
+                    sbc_path=src / "bp.sbc",
+                    title="55555",
+                )
+                dest = SteamWorkshopFetcher.import_to_local_blueprints(item)
+                self.assertTrue((dest / "bp.sbc").exists())
+                self.assertFalse((dest / "linked").exists())
+                self.assertFalse((dest / "linked" / "secret.txt").exists())
+            finally:
+                if previous is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = previous
+
     def test_import_writes_bp_sbc_when_source_uses_fallback(self):
         previous = os.environ.get("APPDATA")
         with tempfile.TemporaryDirectory() as tmp:

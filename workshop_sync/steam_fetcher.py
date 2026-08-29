@@ -84,7 +84,7 @@ class SteamWorkshopFetcher:
                 continue
             require_numeric_id = steam_content_marker.replace("\\", "/") in str(base_dir).replace("\\", "/")
             for entry in entries:
-                if entry.is_symlink() or not entry.is_dir():
+                if cls._is_link_or_junction(entry) or not entry.is_dir():
                     continue
                 wid = entry.name
                 if require_numeric_id and not wid.isdigit():
@@ -93,16 +93,21 @@ class SteamWorkshopFetcher:
                     continue
 
                 sbc_file = entry / "bp.sbc"
-                if not sbc_file.is_file():
-                    # Check for any .sbc file in the folder
-                    sbc_candidates = sorted(entry.glob("*.sbc"))
+                if cls._is_link_or_junction(sbc_file) or not sbc_file.is_file():
+                    sbc_candidates = [
+                        path
+                        for path in sorted(entry.glob("*.sbc"))
+                        if not cls._is_link_or_junction(path)
+                    ]
                     if sbc_candidates:
                         sbc_file = sbc_candidates[0]
                     else:
                         continue
 
                 thumb = entry / "thumb.png"
-                thumbnail_path = thumb if thumb.is_file() else None
+                thumbnail_path = (
+                    thumb if thumb.is_file() and not cls._is_link_or_junction(thumb) else None
+                )
 
                 items.append(
                     WorkshopItem(
@@ -182,7 +187,7 @@ class SteamWorkshopFetcher:
             target_name = f"Workshop_{item.workshop_id}"
 
         source_root = Path(item.folder_path)
-        if source_root.is_symlink() or not source_root.is_dir():
+        if cls._is_link_or_junction(source_root) or not source_root.is_dir():
             raise ValueError(
                 f"Workshop source folder must be a real directory, not a symlink: {source_root}"
             )
@@ -193,11 +198,11 @@ class SteamWorkshopFetcher:
         for dirpath, dirnames, filenames in os.walk(source_root, followlinks=False):
             dirnames[:] = [
                 name for name in dirnames
-                if not (Path(dirpath) / name).is_symlink()
+                if not cls._is_link_or_junction(Path(dirpath) / name)
             ]
             for name in filenames:
                 src = Path(dirpath) / name
-                if src.is_symlink() or not src.is_file():
+                if cls._is_link_or_junction(src) or not src.is_file():
                     continue
                 dest_file = dest_dir / src.relative_to(source_root)
                 try:
@@ -220,7 +225,7 @@ class SteamWorkshopFetcher:
                 if dest_fallback is not None and dest_fallback.is_file()
                 else fallback
             )
-            if candidate.is_symlink() or not candidate.is_file():
+            if cls._is_link_or_junction(candidate) or not candidate.is_file():
                 raise ValueError(
                     f"Workshop import has no bp.sbc (fallback was {fallback.name})"
                 )
