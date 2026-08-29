@@ -10,7 +10,7 @@ import re
 import shutil
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
 
@@ -40,6 +40,24 @@ class ModioFetcher:
         except ValueError:
             return False
 
+    @staticmethod
+    def _normalized_member_path(filename: str) -> str:
+        """Return a relative POSIX path, or raise if the zip entry is absolute/escaping."""
+        member_path = filename.replace("\\", "/")
+        posix = PurePosixPath(member_path)
+        windows = PureWindowsPath(member_path)
+        if (
+            not member_path
+            or posix.is_absolute()
+            or windows.is_absolute()
+            or bool(posix.anchor)
+            or bool(windows.anchor)
+            or ".." in posix.parts
+            or ".." in windows.parts
+        ):
+            raise ValueError(f"Illegal zip entry path: {filename}")
+        return str(posix)
+
     @classmethod
     def extract_zip_blueprint(cls, zip_path: Path, destination_folder: Path) -> Path:
         """Safely extracts a mod.io zip archive into a Space Engineers blueprint folder."""
@@ -50,13 +68,11 @@ class ModioFetcher:
 
         with zipfile.ZipFile(zip_path, "r") as zf:
             for member in zf.infolist():
-                member_path = member.filename.replace("\\", "/")
-                if member_path.startswith("/") or ".." in Path(member_path).parts:
-                    raise ValueError(f"Illegal zip entry path: {member.filename}")
+                member_path = cls._normalized_member_path(member.filename)
                 target_resolved = (destination_folder / member_path).resolve()
                 if not cls._is_within_dest(dest_resolved, target_resolved):
                     raise ValueError(f"Illegal zip entry path: {member.filename}")
-                if member.is_dir() or member_path.endswith("/"):
+                if member.is_dir() or member.filename.replace("\\", "/").endswith("/"):
                     target_resolved.mkdir(parents=True, exist_ok=True)
                     continue
                 target_resolved.parent.mkdir(parents=True, exist_ok=True)

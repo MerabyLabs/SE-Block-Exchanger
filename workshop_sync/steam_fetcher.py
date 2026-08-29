@@ -83,7 +83,7 @@ class SteamWorkshopFetcher:
                 continue
             require_numeric_id = steam_content_marker.replace("\\", "/") in str(base_dir).replace("\\", "/")
             for entry in entries:
-                if not entry.is_dir():
+                if entry.is_symlink() or not entry.is_dir():
                     continue
                 wid = entry.name
                 if require_numeric_id and not wid.isdigit():
@@ -131,13 +131,19 @@ class SteamWorkshopFetcher:
         if not target_name:
             target_name = f"Workshop_{item.workshop_id}"
 
+        source_root = Path(item.folder_path)
+        if source_root.is_symlink() or not source_root.is_dir():
+            raise ValueError(
+                f"Workshop source folder must be a real directory, not a symlink: {source_root}"
+            )
+
         dest_dir = local_bp_dir / target_name
         if dest_dir.exists():
             shutil.rmtree(dest_dir)
         dest_dir.mkdir(parents=True)
         dest_root = dest_dir.resolve()
 
-        for dirpath, dirnames, filenames in os.walk(item.folder_path, followlinks=False):
+        for dirpath, dirnames, filenames in os.walk(source_root, followlinks=False):
             dirnames[:] = [
                 name for name in dirnames
                 if not (Path(dirpath) / name).is_symlink()
@@ -146,7 +152,7 @@ class SteamWorkshopFetcher:
                 src = Path(dirpath) / name
                 if src.is_symlink() or not src.is_file():
                     continue
-                dest_file = dest_dir / src.relative_to(item.folder_path)
+                dest_file = dest_dir / src.relative_to(source_root)
                 try:
                     dest_file.resolve().relative_to(dest_root)
                 except ValueError as exc:

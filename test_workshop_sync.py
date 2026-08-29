@@ -106,6 +106,47 @@ class TestWorkshopSync(unittest.TestCase):
                 else:
                     os.environ["APPDATA"] = previous
 
+    def test_import_rejects_symlink_root(self):
+        previous = os.environ.get("APPDATA")
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real_item"
+            real.mkdir()
+            (real / "bp.sbc").write_text("<Definitions/>", encoding="utf-8")
+            link = Path(tmp) / "88888"
+            try:
+                link.symlink_to(real)
+            except OSError:
+                self.skipTest("symlinks are not available")
+            os.environ["APPDATA"] = tmp
+            try:
+                item = WorkshopItem(
+                    workshop_id="88888",
+                    folder_path=link,
+                    sbc_path=link / "bp.sbc",
+                    title="88888",
+                )
+                with self.assertRaises(ValueError):
+                    SteamWorkshopFetcher.import_to_local_blueprints(item)
+                dest = Path(tmp) / "SpaceEngineers" / "Blueprints" / "local" / "Workshop_88888"
+                self.assertFalse(dest.exists())
+            finally:
+                if previous is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = previous
+
+    def test_zip_drive_letter_entries_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "drive.zip"
+            dest = Path(tmp) / "out"
+            dest.mkdir()
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("C:/Windows/file.txt", "nope")
+            with self.assertRaises(ValueError):
+                ModioFetcher.extract_zip_blueprint(zip_path, dest)
+            self.assertFalse((dest / "Windows" / "file.txt").exists())
+            self.assertFalse((dest / "C:" / "Windows" / "file.txt").exists())
+
     def test_zip_backslash_entries_extract_as_directories(self):
         with tempfile.TemporaryDirectory() as tmp:
             zip_path = Path(tmp) / "win.zip"
