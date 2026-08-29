@@ -375,7 +375,7 @@ class BlueprintAnalyticsEngine:
             from mappings.prototech import get_survival_sanity_mapping
             sanity_map = get_survival_sanity_mapping()
             converted = 0
-            for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+            for block in root.findall(".//CubeGrid/CubeBlocks/*"):
                 st = self._get_block_subtype(block)
                 if st and st in sanity_map:
                     target = sanity_map[st]
