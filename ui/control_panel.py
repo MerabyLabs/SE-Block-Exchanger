@@ -5,6 +5,7 @@ from __future__ import annotations
 import customtkinter as ctk
 
 from ui.labels import (
+    armor_convertible_total,
     category_label,
     convert_button_text,
     convertible_total,
@@ -372,6 +373,9 @@ class ControlPanel(ctk.CTkFrame):
         )
         self._refresh_cta()
 
+    def _selected_category_ids(self) -> list[str]:
+        return [name for name, var in self._category_vars.items() if var.get()]
+
     def set_convert_enabled(self, enabled: bool):
         """Enable or disable the convert button (legacy API)."""
         if not enabled:
@@ -382,6 +386,7 @@ class ControlPanel(ctk.CTkFrame):
                     reverse=self._reverse,
                     enabled=False,
                     has_blueprint=self._blueprint is not None,
+                    category_ids=self._selected_category_ids(),
                 ),
             )
             return
@@ -397,6 +402,7 @@ class ControlPanel(ctk.CTkFrame):
                 reverse=reverse,
                 enabled=enabled,
                 has_blueprint=has_blueprint,
+                category_ids=self._selected_category_ids(),
             ),
         )
 
@@ -411,6 +417,7 @@ class ControlPanel(ctk.CTkFrame):
                 reverse=self._reverse,
                 enabled=enabled,
                 has_blueprint=has_blueprint,
+                category_ids=self._selected_category_ids(),
             ),
         )
         self.ready_chip.value_label.configure(text=str(count) if has_blueprint else "--")
@@ -422,24 +429,35 @@ class ControlPanel(ctk.CTkFrame):
         light = bp.light_armor_count
         heavy = bp.heavy_armor_count
         ready = convertible_total(bp)
+        armor_ready = armor_convertible_total(bp)
         if self._reverse:
-            after_light = light + ready
-            after_heavy = max(0, heavy - ready)
+            after_light = light + armor_ready
+            after_heavy = max(0, heavy - armor_ready)
         else:
-            after_light = max(0, light - ready)
-            after_heavy = heavy + ready
+            after_light = max(0, light - armor_ready)
+            after_heavy = heavy + armor_ready
         self.before_label.configure(text=f"{light} light\n{heavy} heavy")
         self.after_label.configure(text=f"{after_light} light\n{after_heavy} heavy")
         if ready <= 0:
             self.change_summary.configure(
                 text="Nothing to convert with the current direction and categories."
             )
-        else:
-            block_word = "block" if ready == 1 else "blocks"
-            direction = "heavy" if not self._reverse else "light"
-            self.change_summary.configure(
-                text=f"{ready} {block_word} will be rewritten in a new copy toward {direction} armor."
+            return
+        block_word = "block" if ready == 1 else "blocks"
+        direction = "heavy" if not self._reverse else "light"
+        if armor_ready == ready:
+            summary = (
+                f"{ready} {block_word} will be rewritten in a new copy toward {direction} armor."
             )
+        elif armor_ready == 0:
+            summary = f"{ready} {block_word} will be rewritten using the selected categories."
+        else:
+            other = ready - armor_ready
+            summary = (
+                f"{ready} {block_word} will be rewritten "
+                f"({armor_ready} armor toward {direction}, {other} other)."
+            )
+        self.change_summary.configure(text=summary)
 
     def set_category_options(self, categories, enabled_categories):
         """Build grouped category checkboxes with human-readable labels."""

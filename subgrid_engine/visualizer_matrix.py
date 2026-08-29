@@ -233,22 +233,49 @@ class GridMatrixVisualizer:
             return []
         return cls.extract_voxels_from_root(root)
 
+    @staticmethod
+    def _blocks_in_grid(grid: ET.Element) -> List[ET.Element]:
+        cube_blocks = grid.find("CubeBlocks")
+        if cube_blocks is not None:
+            children = list(cube_blocks)
+            if children:
+                return children
+        return (
+            grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
+            or grid.findall(".//MyObjectBuilder_CubeBlock")
+        )
+
+    @staticmethod
+    def _grid_label(grid: ET.Element, fallback: str) -> str:
+        name_elem = grid.find("DisplayName")
+        if name_elem is None or not (name_elem.text and name_elem.text.strip()):
+            name_elem = grid.find("CustomName")
+        if name_elem is not None and name_elem.text and name_elem.text.strip():
+            return name_elem.text.strip()
+        return fallback
+
     @classmethod
     def extract_voxels_from_root(cls, root: ET.Element) -> List[dict]:
         grids = root.findall(".//CubeGrid")
         grid_targets = grids if grids else [root]
-        voxels: List[dict] = []
+        prepared: List[tuple[int, str, str, List[ET.Element]]] = []
 
         for idx, grid in enumerate(grid_targets):
-            name_elem = grid.find("DisplayName")
-            if name_elem is None or not (name_elem.text and name_elem.text.strip()):
-                name_elem = grid.find("CustomName")
-            grid_name = name_elem.text.strip() if (name_elem is not None and name_elem.text) else f"Grid {idx+1}"
+            grid_name = cls._grid_label(grid, f"Grid {idx + 1}")
             grid_size_elem = grid.find("GridSizeEnum")
             grid_size = grid_size_elem.text.strip() if (grid_size_elem is not None and grid_size_elem.text) else "Large"
-            is_subgrid = (idx > 0)
+            prepared.append((idx, grid_name, grid_size, cls._blocks_in_grid(grid)))
 
-            blocks = grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock") or grid.findall(".//MyObjectBuilder_CubeBlock")
+        if not prepared:
+            return []
+
+        # Match the hierarchy parser: the main hull is the grid with the most blocks,
+        # not whichever CubeGrid happens to be first in the XML.
+        main_idx = max(range(len(prepared)), key=lambda i: (len(prepared[i][3]), -i))
+        voxels: List[dict] = []
+
+        for idx, grid_name, grid_size, blocks in prepared:
+            is_subgrid = idx != main_idx
             for b_idx, block in enumerate(blocks):
                 min_elem = block.find("Min")
                 if min_elem is not None:

@@ -70,6 +70,25 @@ class TestReplacerExtended(unittest.TestCase):
         found = replacer.find_blueprint_file(self.root)
         self.assertEqual(found.name, "bp.sbc")
 
+    def test_find_blueprint_picks_sorted_sbc_when_no_bp(self):
+        zebra = self.root / "zebra"
+        alpha = self.root / "alpha"
+        zebra.mkdir()
+        alpha.mkdir()
+        (zebra / "ship.sbc").write_text("<Definitions/>", encoding="utf-8")
+        (alpha / "ship.sbc").write_text("<Definitions/>", encoding="utf-8")
+        replacer = ArmorBlockReplacer(include_profiles=False)
+        found = replacer.find_blueprint_file(self.root)
+        self.assertEqual(found, alpha / "ship.sbc")
+
+    def test_missing_sbc_error_mentions_any_sbc(self):
+        replacer = ArmorBlockReplacer(include_profiles=False)
+        with self.assertRaises(FileNotFoundError) as ctx:
+            replacer.find_blueprint_file(self.root)
+        message = str(ctx.exception)
+        self.assertIn("Could not find bp.sbc", message)
+        self.assertIn("any .sbc", message)
+
     def test_backup_numbering(self):
         path = write_blueprint(self.root / "bp.sbc", ["LargeBlockArmorBlock"])
         replacer = ArmorBlockReplacer(include_profiles=False)

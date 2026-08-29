@@ -10,6 +10,7 @@ import sys
 import threading
 import webbrowser
 from pathlib import Path
+from queue import Empty, SimpleQueue
 from typing import Dict, List, Optional
 
 import customtkinter as ctk
@@ -29,7 +30,7 @@ from ui.control_panel import ControlPanel
 from ui.dragdrop_windows import WindowsFileDropTarget
 from ui.footer import Footer
 from ui.header import Header
-from ui.labels import category_label, convertible_total
+from ui.labels import category_label, conversion_target_phrase, convertible_total
 from ui.preview_panel import PreviewPanel
 from ui.profile_editor import ProfileEditorDialog
 from ui.theme import TacticalTheme
@@ -91,6 +92,7 @@ class TacticalCommandCenter(ctk.CTk):
         self._preview_after_id = None
         self._inspect_generation = 0
         self._closing = False
+        self._ui_queue: SimpleQueue = SimpleQueue()
 
         self._build_ui()
         self.toasts = ToastManager(self)
@@ -98,6 +100,7 @@ class TacticalCommandCenter(ctk.CTk):
         self._bind_shortcuts()
         self._setup_drag_drop()
         self._center_window()
+        self.after(16, self._pump_ui_queue)
 
         self.header.set_blueprint_count(0)
         self.header.set_recent_dirs(self.settings.recent_blueprint_dirs)
@@ -138,7 +141,7 @@ class TacticalCommandCenter(ctk.CTk):
             if os.path.exists(icon_path):
                 self.iconbitmap(icon_path)
         except Exception:
-            pass
+            pass  # icon is optional; missing .ico must not block startup
 
     def _center_window(self):
         self.update_idletasks()
@@ -312,7 +315,7 @@ class TacticalCommandCenter(ctk.CTk):
                 info = self.update_checker.check_for_updates(force=False)
                 self._ui(lambda: self._on_update_checked(info))
             except Exception:
-                pass
+                pass  # offline / GitHub rate-limit: skip the update badge silently
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -535,6 +538,8 @@ class TacticalCommandCenter(ctk.CTk):
 
         def task():
             try:
+                # Profiles are already registered on self.registry. Reloading them
+                # with include_profiles=True would disagree with _build_converter().
                 replacer = ArmorBlockReplacer(
                     verbose=False,
                     reverse=reverse,
@@ -619,12 +624,15 @@ class TacticalCommandCenter(ctk.CTk):
             return
         bp = self.selected_blueprint
         count = convertible_total(bp)
-        direction = "heavy armor" if self.conversion_mode != "heavy_to_light" else "light armor"
+        target = conversion_target_phrase(
+            self.conversion_mode == "heavy_to_light",
+            self.enabled_categories,
+        )
         category_text = ", ".join(category_label(name) for name in self.enabled_categories)
 
         confirm = messagebox.askyesno(
             "Create a converted copy?",
-            f"Create a new copy of '{bp.display_name}' with {count} block(s) converted to {direction}?\n\n"
+            f"Create a new copy of '{bp.display_name}' with {count} block(s) converted to {target}?\n\n"
             f"Included: {category_text}\n\n"
             "The original blueprint is not changed. Undo removes the new copy.",
         )
@@ -964,12 +972,28 @@ class TacticalCommandCenter(ctk.CTk):
         self.toasts.toast(message, level="error", duration=5000)
 
     def _ui(self, callback) -> None:
+        """Queue a callback for the Tk main thread. Safe to call from workers."""
+        if self._closing:
+            return
+        self._ui_queue.put(callback)
+
+    def _pump_ui_queue(self) -> None:
         if self._closing:
             return
         try:
-            self.after(0, lambda: None if self._closing else callback())
+            while True:
+                callback = self._ui_queue.get_nowait()
+                try:
+                    if not self._closing:
+                        callback()
+                except Exception:
+                    pass  # callback raced with shutdown or a destroyed widget
+        except Empty:
+            pass  # queue drained
+        try:
+            self.after(16, self._pump_ui_queue)
         except Exception:
-            pass
+            pass  # Tk is already torn down
 
     def _on_close(self):
         import tkinter as tk
@@ -984,39 +1008,39 @@ class TacticalCommandCenter(ctk.CTk):
                 try:
                     self.after_cancel(job)
                 except Exception:
-                    pass
+                    pass  # after id already fired or Tk is gone
                 setattr(self, attr, None)
         try:
             self.control_panel.progress.stop()
         except Exception:
-            pass
+            pass  # progress widget may already be destroyed
         try:
             self.toasts.dismiss_all()
         except Exception:
-            pass
+            pass  # toast overlay may already be destroyed
         try:
             if self._profile_editor is not None and self._profile_editor.winfo_exists():
                 self._profile_editor.grab_release()
                 self._profile_editor.destroy()
         except Exception:
-            pass
+            pass  # profile editor may already be closed
         try:
             for widget in list(self.winfo_children()):
                 if isinstance(widget, (ctk.CTkToplevel, tk.Toplevel)):
                     try:
                         widget.destroy()
                     except Exception:
-                        pass
+                        pass  # child toplevel already destroyed
         except Exception:
-            pass
+            pass  # winfo_children can fail after partial teardown
         try:
             self._drop_target.disable()
         except Exception:
-            pass
+            pass  # drag-drop subclass may already be restored
         try:
             self.destroy()
         except Exception:
-            pass
+            pass  # destroy is best-effort before os._exit
         os._exit(0)
 
 
@@ -1029,7 +1053,7 @@ def main():
         try:
             messagebox.showerror("Fatal Error", f"Application failed to start:\n{exc}")
         except Exception:
-            pass
+            pass  # Tk may not be initialized enough to show a dialog
         os._exit(1)
     finally:
         if app is not None:
@@ -1037,7 +1061,7 @@ def main():
                 if not getattr(app, "_closing", False):
                     app.destroy()
             except Exception:
-                pass
+                pass  # mainloop already destroyed the window
         os._exit(0)
 
 if __name__ == "__main__":

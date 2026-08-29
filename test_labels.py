@@ -6,9 +6,11 @@ import unittest
 from types import SimpleNamespace
 
 from ui.labels import (
+    armor_convertible_total,
     card_status_label,
     category_label,
     convert_button_text,
+    conversion_target_phrase,
     convertible_total,
     grouped_category_ids,
     mode_label,
@@ -63,6 +65,39 @@ class TestConvertCta(unittest.TestCase):
             "Convert 1 block to light armor",
         )
 
+    def test_non_armor_category_does_not_say_armor(self):
+        self.assertEqual(
+            convert_button_text(
+                count=4,
+                reverse=False,
+                enabled=True,
+                has_blueprint=True,
+                category_ids=["thrusters"],
+            ),
+            "Convert 4 blocks (Thrusters)",
+        )
+
+    def test_mixed_categories_use_matching_copy(self):
+        self.assertEqual(
+            convert_button_text(
+                count=10,
+                reverse=False,
+                enabled=True,
+                has_blueprint=True,
+                category_ids=["armor", "thrusters"],
+            ),
+            "Convert 10 matching blocks",
+        )
+
+    def test_target_phrase_for_armor_and_mixed(self):
+        self.assertEqual(conversion_target_phrase(False, ["armor"]), "heavy armor")
+        self.assertEqual(conversion_target_phrase(True, ["armor"]), "light armor")
+        self.assertEqual(conversion_target_phrase(False, ["thrusters"]), "Thrusters")
+        self.assertEqual(
+            conversion_target_phrase(False, ["armor", "thrusters"]),
+            "the selected categories",
+        )
+
 
 class TestHelpers(unittest.TestCase):
     def test_mode_label(self):
@@ -78,6 +113,16 @@ class TestHelpers(unittest.TestCase):
         bp = SimpleNamespace(convertible_counts={"A->B": 10, "C->D": 5})
         self.assertEqual(convertible_total(bp), 15)
         self.assertEqual(convertible_total(SimpleNamespace()), 0)
+
+    def test_armor_convertible_ignores_non_armor_pairs(self):
+        bp = SimpleNamespace(
+            convertible_counts={
+                "LargeBlockArmorBlock->LargeHeavyBlockArmorBlock": 8,
+                "SmallBlockSmallThrust->SmallBlockLargeThrust": 3,
+            }
+        )
+        self.assertEqual(convertible_total(bp), 11)
+        self.assertEqual(armor_convertible_total(bp), 8)
 
     def test_grouped_ids_put_profiles_last(self):
         groups = grouped_category_ids(

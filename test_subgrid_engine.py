@@ -75,6 +75,8 @@ class TestSubgridHierarchy(unittest.TestCase):
             names = {v["grid_name"] for v in voxels}
             self.assertEqual(names, {"Hull", "Turret"})
             self.assertTrue(any(v["is_subgrid"] for v in voxels))
+            self.assertFalse(any(v["is_subgrid"] for v in voxels if v["grid_name"] == "Hull"))
+            self.assertTrue(all(v["is_subgrid"] for v in voxels if v["grid_name"] == "Turret"))
             walked = structure.iter_nodes()
             self.assertEqual([node.grid_name for _, node in walked], ["Hull", "Turret"])
             self.assertEqual(walked[1][0], 1)
@@ -127,6 +129,36 @@ class TestVoxelsAndCanvas(unittest.TestCase):
             voxels = GridMatrixVisualizer.extract_all_voxels(path)
             self.assertEqual(len(voxels), 2)
             self.assertEqual((voxels[0]["x"], voxels[0]["y"], voxels[0]["z"]), (3, 1, 2))
+
+    def test_largest_grid_is_main_even_if_xml_order_is_reversed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bp.sbc"
+            root = ET.Element("Definitions")
+            ship = ET.SubElement(ET.SubElement(root, "ShipBlueprints"), "ShipBlueprint")
+            grids = ET.SubElement(ship, "CubeGrids")
+
+            arm = ET.SubElement(grids, "CubeGrid")
+            ET.SubElement(arm, "DisplayName").text = "Arm"
+            arm_blocks = ET.SubElement(arm, "CubeBlocks")
+            block = ET.SubElement(arm_blocks, "MyObjectBuilder_CubeBlock")
+            ET.SubElement(block, "SubtypeName").text = "LargeBlockArmorBlock"
+            ET.SubElement(block, "Min").attrib.update({"x": "0", "y": "0", "z": "0"})
+
+            hull = ET.SubElement(grids, "CubeGrid")
+            ET.SubElement(hull, "DisplayName").text = "Hull"
+            hull_blocks = ET.SubElement(hull, "CubeBlocks")
+            for idx in range(3):
+                plate = ET.SubElement(hull_blocks, "MyObjectBuilder_CubeBlock")
+                ET.SubElement(plate, "SubtypeName").text = "LargeBlockArmorBlock"
+                ET.SubElement(plate, "Min").attrib.update({"x": str(idx), "y": "0", "z": "0"})
+
+            ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+            voxels = GridMatrixVisualizer.extract_all_voxels(path)
+            by_name = {}
+            for voxel in voxels:
+                by_name.setdefault(voxel["grid_name"], []).append(voxel)
+            self.assertFalse(any(v["is_subgrid"] for v in by_name["Hull"]))
+            self.assertTrue(all(v["is_subgrid"] for v in by_name["Arm"]))
 
     def test_block_colors(self):
         fill, _ = ShipCanvas._get_block_color("LargeBlockCockpit", False)

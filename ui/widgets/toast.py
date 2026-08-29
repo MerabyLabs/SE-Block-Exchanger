@@ -91,9 +91,9 @@ class Toast(ctk.CTkFrame):
             self._after_id = None
         callback = self._on_dismiss
         self.pack_forget()
-        self.destroy()
         if callback:
             callback(self)
+        self.destroy()
 
 
 class ToastManager:

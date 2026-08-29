@@ -52,7 +52,7 @@ class TestAppShutdown(unittest.TestCase):
                 try:
                     app.destroy()
                 except Exception:
-                    pass
+                    pass  # window may already be destroyed by _on_close
                 raise
 
 
@@ -88,7 +88,7 @@ class TestToastManager(unittest.TestCase):
         try:
             cls.app.destroy()
         except Exception:
-            pass
+            pass  # CTk destroy is racy after tests that already quit the window
 
     def test_overlay_is_hidden_until_a_toast_is_shown(self):
         manager = ToastManager(self.app)

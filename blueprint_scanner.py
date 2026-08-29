@@ -140,6 +140,7 @@ class BlueprintScanner:
 
         light_armor_count = 0
         heavy_armor_count = 0
+        # O(1) membership: sources and targets, not a linear scan of .values().
         category_members = [
             (category.name, set(category.pairs) | set(category.pairs.values()))
             for category in self.registry.list_categories()

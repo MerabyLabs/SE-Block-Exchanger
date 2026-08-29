@@ -86,15 +86,40 @@ def grouped_category_ids(all_ids: list[str]) -> list[tuple[str, list[str]]]:
     return groups
 
 
-def convert_button_text(*, count: int, reverse: bool, enabled: bool, has_blueprint: bool) -> str:
+def conversion_target_phrase(reverse: bool, category_ids: list[str] | None = None) -> str:
+    """Player-facing description of what conversion will produce."""
+    ids = [str(name) for name in (category_ids or []) if name]
+    lowered = [name.lower() for name in ids]
+    if not lowered or lowered == ["armor"]:
+        return "heavy armor" if not reverse else "light armor"
+    if len(ids) == 1:
+        return category_label(ids[0])
+    return "the selected categories"
+
+
+def convert_button_text(
+    *,
+    count: int,
+    reverse: bool,
+    enabled: bool,
+    has_blueprint: bool,
+    category_ids: list[str] | None = None,
+) -> str:
     """Primary CTA copy that states the action in player language."""
     if not has_blueprint:
         return "Select a blueprint to convert"
     if not enabled or count <= 0:
         return "Nothing to convert with current settings"
-    direction = "heavy armor" if not reverse else "light armor"
     block_word = "block" if count == 1 else "blocks"
-    return f"Convert {count} {block_word} to {direction}"
+    ids = [str(name) for name in (category_ids or []) if name]
+    lowered = [name.lower() for name in ids]
+    armor_only = (not lowered) or lowered == ["armor"]
+    if armor_only:
+        direction = "heavy armor" if not reverse else "light armor"
+        return f"Convert {count} {block_word} to {direction}"
+    if len(ids) == 1:
+        return f"Convert {count} {block_word} ({category_label(ids[0])})"
+    return f"Convert {count} matching {block_word}"
 
 
 def mode_label(reverse: bool) -> str:
@@ -105,6 +130,17 @@ def convertible_total(bp_info) -> int:
     """How many blocks the current mapping would rewrite on this blueprint."""
     counts = getattr(bp_info, "convertible_counts", None) or {}
     return int(sum(counts.values()))
+
+
+def armor_convertible_total(bp_info) -> int:
+    """Convertible blocks that are light/heavy armor plates, not thrusters/etc."""
+    counts = getattr(bp_info, "convertible_counts", None) or {}
+    total = 0
+    for pair, count in counts.items():
+        source, sep, target = str(pair).partition("->")
+        if "Armor" in source or "Armor" in target:
+            total += int(count)
+    return total
 
 
 def card_status_label(convertible: int, scanned: bool) -> str:

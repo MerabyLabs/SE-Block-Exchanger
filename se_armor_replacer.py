@@ -122,10 +122,12 @@ class ArmorBlockReplacer:
             bp_file = path / "bp.sbc"
             if bp_file.exists():
                 return bp_file
-            for item in path.rglob("bp.sbc"):
-                return item
-            for item in path.rglob("*.sbc"):
-                return item
+            nested_bp = sorted(path.rglob("bp.sbc"))
+            if nested_bp:
+                return nested_bp[0]
+            nested_sbc = sorted(path.rglob("*.sbc"))
+            if nested_sbc:
+                return nested_sbc[0]
         raise FileNotFoundError(f"Could not find bp.sbc (or any .sbc file) in {path}")
 
     def backup_file(self, file_path: Path) -> Path:

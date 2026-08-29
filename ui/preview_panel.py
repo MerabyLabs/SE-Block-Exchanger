@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
+from queue import Empty, SimpleQueue
 from typing import Dict, Iterable, List, Optional
 
 import customtkinter as ctk
@@ -63,6 +64,7 @@ class PreviewPanel(ctk.CTkFrame):
         self._subgrids_rendered_for = None
         self._pending_analytics = None
         self._pending_se2 = None
+        self._ui_queue: SimpleQueue = SimpleQueue()
 
         self.tabview = ctk.CTkTabview(
             self,
@@ -85,6 +87,26 @@ class PreviewPanel(ctk.CTkFrame):
         self._build_se2_tab()
         self._build_xml_tab()
         self.tabview.configure(command=self._on_tab_changed)
+        self.after(16, self._pump_ui_queue)
+
+    def _ui(self, callback) -> None:
+        """Queue a callback for the Tk main thread. Safe to call from workers."""
+        self._ui_queue.put(callback)
+
+    def _pump_ui_queue(self) -> None:
+        try:
+            while True:
+                callback = self._ui_queue.get_nowait()
+                try:
+                    callback()
+                except Exception:
+                    pass  # widget may already be destroyed
+        except Empty:
+            pass  # queue drained
+        try:
+            self.after(16, self._pump_ui_queue)
+        except Exception:
+            pass  # panel is gone
 
     def _build_intel_tab(self):
         self.tab_intel = self.tabview.add("Overview")
@@ -267,7 +289,7 @@ class PreviewPanel(ctk.CTkFrame):
         try:
             return self.tabview.get()
         except Exception:
-            return "Overview"
+            return "Overview"  # tabview not built yet or already destroyed
 
     def _on_tab_changed(self):
         name = self.current_tab()
@@ -524,18 +546,20 @@ class PreviewPanel(ctk.CTkFrame):
         if self._xml_loaded_path == path:
             return
         self.xml_status.configure(text="Opening…")
+        XML_PREVIEW_LIMIT = 120000
         status_text = getattr(self, "_xml_status_text", "Blueprint XML")
 
         def task():
             try:
                 with open(path, "r", encoding="utf-8") as handle:
-                    content = handle.read(120000)
-                    truncated = bool(handle.read(1))
+                    chunk = handle.read(XML_PREVIEW_LIMIT + 1)
+                truncated = len(chunk) > XML_PREVIEW_LIMIT
+                content = chunk[:XML_PREVIEW_LIMIT]
                 if truncated:
                     content += "\n\n… truncated so the UI stays responsive. Open the .sbc file in an editor for the full XML."
             except Exception as exc:
                 content = f"Error reading file: {exc}"
-            self.after(0, lambda: self._apply_xml(content, status_text, path))
+            self._ui(lambda: self._apply_xml(content, status_text, path))
 
         threading.Thread(target=task, daemon=True).start()
 

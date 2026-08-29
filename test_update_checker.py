@@ -98,6 +98,26 @@ class TestUpdateChecker(unittest.TestCase):
             self.assertEqual(info.latest_version, "4.0.0")
             self.assertIn("github.com", info.release_url)
 
+    def test_fetch_release_uses_mocked_urlopen(self):
+        from io import BytesIO
+        from unittest.mock import patch
+
+        payload = {
+            "tag_name": "v88.0.0",
+            "html_url": "https://example.com/mocked",
+            "published_at": "2026-01-01T00:00:00Z",
+            "body": "mocked notes",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "cache.json"
+            checker = UpdateChecker(cache_path=cache_path, cache_hours=24)
+            fake_response = BytesIO(json.dumps(payload).encode("utf-8"))
+            with patch("update_checker.urllib.request.urlopen", return_value=fake_response):
+                info = checker.check_for_updates(force=True)
+            self.assertTrue(info.available)
+            self.assertEqual(info.latest_version, "88.0.0")
+            self.assertEqual(info.release_url, "https://example.com/mocked")
+
 
 if __name__ == "__main__":
     unittest.main()

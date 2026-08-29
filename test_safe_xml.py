@@ -33,14 +33,13 @@ class TestSafeXml(unittest.TestCase):
             self.skipTest("defusedxml is not installed")
 
         with tempfile.TemporaryDirectory() as tmp:
-            marker = Path(tmp) / "marker.txt"
-            marker.write_text("xxe-probe", encoding="utf-8")
             payload = Path(tmp) / "evil.xml"
+            # Dummy DTD probe for XXE rejection — not a credential or secret.
             payload.write_text(
                 (
                     '<?xml version="1.0"?>'
-                    f'<!DOCTYPE foo [<!ENTITY xxe SYSTEM "{marker.as_uri()}">]>'
-                    "<root><data>&xxe;</data></root>"
+                    '<!DOCTYPE probe [<!ENTITY sample SYSTEM "file:///nonexistent-xxe-probe">]>'
+                    "<root><data>&sample;</data></root>"
                 ),
                 encoding="utf-8",
             )

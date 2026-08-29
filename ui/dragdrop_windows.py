@@ -24,6 +24,7 @@ if sys.platform.startswith("win"):
 
     user32 = ctypes.windll.user32
     shell32 = ctypes.windll.shell32
+    kernel32 = ctypes.windll.kernel32
     LONG_PTR = ctypes.c_ssize_t
     WNDPROC = ctypes.WINFUNCTYPE(
         LONG_PTR,
@@ -65,10 +66,11 @@ class WindowsFileDropTarget:
 
         self._hwnd = hwnd
         self._wndproc = WNDPROC(self._handle_window_message)
+        kernel32.SetLastError(0)
         previous = user32.SetWindowLongPtrW(self._hwnd, GWLP_WNDPROC, self._wndproc)
-        if not previous:
-            # Subclassing failed or there is no previous proc. Do not leave a
-            # window with a Python WndProc and nothing to forward close/paint to.
+        if previous == 0 and kernel32.GetLastError() != 0:
+            # Subclassing failed. Do not leave a window with a Python WndProc
+            # and nothing to forward close/paint to.
             self._wndproc = None
             self._hwnd = None
             return False
@@ -84,7 +86,7 @@ class WindowsFileDropTarget:
         try:
             root = int(user32.GetAncestor(hwnd, GA_ROOT) or 0)
         except Exception:
-            root = 0
+            root = 0  # GetAncestor unavailable or HWND already gone
         return root or hwnd
 
     def disable(self):
@@ -116,7 +118,7 @@ class WindowsFileDropTarget:
                 try:
                     self.on_files(files)
                 except Exception:
-                    pass
+                    pass  # drop callback failed; still ack so Explorer does not retry
             return 0
         if msg == WM_DESTROY:
             result = self._forward(hwnd, msg, wparam, lparam)
