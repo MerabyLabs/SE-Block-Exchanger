@@ -365,6 +365,7 @@ class ControlPanel(ctk.CTkFrame):
     def clear_details(self):
         """Reset the selected-ship summary."""
         self._blueprint = None
+        self._counts_stale = False
         self.ship_name_label.configure(text="Pick a blueprint")
         self.grid_chip.value_label.configure(text="--")
         self.blocks_chip.value_label.configure(text="--")

@@ -62,6 +62,24 @@ class TestConvertCountsStale(unittest.TestCase):
         panel._convert()
         self.assertEqual(clicked["n"], 1)
 
+    def test_clear_details_unsticks_stale_cta(self):
+        panel = ControlPanel(self.app)
+        bp = SimpleNamespace(
+            display_name="Ship",
+            grid_size="Large",
+            block_count=10,
+            light_armor_count=4,
+            heavy_armor_count=6,
+            convertible_counts={"armor": 4},
+        )
+        panel.update_details(bp)
+        panel.mark_counts_stale()
+        panel.clear_details()
+        self.assertFalse(panel.counts_are_stale)
+        self.assertEqual(str(panel.convert_btn.cget("state")), "disabled")
+        self.assertNotIn("Updating", panel.convert_btn.cget("text"))
+        self.assertEqual(panel.ready_chip.value_label.cget("text"), "--")
+
 
 if __name__ == "__main__":
     unittest.main()
