@@ -75,11 +75,19 @@ class SteamWorkshopFetcher:
         items: List[WorkshopItem] = []
         seen_ids = set()
 
+        steam_content_marker = f"workshop/content/{SPACE_ENGINEERS_APP_ID}"
         for base_dir in cls.get_candidate_workshop_dirs():
-            for entry in base_dir.iterdir():
+            try:
+                entries = list(base_dir.iterdir())
+            except OSError:
+                continue
+            require_numeric_id = steam_content_marker.replace("\\", "/") in str(base_dir).replace("\\", "/")
+            for entry in entries:
                 if not entry.is_dir():
                     continue
                 wid = entry.name
+                if require_numeric_id and not wid.isdigit():
+                    continue
                 if wid in seen_ids:
                     continue
 
@@ -124,10 +132,15 @@ class SteamWorkshopFetcher:
             target_name = f"Workshop_{item.workshop_id}"
 
         dest_dir = local_bp_dir / target_name
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        if dest_dir.exists():
+            shutil.rmtree(dest_dir)
+        dest_dir.mkdir(parents=True)
 
-        for file in item.folder_path.iterdir():
-            if file.is_file():
-                shutil.copy2(file, dest_dir / file.name)
+        for src in item.folder_path.rglob("*"):
+            if not src.is_file():
+                continue
+            dest_file = dest_dir / src.relative_to(item.folder_path)
+            dest_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest_file)
 
         return dest_dir

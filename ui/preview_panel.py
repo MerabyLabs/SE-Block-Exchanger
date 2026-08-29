@@ -147,6 +147,14 @@ class PreviewPanel(ctk.CTkFrame):
             anchor="w",
         )
         self.intel_text.pack(fill="both", expand=True, padx=16, pady=14)
+        if self._on_workshop_sync:
+            ctk.CTkButton(
+                scroll,
+                text="Import Workshop / Mod.io",
+                command=self._on_workshop_sync,
+                width=240,
+                height=32,
+            ).pack(anchor="w", pady=(4, 8))
 
     def _build_selective_tab(self):
         self.tab_selective = self.tabview.add("SELECTIVE EXCHANGE")

@@ -4,7 +4,6 @@ Analyzes C# code embedded in Space Engineers blueprints against in-game sandbox 
 """
 
 from __future__ import annotations
-from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional
 from pb_doctor.whitelist_rules import (
@@ -167,7 +166,7 @@ class PBScriptValidator:
                 if regex.search(line):
                     diagnostics.append(
                         PBDiagnostic(
-                            severity="Error" if "Unicode" in msg or "Async" in msg or "Dynamic" in msg or "Namespace" in msg else "Warning",
+                            severity="Error",
                             rule_id="FORBIDDEN_SYNTAX",
                             line_number=idx,
                             message=msg,

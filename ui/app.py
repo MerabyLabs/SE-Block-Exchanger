@@ -105,7 +105,7 @@ class TacticalCommandCenter(ctk.CTk):
                 return
             self.after(ms, func, *args)
         except Exception:
-            pass
+            pass  # Tk is already torn down
 
     # ------------------------------------------------------------------
     # Bootstrapping
@@ -133,7 +133,7 @@ class TacticalCommandCenter(ctk.CTk):
             if os.path.exists(icon_path):
                 self.iconbitmap(icon_path)
         except Exception:
-            pass
+            pass  # icon is optional; missing .ico must not block startup
 
     def _center_window(self):
         self.update_idletasks()
@@ -246,6 +246,7 @@ class TacticalCommandCenter(ctk.CTk):
         self.bind_all("<Control-o>", lambda event: self.browse_blueprint_dir())
         self.bind_all("<Control-r>", lambda event: self.convert_blueprint())
         self.bind_all("<Control-z>", lambda event: self.undo_last_conversion())
+        self.bind_all("<F5>", lambda event: self.load_blueprints_async())
 
     def _setup_drag_drop(self):
         self._drop_target = WindowsFileDropTarget(self, self._handle_dropped_paths)
@@ -317,7 +318,7 @@ class TacticalCommandCenter(ctk.CTk):
                 info = self.update_checker.check_for_updates(force=False)
                 self.after(0, lambda: self._on_update_checked(info))
             except Exception:
-                pass
+                pass  # offline / GitHub rate-limit: skip the update badge silently
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -854,28 +855,58 @@ class TacticalCommandCenter(ctk.CTk):
         from workshop_sync import SteamWorkshopFetcher, ModioFetcher
         wid = SteamWorkshopFetcher.parse_workshop_id(url_or_id)
         if wid:
-            cached_items = SteamWorkshopFetcher.list_cached_workshop_items()
-            matched = [item for item in cached_items if item.workshop_id == wid]
-            if matched:
+            self.footer.set_status("Looking up workshop cache…")
+
+            def task():
                 try:
+                    cached_items = SteamWorkshopFetcher.list_cached_workshop_items()
+                    matched = [item for item in cached_items if item.workshop_id == wid]
+                    if not matched:
+                        self.after(
+                            0,
+                            lambda: self.toasts.toast(
+                                f"Workshop ID {wid} parsed. (Ensure item is downloaded in Steam workshop cache)",
+                                level="info",
+                                duration=5000,
+                            ),
+                        )
+                        return
                     imported_path = SteamWorkshopFetcher.import_to_local_blueprints(matched[0])
-                    self.toasts.toast(f"Imported Workshop blueprint: {imported_path.name}", level="success")
-                    self.load_blueprints_async()
-                    return
+                    self.after(
+                        0,
+                        lambda path=imported_path: (
+                            self.toasts.toast(f"Imported Workshop blueprint: {path.name}", level="success"),
+                            self.load_blueprints_async(),
+                        ),
+                    )
                 except Exception as exc:
-                    self.toasts.toast(f"Import failed: {exc}", level="error")
-                    return
-            else:
-                self.toasts.toast(
-                    f"Workshop ID {wid} parsed. (Ensure item is downloaded in Steam workshop cache)",
-                    level="info",
-                    duration=5000,
-                )
-                return
+                    self.after(0, lambda msg=str(exc): self.toasts.toast(f"Import failed: {msg}", level="error"))
+
+            threading.Thread(target=task, daemon=True).start()
+            return
 
         mod_slug = ModioFetcher.parse_modio_url(url_or_id)
         if mod_slug:
             self.toasts.toast(f"Mod.io item '{mod_slug}' detected.", level="info")
+            zip_path = filedialog.askopenfilename(
+                title=f"Select the downloaded Mod.io zip for '{mod_slug}'",
+                filetypes=[("Zip archives", "*.zip"), ("All files", "*.*")],
+            )
+            if not zip_path:
+                return
+            appdata = os.environ.get("APPDATA")
+            local_bp = (
+                Path(appdata) / "SpaceEngineers" / "Blueprints" / "local"
+                if appdata
+                else Path.home() / "AppData" / "Roaming" / "SpaceEngineers" / "Blueprints" / "local"
+            )
+            dest = local_bp / f"Modio_{mod_slug}"
+            try:
+                ModioFetcher.extract_zip_blueprint(Path(zip_path), dest)
+                self.toasts.toast(f"Imported Mod.io blueprint: {dest.name}", level="success")
+                self.load_blueprints_async()
+            except Exception as exc:
+                self.toasts.toast(f"Mod.io import failed: {exc}", level="error")
             return
 
         self.toasts.toast("Could not parse Workshop ID or Mod.io URL.", level="warning")
@@ -1074,8 +1105,8 @@ class TacticalCommandCenter(ctk.CTk):
                 voxels = GridMatrixVisualizer.extract_all_voxels(bp_file)
                 self.preview_panel.update_subgrids(structure, matrix, voxels=voxels)
                 self.preview_panel.update_survival_bom(analytics, structure)
-        except Exception:
-            pass
+        except Exception as exc:
+            self.toasts.toast(f"PB Doctor / subgrid update failed: {exc}", level="warning", duration=4000)
 
     def split_active_blueprint_subgrids(self):
         """Splits the active multi-grid blueprint into individual printable sub-blueprints."""

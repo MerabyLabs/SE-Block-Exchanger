@@ -4,8 +4,11 @@ Provides bidirectional mappings between standard Vanilla blocks and endgame Prot
 Includes Survival Sanity rules to replace uncraftable Prototech blocks for standard survival projectors.
 """
 
+from __future__ import annotations
+
 from typing import Dict, Set
-from mappings.registry import MappingCategory
+
+# MappingCategory is imported lazily in get_category() to avoid a registry cycle.
 
 # Standard Vanilla -> Prototech Upgrades
 VANILLA_TO_PROTOTECH_PAIRS: Dict[str, str] = {
@@ -96,7 +99,8 @@ PROTOTECH_TO_VANILLA_PAIRS: Dict[str, str] = {
 PROTOTECH_SUBTYPES: Set[str] = set(PROTOTECH_TO_VANILLA_PAIRS.keys())
 
 
-def get_category() -> MappingCategory:
+def get_category():
+    from mappings.registry import MappingCategory
     return MappingCategory(
         name="prototech",
         description="Bidirectional swaps between standard Vanilla blocks and Factorum Prototech tech.",

@@ -167,17 +167,14 @@ class ArmorBlockReplacer:
                 subtype_id = block.find("SubtypeId")
 
                 current_subtype = None
-                target_elem = None
                 if subtype_name is not None and subtype_name.text:
                     candidate = subtype_name.text.strip()
                     if candidate in effective_mapping:
                         current_subtype = candidate
-                        target_elem = subtype_name
-                elif subtype_id is not None and subtype_id.text:
+                if current_subtype is None and subtype_id is not None and subtype_id.text:
                     candidate = subtype_id.text.strip()
                     if candidate in effective_mapping:
                         current_subtype = candidate
-                        target_elem = subtype_id
 
                 if current_subtype is None:
                     continue
@@ -190,8 +187,6 @@ class ArmorBlockReplacer:
                 self.log(f"[MAP] {current_subtype} -> {new_subtype}")
 
                 if not dry_run:
-                    if target_elem is not None:
-                        target_elem.text = new_subtype
                     if subtype_name is not None and subtype_name.text:
                         subtype_name.text = new_subtype
                     if subtype_id is not None and subtype_id.text:

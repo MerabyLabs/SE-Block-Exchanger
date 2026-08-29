@@ -36,6 +36,8 @@ if sys.platform.startswith("win"):
 
     user32.CallWindowProcW.argtypes = [LONG_PTR, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.CallWindowProcW.restype = LONG_PTR
+    user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.DefWindowProcW.restype = LONG_PTR
 
 
 class WindowsFileDropTarget:
@@ -66,7 +68,7 @@ class WindowsFileDropTarget:
             self.enabled = True
             return True
         except Exception:
-            return False
+            return False  # HWND subclassing is unavailable on this window
 
     def disable(self):
         if not self.enabled or not sys.platform.startswith("win"):
@@ -78,7 +80,7 @@ class WindowsFileDropTarget:
                 set_wndproc = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
                 set_wndproc(self._hwnd, GWLP_WNDPROC, self._old_wndproc)
         except Exception:
-            pass
+            pass  # restore is best-effort during teardown
         finally:
             self.enabled = False
             self._old_wndproc = None
@@ -93,9 +95,12 @@ class WindowsFileDropTarget:
                 return 0
             if self._old_wndproc:
                 return user32.CallWindowProcW(self._old_wndproc, hwnd, msg, wparam, lparam)
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
         except Exception:
-            pass
-        return 0
+            pass  # drop handling failed; fall through to default processing
+        if self._old_wndproc:
+            return user32.CallWindowProcW(self._old_wndproc, hwnd, msg, wparam, lparam)
+        return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
     @staticmethod
     def _extract_drop_files(hdrop) -> List[str]:

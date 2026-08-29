@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from typing import Optional, Any
+from typing import Optional, Any, Union
 
 
 class BlueprintParseError(ValueError):
@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover
     HARDENED = False
 
 
-def safe_write(tree: Any, file_path: Path | str, encoding: str = "utf-8", xml_declaration: bool = True) -> None:
+def safe_write(tree: Any, file_path: Union[Path, str], encoding: str = "utf-8", xml_declaration: bool = True) -> None:
     """
     Atomically writes an ElementTree to disk using a temporary file and replace().
     Prevents file corruption on interrupted writes or disk errors.
@@ -51,13 +51,13 @@ def safe_write(tree: Any, file_path: Path | str, encoding: str = "utf-8", xml_de
     try:
         tree.write(temp_file, encoding=encoding, xml_declaration=xml_declaration)
         temp_file.replace(target)
-    except Exception as exc:
+    except Exception:
         if temp_file.exists():
             try:
                 temp_file.unlink()
             except OSError:
-                pass
-        raise exc
+                pass  # temp file already gone or locked by another process
+        raise
 
 
 def get_subtype(block: ET.Element) -> Optional[str]:

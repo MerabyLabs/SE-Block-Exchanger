@@ -49,8 +49,10 @@ class PBScriptExtractor:
             grid_name_elem = grid.find("CustomName")
             grid_name = grid_name_elem.text.strip() if (grid_name_elem is not None and grid_name_elem.text) else "CubeGrid"
 
-            # Find all Programmable Blocks
-            for block in grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock"):
+            # Find all Programmable Blocks (concrete CubeBlocks/* names included)
+            cube_blocks = grid.find("CubeBlocks")
+            block_iter = list(cube_blocks) if cube_blocks is not None else grid.findall(".//MyObjectBuilder_CubeBlock")
+            for block in block_iter:
                 xsi_type = block.attrib.get("{http://www.w3.org/2001/XMLSchema-instance}type", "")
                 if "ProgrammableBlock" not in xsi_type:
                     continue

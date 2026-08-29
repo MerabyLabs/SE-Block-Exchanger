@@ -23,8 +23,8 @@ class TestArmorHardening(unittest.TestCase):
         bp_dir = self.grids["Battleship_Vindicator"]
         res = ArmorHardeningEngine.harden_vital_cores(bp_dir, reinforce_radius=2)
 
-        self.assertTrue(res.critical_cores_found > 0)
-        self.assertTrue(res.armor_blocks_hardened > 0)
+        self.assertGreater(res.critical_cores_found, 0)
+        self.assertGreater(res.armor_blocks_hardened, 0)
         self.assertTrue((res.output_path / "bp.sbc").exists())
 
         tree = safe_xml.parse(res.output_path / "bp.sbc")
@@ -32,7 +32,7 @@ class TestArmorHardening(unittest.TestCase):
             b for b in tree.getroot().findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock")
             if "Heavy" in (b.find("SubtypeName").text if b.find("SubtypeName") is not None else "")
         ]
-        self.assertTrue(len(heavy_blocks) > 0)
+        self.assertGreater(len(heavy_blocks), 0)
 
     def test_02_lightweight_outer_hull(self):
         bp_dir = self.grids["Battleship_Vindicator"]

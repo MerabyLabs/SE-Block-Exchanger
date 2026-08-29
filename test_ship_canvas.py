@@ -22,7 +22,7 @@ class TestShipCanvas(unittest.TestCase):
     def test_01_extract_all_voxels_from_blueprint(self):
         bp_file = self.grids["Battleship_Vindicator"] / "bp.sbc"
         voxels = GridMatrixVisualizer.extract_all_voxels(bp_file)
-        self.assertTrue(len(voxels) > 0)
+        self.assertGreater(len(voxels), 0)
         
         first = voxels[0]
         self.assertIn("x", first)

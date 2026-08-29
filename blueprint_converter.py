@@ -9,7 +9,17 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
+import safe_xml
 from se_armor_replacer import ArmorBlockReplacer
+
+
+def _iter_cube_blocks(root) -> List:
+    blocks = []
+    for cube_blocks in root.findall(".//CubeBlocks"):
+        blocks.extend(list(cube_blocks))
+    if blocks:
+        return blocks
+    return root.findall(".//MyObjectBuilder_CubeBlock")
 
 
 class BlueprintConverter:
@@ -192,7 +202,6 @@ class BlueprintConverter:
         new_bp_file = dest_path / "bp.sbc"
         
         # Parse XML, scale the grid size and swap subtypes!
-        import safe_xml
         tree = safe_xml.parse(new_bp_file)
         root = tree.getroot()
         
@@ -210,7 +219,7 @@ class BlueprintConverter:
         blocks_scanned = 0
         
         for cube_blocks in root.findall(".//CubeBlocks"):
-            for block in cube_blocks.findall("MyObjectBuilder_CubeBlock"):
+            for block in list(cube_blocks):
                 blocks_scanned += 1
                 subtype_name = block.find("SubtypeName")
                 subtype_id = block.find("SubtypeId")
@@ -258,11 +267,12 @@ class BlueprintConverter:
                             min_elem.attrib["y"] = str(y * 5)
                             min_elem.attrib["z"] = str(z * 5)
                         else:
-                            min_elem.attrib["x"] = str(int(x // 5))
-                            min_elem.attrib["y"] = str(int(y // 5))
-                            min_elem.attrib["z"] = str(int(z // 5))
+                            # Truncate toward zero so negative coords do not jump a cell.
+                            min_elem.attrib["x"] = str(int(x / 5))
+                            min_elem.attrib["y"] = str(int(y / 5))
+                            min_elem.attrib["z"] = str(int(z / 5))
                     except (ValueError, TypeError):
-                        pass
+                        pass  # leave unparseable Min attributes unchanged
                         
         safe_xml.safe_write(tree, new_bp_file)
         self._history.append(dest_path)
@@ -288,14 +298,13 @@ class BlueprintConverter:
             binary_bp_file.unlink()
 
         from mappings.dlc_substitution import DLC_TO_BASE_PAIRS
-        import safe_xml
         new_bp_file = dest_path / "bp.sbc"
         tree = safe_xml.parse(new_bp_file)
         root = tree.getroot()
 
         scanned = 0
         converted = 0
-        for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+        for block in _iter_cube_blocks(root):
             scanned += 1
             subtype_name = block.find("SubtypeName")
             subtype_id = block.find("SubtypeId")
@@ -344,14 +353,13 @@ class BlueprintConverter:
 
         from mappings.prototech import get_survival_sanity_mapping
         sanity_mapping = get_survival_sanity_mapping()
-        import safe_xml
         new_bp_file = dest_path / "bp.sbc"
         tree = safe_xml.parse(new_bp_file)
         root = tree.getroot()
 
         scanned = 0
         converted = 0
-        for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+        for block in _iter_cube_blocks(root):
             scanned += 1
             subtype_name = block.find("SubtypeName")
             subtype_id = block.find("SubtypeId")
@@ -399,14 +407,13 @@ class BlueprintConverter:
             binary_bp_file.unlink()
 
         from mappings.prototech import VANILLA_TO_PROTOTECH_PAIRS
-        import safe_xml
         new_bp_file = dest_path / "bp.sbc"
         tree = safe_xml.parse(new_bp_file)
         root = tree.getroot()
 
         scanned = 0
         converted = 0
-        for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+        for block in _iter_cube_blocks(root):
             scanned += 1
             subtype_name = block.find("SubtypeName")
             subtype_id = block.find("SubtypeId")

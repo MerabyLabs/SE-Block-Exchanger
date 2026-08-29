@@ -14,7 +14,7 @@ import safe_xml
 @dataclass
 class MechanicalLink:
     """Represents a mechanical block connecting two grids."""
-    block_type: str  # Rotor, Hinge, Piston, Connector
+    block_type: str  # Rotor, Hinge, Piston (mechanical; connectors are not parsed yet)
     subtype: str
     custom_name: str
     base_entity_id: str
@@ -59,11 +59,23 @@ class SubgridHierarchyParser:
         except Exception:
             return MultiGridStructure(root_node=None, total_grids=0, total_blocks=0, mechanical_links=[])
 
+    @staticmethod
+    def _iter_blocks(grid: ET.Element) -> List[ET.Element]:
+        cube_blocks = grid.find("CubeBlocks")
+        if cube_blocks is not None:
+            children = list(cube_blocks)
+            if children:
+                return children
+        return (
+            grid.findall(".//CubeBlocks/*")
+            or grid.findall(".//MyObjectBuilder_CubeBlock")
+        )
+
     @classmethod
     def parse_element(cls, root: ET.Element) -> MultiGridStructure:
         grids = root.findall(".//CubeGrid")
         if not grids:
-            blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock") or root.findall(".//MyObjectBuilder_CubeBlock")
+            blocks = cls._iter_blocks(root)
             if blocks:
                 node = SubgridNode(
                     grid_name="MainGrid",
@@ -93,7 +105,7 @@ class SubgridHierarchyParser:
             grid_name = cls._get_text(grid, "CustomName") or cls._get_text(grid, "DisplayName") or "CubeGrid"
             grid_size = cls._get_text(grid, "GridSizeEnum") or "Large"
 
-            blocks = grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
+            blocks = cls._iter_blocks(grid)
             block_count = len(blocks)
 
             # Detect mechanical bases and top parts in this grid
@@ -140,7 +152,7 @@ class SubgridHierarchyParser:
 
         for grid_id, data in grid_data.items():
             grid_elem = data["element"]
-            for block in grid_elem.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock"):
+            for block in cls._iter_blocks(grid_elem):
                 block_id = cls._get_text(block, "EntityId")
                 if block_id in top_to_base_map:
                     parent_grid_id = top_to_base_map[block_id]

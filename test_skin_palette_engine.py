@@ -40,8 +40,8 @@ class TestSkinPaletteEngine(unittest.TestCase):
             armor_only=True,
         )
 
-        self.assertTrue(reskinned > 0)
-        self.assertTrue(recolored > 0)
+        self.assertGreater(reskinned, 0)
+        self.assertGreater(recolored, 0)
 
         output_dir = bp_dir.parent / "Battleship_Vindicator_RESKINNED"
         self.assertTrue((output_dir / "bp.sbc").exists())
@@ -51,7 +51,7 @@ class TestSkinPaletteEngine(unittest.TestCase):
             b for b in tree.getroot().findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock")
             if "armor" in (b.find("SubtypeName").text if b.find("SubtypeName") is not None else "").lower()
         ]
-        self.assertTrue(len(armor_blocks) > 0)
+        self.assertGreater(len(armor_blocks), 0)
         for ab in armor_blocks:
             skin_tag = ab.find("SkinSubtypeId")
             self.assertIsNotNone(skin_tag)

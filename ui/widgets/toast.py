@@ -81,13 +81,13 @@ class Toast(ctk.CTkFrame):
             try:
                 self.after_cancel(self._after_id)
             except Exception:
-                pass
+                pass  # after id already fired or widget is gone
             self._after_id = None
         if self._on_dismiss:
             try:
                 self._on_dismiss(self)
             except Exception:
-                pass
+                pass  # dismiss callback must not block destroying the toast
         self.pack_forget()
         self.destroy()
 

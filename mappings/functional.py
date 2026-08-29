@@ -13,7 +13,6 @@ FUNCTIONAL_PAIRS = {
     "LargeBlockSmallContainer": "LargeBlockLargeContainer",
     "SmallBlockSmallContainer": "SmallBlockLargeContainer",
     "Collector": "FlatCollector",
-    "SmallBlockBatteryBlock": "LargeBlockBatteryBlock",
 }
 
 

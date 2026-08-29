@@ -121,7 +121,7 @@ class EngineVersionDetector:
             if "<Definitions" in header or "<ShipBlueprint" in header:
                 return BlueprintFormat.SE1_SBC_XML
         except Exception:
-            pass
+            pass  # unreadable file; fall through to UNKNOWN
 
         return BlueprintFormat.UNKNOWN
 

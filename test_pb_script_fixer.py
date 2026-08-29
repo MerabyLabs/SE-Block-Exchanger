@@ -22,7 +22,7 @@ public void Main(string arg, UpdateType src) {}
         self.assertNotIn("System.Threading", fixed)
         self.assertNotIn("System.Net", fixed)
         self.assertNotIn("using ", fixed)
-        self.assertTrue(len(fixes) > 0)
+        self.assertGreater(len(fixes), 0)
 
         report = PBScriptValidator.validate_script("TestPB", fixed)
         self.assertEqual(report.error_count, 0)
@@ -65,7 +65,7 @@ public void Main(string arg, UpdateType src) {}
         fixed, fixes = ScriptFixer.fix_script("")
         self.assertIn("public Program()", fixed)
         self.assertIn("public void Main(", fixed)
-        self.assertTrue(len(fixes) > 0)
+        self.assertGreater(len(fixes), 0)
 
 
 if __name__ == "__main__":

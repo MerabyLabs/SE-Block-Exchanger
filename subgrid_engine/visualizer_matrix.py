@@ -156,12 +156,12 @@ class GridMatrixVisualizer:
     def _render_top_down(cls, points: List[VoxelBlockPoint], bounds: GridBoundingBox, width: int = 36, height: int = 18) -> str:
         """Projects blocks down onto the X-Z horizontal plane (Top-Down slice)."""
         grid = [["." for _ in range(width)] for _ in range(height)]
-        scale_x = width / bounds.size_x if bounds.size_x > 0 else 1
-        scale_z = height / bounds.size_z if bounds.size_z > 0 else 1
+        scale_x = (width - 1) / max(1, bounds.size_x - 1)
+        scale_z = (height - 1) / max(1, bounds.size_z - 1)
 
         for p in points:
-            gx = min(width - 1, max(0, int((p.x - bounds.min_x) * scale_x)))
-            gz = min(height - 1, max(0, int((p.z - bounds.min_z) * scale_z)))
+            gx = min(width - 1, max(0, int(round((p.x - bounds.min_x) * scale_x))))
+            gz = min(height - 1, max(0, int(round((p.z - bounds.min_z) * scale_z))))
             
             char = "#"
             if p.is_modified:
@@ -183,19 +183,19 @@ class GridMatrixVisualizer:
         for row in grid:
             lines.append("|" + "".join(row) + "|")
         lines.append("+" + "-" * width + "+")
-        lines.append("Legend: [@] Cockpit  [#] Armor  [^] Thruster  [!] Weapon  [+] Power  [$] Prototech  [*] Swapped")
+        lines.append("Legend: [@] Cockpit  [#] Armor/other  [^] Thruster  [!] Weapon  [+] Power  [$] Prototech  [*] Swapped")
         return "\n".join(lines)
 
     @classmethod
     def _render_side_view(cls, points: List[VoxelBlockPoint], bounds: GridBoundingBox, width: int = 36, height: int = 14) -> str:
         """Projects blocks onto the Z-Y vertical elevation plane (Side/Profile view)."""
         grid = [["." for _ in range(width)] for _ in range(height)]
-        scale_z = width / bounds.size_z if bounds.size_z > 0 else 1
-        scale_y = height / bounds.size_y if bounds.size_y > 0 else 1
+        scale_z = (width - 1) / max(1, bounds.size_z - 1)
+        scale_y = (height - 1) / max(1, bounds.size_y - 1)
 
         for p in points:
-            gz = min(width - 1, max(0, int((p.z - bounds.min_z) * scale_z)))
-            gy = min(height - 1, max(0, int((bounds.max_y - p.y) * scale_y)))  # Invert Y so up is up
+            gz = min(width - 1, max(0, int(round((p.z - bounds.min_z) * scale_z))))
+            gy = min(height - 1, max(0, int(round((bounds.max_y - p.y) * scale_y))))  # Invert Y so up is up
             
             char = "#"
             if p.is_modified:
@@ -232,16 +232,28 @@ class GridMatrixVisualizer:
 
         grids = root.findall(".//CubeGrid")
         grid_targets = grids if grids else [root]
-        voxels: List[dict] = []
-
+        prepared = []
         for idx, grid in enumerate(grid_targets):
             name_elem = grid.find("CustomName")
+            if name_elem is None or not (name_elem.text and name_elem.text.strip()):
+                name_elem = grid.find("DisplayName")
             grid_name = name_elem.text.strip() if (name_elem is not None and name_elem.text) else f"Grid_{idx+1}"
             grid_size_elem = grid.find("GridSizeEnum")
             grid_size = grid_size_elem.text.strip() if (grid_size_elem is not None and grid_size_elem.text) else "Large"
-            is_subgrid = (idx > 0)
+            cube_blocks = grid.find("CubeBlocks")
+            if cube_blocks is not None and list(cube_blocks):
+                blocks = list(cube_blocks)
+            else:
+                blocks = grid.findall(".//CubeBlocks/*") or grid.findall(".//MyObjectBuilder_CubeBlock")
+            prepared.append((idx, grid_name, grid_size, blocks))
 
-            blocks = grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock") or grid.findall(".//MyObjectBuilder_CubeBlock")
+        if not prepared:
+            return []
+        main_idx = max(range(len(prepared)), key=lambda i: (len(prepared[i][3]), -i))
+        voxels: List[dict] = []
+
+        for idx, grid_name, grid_size, blocks in prepared:
+            is_subgrid = idx != main_idx
             for b_idx, block in enumerate(blocks):
                 min_elem = block.find("Min")
                 if min_elem is not None:
