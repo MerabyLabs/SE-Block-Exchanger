@@ -91,6 +91,7 @@ class TacticalCommandCenter(ctk.CTk):
         self._rescan_after_id = None
         self._preview_after_id = None
         self._inspect_generation = 0
+        self._preview_convert_count = None
         self._closing = False
         self._ui_queue: SimpleQueue = SimpleQueue()
 
@@ -374,6 +375,7 @@ class TacticalCommandCenter(ctk.CTk):
             self.settings.enabled_categories = list(categories)
             self.settings_store.save(self.settings)
             self.converter = self._build_converter()
+            self._invalidate_preview_counts()
             self.footer.set_status(
                 "Categories: " + ", ".join(category_label(name) for name in categories)
             )
@@ -476,14 +478,23 @@ class TacticalCommandCenter(ctk.CTk):
         self.conversion_mode = mode
         self.scanner.set_reverse(mode == "heavy_to_light")
         self.converter = self._build_converter()
+        self._invalidate_preview_counts()
         if self.selected_blueprint:
             self.preview_panel.update_intel(self.selected_blueprint, mode)
             self._inspect_blueprint_async()
-        self._update_convert_state()
+        else:
+            self._update_convert_state()
         self.footer.set_status("Heavy → Light" if mode == "heavy_to_light" else "Light → Heavy")
 
-    def _update_convert_state(self):
+    def _invalidate_preview_counts(self):
+        """Drop in-flight inspect results and freeze Convert on stale scanner totals."""
+        self._inspect_generation += 1
+        self._preview_convert_count = None
+        self.control_panel.mark_counts_stale()
+
+    def _update_convert_state(self, count: Optional[int] = None):
         if not self.selected_blueprint:
+            self._preview_convert_count = None
             self.control_panel.set_convert_ready(
                 enabled=False,
                 count=0,
@@ -491,7 +502,9 @@ class TacticalCommandCenter(ctk.CTk):
                 has_blueprint=False,
             )
             return
-        count = convertible_total(self.selected_blueprint)
+        if count is None:
+            count = convertible_total(self.selected_blueprint)
+        self._preview_convert_count = count
         self.control_panel.set_convert_ready(
             enabled=count > 0,
             count=count,
@@ -612,11 +625,15 @@ class TacticalCommandCenter(ctk.CTk):
         except Exception as exc:
             self.toasts.toast(f"Map view failed: {exc}", level="warning")
         self.preview_panel.load_xml(bp.path / "bp.sbc", f"Source: {bp.name}")
+        preview_count = sum(before_counts.values()) if before_counts else 0
+        self._update_convert_state(preview_count)
+        self.control_panel.set_pending_change_count(preview_count)
 
     def _on_inspect_error(self, generation: int, message: str):
         if self._closing or generation != self._inspect_generation:
             return
         self._show_error(f"Preview failed: {message}")
+        self._update_convert_state()
 
     # ------------------------------------------------------------------
     # Conversion operations
@@ -625,8 +642,12 @@ class TacticalCommandCenter(ctk.CTk):
     def convert_blueprint(self):
         if not self.selected_blueprint:
             return
+        if self.control_panel.counts_are_stale:
+            return
         bp = self.selected_blueprint
-        count = convertible_total(bp)
+        count = self._preview_convert_count
+        if count is None:
+            count = convertible_total(bp)
         target = conversion_target_phrase(
             self.conversion_mode == "heavy_to_light",
             self.enabled_categories,

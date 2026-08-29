@@ -41,6 +41,7 @@ class ControlPanel(ctk.CTkFrame):
         self._category_vars = {}
         self._blueprint = None
         self._reverse = False
+        self._counts_stale = False
 
         container = ctk.CTkScrollableFrame(self, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=2, pady=2)
@@ -339,6 +340,8 @@ class ControlPanel(ctk.CTkFrame):
             self._on_mode_change(mode)
 
     def _convert(self):
+        if self._counts_stale:
+            return
         if self._on_convert:
             self._on_convert()
 
@@ -376,6 +379,19 @@ class ControlPanel(ctk.CTkFrame):
     def _selected_category_ids(self) -> list[str]:
         return [name for name, var in self._category_vars.items() if var.get()]
 
+    def mark_counts_stale(self):
+        """Disable Convert until a rescan or dry-run refresh replaces stale totals."""
+        self._counts_stale = True
+        self.convert_btn.configure(state="disabled", text="Updating conversion counts…")
+        self.ready_chip.value_label.configure(text="…")
+        self.change_summary.configure(
+            text="Updating conversion counts for the selected categories…"
+        )
+
+    @property
+    def counts_are_stale(self) -> bool:
+        return self._counts_stale
+
     def set_convert_enabled(self, enabled: bool):
         """Enable or disable the convert button (legacy API)."""
         if not enabled:
@@ -394,6 +410,7 @@ class ControlPanel(ctk.CTkFrame):
 
     def set_convert_ready(self, *, enabled: bool, count: int, reverse: bool, has_blueprint: bool):
         """Update the primary CTA copy and enabled state together."""
+        self._counts_stale = False
         self._reverse = reverse
         self.convert_btn.configure(
             state="normal" if enabled else "disabled",
@@ -405,8 +422,23 @@ class ControlPanel(ctk.CTkFrame):
                 category_ids=self._selected_category_ids(),
             ),
         )
+        self.ready_chip.value_label.configure(text=str(count) if has_blueprint else "--")
+
+    def set_pending_change_count(self, count: int):
+        """Accurate rewrite total from a dry-run, before the folder rescan finishes."""
+        if count <= 0:
+            self.change_summary.configure(
+                text="Nothing to convert with the current direction and categories."
+            )
+            return
+        block_word = "block" if count == 1 else "blocks"
+        self.change_summary.configure(
+            text=f"{count} {block_word} will be rewritten in a new copy with the selected categories."
+        )
 
     def _refresh_cta(self):
+        if self._counts_stale:
+            return
         count = convertible_total(self._blueprint) if self._blueprint else 0
         has_blueprint = self._blueprint is not None
         enabled = has_blueprint and count > 0
