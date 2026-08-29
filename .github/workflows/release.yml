@@ -52,11 +52,28 @@ jobs:
             --add-data "RELEASE_NOTES.md;." `
             --add-data "profiles;profiles" `
             --add-data "data;data" `
+            --add-data "app_icon.ico;." `
+            --add-data "logo.png;." `
             gui_standalone.py
 
       - name: Create release changelog body
         shell: pwsh
-        run: Copy-Item RELEASE_NOTES.md release_body.md
+        run: |
+          $version = python -c "from version import __version__; print(__version__)"
+          $heading = "## v$version"
+          $lines = Get-Content -Path RELEASE_NOTES.md
+          $start = ($lines | Select-String -Pattern "^## v$([regex]::Escape($version))\b" | Select-Object -First 1).LineNumber
+          if (-not $start) {
+            throw "RELEASE_NOTES.md has no section starting with $heading"
+          }
+          $body = New-Object System.Collections.Generic.List[string]
+          for ($i = $start - 1; $i -lt $lines.Count; $i++) {
+            if ($i -gt ($start - 1) -and $lines[$i] -match '^## v') { break }
+            $body.Add($lines[$i])
+          }
+          $text = ($body -join "`n").Trim() + "`n"
+          Set-Content -Path release_body.md -Value $text -Encoding utf8
+          Get-Content release_body.md
 
       - name: Generate SHA-256 checksums
         shell: pwsh
