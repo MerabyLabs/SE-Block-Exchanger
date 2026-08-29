@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unit tests for Armor Hardening & Lightweighting Engine.
 """
 

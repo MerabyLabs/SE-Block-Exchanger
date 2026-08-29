@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unit tests for SkinPaletteEngine (Armor textures & HSV Color Conversion).
 """
 

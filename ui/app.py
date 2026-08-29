@@ -1,4 +1,4 @@
-﻿"""
+"""
 Main Application Window
 Integrates all panel components into the Tactical Command Center.
 """

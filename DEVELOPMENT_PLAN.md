@@ -1,4 +1,4 @@
-﻿# SE Block Exchanger â€” Development Plan v3.0
+# SE Block Exchanger â€” Development Plan v3.0
 
 **Meraby Labs** | Created: 2026-02-07  
 **Current Version:** 3.0 | **Target:** 3.0+

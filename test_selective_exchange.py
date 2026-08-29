@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unit tests for Granular Selective Block Exchanging & Custom Rule Overrides.
 """
 

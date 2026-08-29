@@ -1,4 +1,4 @@
-﻿"""
+"""
 Main application launcher for Space Engineers Block Exchanger (SE Tactical Command).
 """
 

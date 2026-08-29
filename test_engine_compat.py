@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unit tests for Engine Compatibility & Future-Proofing Framework (SE1 & SE2).
 """
 
