@@ -100,15 +100,14 @@ PROTOTECH_SUBTYPES: Set[str] = set(PROTOTECH_TO_VANILLA_PAIRS.keys())
 
 
 def get_category():
-    from mappings.registry import MappingCategory
-    return MappingCategory(
-        name="prototech",
-        description="Bidirectional swaps between standard Vanilla blocks and Factorum Prototech tech.",
-        pairs=VANILLA_TO_PROTOTECH_PAIRS,
-        grid_sizes=("Large", "Small"),
-        enabled_by_default=False,
-        tags=("endgame", "factorum", "prototech", "upgrade"),
-    )
+    return {
+        "name": "prototech",
+        "description": "Bidirectional swaps between standard Vanilla blocks and Factorum Prototech tech.",
+        "pairs": VANILLA_TO_PROTOTECH_PAIRS,
+        "grid_sizes": ("Large", "Small"),
+        "enabled_by_default": False,
+        "tags": ("endgame", "factorum", "prototech", "upgrade"),
+    }
 
 
 def get_survival_sanity_mapping() -> Dict[str, str]:
