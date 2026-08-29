@@ -75,6 +75,54 @@ class SkinPaletteEngine:
         return int(hex_clean[0:2], 16), int(hex_clean[2:4], 16), int(hex_clean[4:6], 16)
 
     @classmethod
+    def _hsv_from_hex(cls, hex_str: Optional[str]) -> Optional[Tuple[float, float, float]]:
+        if not hex_str:
+            return None
+        r, g, b = cls.hex_to_rgb(hex_str)
+        return cls.rgb_to_se_hsv(r, g, b)
+
+    @staticmethod
+    def _is_armor_subtype(subtype: str) -> bool:
+        return "armor" in subtype.lower()
+
+    @staticmethod
+    def _is_heavy_armor_subtype(subtype: str) -> bool:
+        lowered = subtype.lower()
+        return "armor" in lowered and "heavy" in lowered
+
+    @classmethod
+    def _palette_hsv_for_block(
+        cls,
+        subtype: str,
+        primary_hsv: Optional[Tuple[float, float, float]],
+        secondary_hsv: Optional[Tuple[float, float, float]],
+        armor_only: bool,
+    ) -> Optional[Tuple[float, float, float]]:
+        """Pick ColorMaskHSV for one block from the primary/secondary palette."""
+        if primary_hsv is not None and secondary_hsv is not None:
+            if armor_only:
+                return secondary_hsv if cls._is_heavy_armor_subtype(subtype) else primary_hsv
+            return primary_hsv if cls._is_armor_subtype(subtype) else secondary_hsv
+        return primary_hsv if primary_hsv is not None else secondary_hsv
+
+    @staticmethod
+    def _apply_color_mask(block: ET.Element, hsv: Tuple[float, float, float]) -> bool:
+        """Write ColorMaskHSV. Returns True when the stored color changed."""
+        x, y, z = str(hsv[0]), str(hsv[1]), str(hsv[2])
+        color_elem = block.find("ColorMaskHSV")
+        if color_elem is None:
+            color_elem = ET.SubElement(block, "ColorMaskHSV")
+        changed = (
+            color_elem.get("x") != x
+            or color_elem.get("y") != y
+            or color_elem.get("z") != z
+        )
+        color_elem.set("x", x)
+        color_elem.set("y", y)
+        color_elem.set("z", z)
+        return changed
+
+    @classmethod
     def apply_skin_and_palette(
         cls,
         source_bp_path: Path,
@@ -85,7 +133,12 @@ class SkinPaletteEngine:
         armor_only: bool = False,
     ) -> Tuple[int, int]:
         """
-        Applies armor skin and/or color palette to all matching blocks in blueprint.
+        Apply armor skin and/or color palette to matching blocks.
+
+        primary_hex sets ColorMaskHSV on armor (or on every matching block when
+        secondary_hex is omitted). secondary_hex is the accent color: non-armor
+        blocks, or heavy armor when armor_only is True and both hexes are set.
+
         Returns (blocks_reskinned, blocks_recolored).
         """
         source_bp_path = Path(source_bp_path)
@@ -99,23 +152,21 @@ class SkinPaletteEngine:
         reskinned_count = 0
         recolored_count = 0
 
-        target_hsv = None
-        if primary_hex:
-            r, g, b = cls.hex_to_rgb(primary_hex)
-            target_hsv = cls.rgb_to_se_hsv(r, g, b)
+        primary_hsv = cls._hsv_from_hex(primary_hex)
+        secondary_hsv = cls._hsv_from_hex(secondary_hex)
 
         actual_skin_tag_val = None
         if skin_id and skin_id != "None":
             skin_def = OFFICIAL_SKINS.get(skin_id)
             actual_skin_tag_val = skin_def.skin_id if skin_def else skin_id
 
-        for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+        for block in root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock"):
             st_el = block.find("SubtypeName")
             if st_el is None:
                 st_el = block.find("SubtypeId")
             subtype = st_el.text.strip() if st_el is not None and st_el.text else ""
 
-            is_armor = "armor" in subtype.lower()
+            is_armor = cls._is_armor_subtype(subtype)
             if armor_only and not is_armor:
                 continue
 
@@ -129,17 +180,15 @@ class SkinPaletteEngine:
                 else:
                     if skin_elem is None:
                         skin_elem = ET.SubElement(block, "SkinSubtypeId")
-                    skin_elem.text = actual_skin_tag_val
-                    reskinned_count += 1
+                    if skin_elem.text != actual_skin_tag_val:
+                        skin_elem.text = actual_skin_tag_val
+                        reskinned_count += 1
 
-            # 2. Apply Color
-            if target_hsv is not None:
-                color_elem = block.find("ColorMaskHSV")
-                if color_elem is None:
-                    color_elem = ET.SubElement(block, "ColorMaskHSV")
-                color_elem.set("x", str(target_hsv[0]))
-                color_elem.set("y", str(target_hsv[1]))
-                color_elem.set("z", str(target_hsv[2]))
+            # 2. Apply Color (primary hull / secondary accent)
+            target_hsv = cls._palette_hsv_for_block(
+                subtype, primary_hsv, secondary_hsv, armor_only
+            )
+            if target_hsv is not None and cls._apply_color_mask(block, target_hsv):
                 recolored_count += 1
 
         # Determine output location
