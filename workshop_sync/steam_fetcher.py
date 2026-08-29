@@ -160,4 +160,23 @@ class SteamWorkshopFetcher:
                 dest_file.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest_file, follow_symlinks=False)
 
+        bp_dest = dest_dir / "bp.sbc"
+        if not bp_dest.is_file():
+            fallback = Path(item.sbc_path)
+            dest_fallback = None
+            try:
+                dest_fallback = dest_dir / fallback.relative_to(source_root)
+            except ValueError:
+                dest_fallback = None
+            candidate = (
+                dest_fallback
+                if dest_fallback is not None and dest_fallback.is_file()
+                else fallback
+            )
+            if candidate.is_symlink() or not candidate.is_file():
+                raise ValueError(
+                    f"Workshop import has no bp.sbc (fallback was {fallback.name})"
+                )
+            shutil.copy2(candidate, bp_dest, follow_symlinks=False)
+
         return dest_dir

@@ -184,6 +184,34 @@ class TestWorkshopSync(unittest.TestCase):
                 else:
                     os.environ["APPDATA"] = previous
 
+    def test_import_writes_bp_sbc_when_source_uses_fallback(self):
+        previous = os.environ.get("APPDATA")
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "4242"
+            src.mkdir()
+            (src / "alpha.sbc").write_text("<Definitions id='alpha'/>", encoding="utf-8")
+            (src / "zebra.sbc").write_text("<Definitions id='zebra'/>", encoding="utf-8")
+            os.environ["APPDATA"] = tmp
+            try:
+                item = WorkshopItem(
+                    workshop_id="4242",
+                    folder_path=src,
+                    sbc_path=src / "alpha.sbc",
+                    title="4242",
+                )
+                dest = SteamWorkshopFetcher.import_to_local_blueprints(item)
+                self.assertTrue((dest / "bp.sbc").is_file())
+                self.assertEqual(
+                    (dest / "bp.sbc").read_text(encoding="utf-8"),
+                    "<Definitions id='alpha'/>",
+                )
+                self.assertTrue((dest / "alpha.sbc").is_file())
+            finally:
+                if previous is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = previous
+
 
 if __name__ == "__main__":
     unittest.main()
