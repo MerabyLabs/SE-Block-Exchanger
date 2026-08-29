@@ -5,6 +5,7 @@ Native Windows file drop helper for Tk/CTk windows.
 from __future__ import annotations
 
 import sys
+import traceback
 from typing import Callable, List
 
 # Keep message ids at module level so close handling never depends on a
@@ -115,10 +116,7 @@ class WindowsFileDropTarget:
         if msg == WM_DROPFILES:
             files = self._extract_drop_files(wparam)
             if files:
-                try:
-                    self.on_files(files)
-                except Exception:
-                    pass  # drop callback failed; still ack so Explorer does not retry
+                self._invoke_drop_callback(files)
             return 0
         if msg == WM_DESTROY:
             result = self._forward(hwnd, msg, wparam, lparam)
@@ -128,6 +126,17 @@ class WindowsFileDropTarget:
             self._hwnd = None
             return result
         return self._forward(hwnd, msg, wparam, lparam)
+
+    def _invoke_drop_callback(self, files: List[str]) -> None:
+        """Run the drop callback; log failures but do not raise into Explorer."""
+        try:
+            self.on_files(files)
+        except Exception:
+            print(
+                "Windows file drop callback failed; acknowledging drop so Explorer does not retry.",
+                file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
 
     @staticmethod
     def _extract_drop_files(hdrop) -> List[str]:

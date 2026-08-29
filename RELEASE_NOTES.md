@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### GUI
+- Stays on CustomTkinter 5.x. The closed v4 UI rewrite is not included; the changes below are the tested converter window.
 - Reworked the desktop UI so converting a ship reads as a product, not a terminal: sentence case, readable fonts, grouped category names, and a filled Convert button that states how many blocks will change.
 - Selecting a blueprint now opens a live before/after preview automatically. Convert always writes a new copy; the original stays untouched.
 

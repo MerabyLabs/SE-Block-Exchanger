@@ -74,6 +74,20 @@ class TestDragDrop(unittest.TestCase):
         target.disable()
         self.assertFalse(target.enabled)
 
+    def test_drop_callback_errors_are_logged(self):
+        from io import StringIO
+        from unittest.mock import patch
+
+        def boom(_paths):
+            raise RuntimeError("drop failed")
+
+        target = WindowsFileDropTarget(tk_window=None, on_files=boom)
+        with patch("sys.stderr", new_callable=StringIO) as err:
+            target._invoke_drop_callback([r"C:\ship"])
+        text = err.getvalue()
+        self.assertIn("drop callback failed", text)
+        self.assertIn("RuntimeError", text)
+
 
 class TestToastManager(unittest.TestCase):
     @classmethod
