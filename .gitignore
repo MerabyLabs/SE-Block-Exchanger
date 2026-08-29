@@ -62,5 +62,16 @@ nul
 .mypy_cache/
 .ruff_cache/
 
-# Local-only development materials (not published)
+# Environment and credentials (never publish)
+.env
+.env.*
+*.pem
+
+# Local-only development materials (never publish)
 secrets/
+
+# Test suite is not part of the public product tree
+/test_*.py
+/test_bp.sbc
+/blueprint_fixtures.py
+/verify_mappings.py
