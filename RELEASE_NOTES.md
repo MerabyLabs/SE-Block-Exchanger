@@ -1,5 +1,18 @@
 # Release Notes
 
+## v3.2.1 (2026-08-29)
+
+Patch for the portable Windows build. **v3.2.0.exe crashes if you open it from a desktop shortcut** (or any launch whose working directory is not the folder that contains `data/`). Download this build instead.
+
+### Fixes
+- Packaged exe resolves `data/block_costs.json`, bundled profiles, changelog, and icons from the PyInstaller bundle (`_MEIPASS`), not the process working directory. Shortcut launch no longer shows `Fatal Error` / `No such file or directory: 'data\\block_costs.json'`.
+- Missing cost database no longer aborts startup; analytics runs with an empty catalog.
+- File → Create desktop shortcut targets the running `.exe` when frozen (and prefers `SE_Tactical_Command*.exe` from the shortcut script). Source launches still fall back to `launch.bat`.
+- Frozen profile edits write to `%APPDATA%\SEBlockExchanger\profiles` so they survive updates; bundled profiles still load.
+- 64-bit Windows drag-and-drop no longer overflows `WPARAM`/`LPARAM` (`int too long to convert` / access violation).
+- Selective Exchange no longer crashes on the missing `FONT_CODE_BOLD` theme font.
+- Tagged builds also embed `create_desktop_shortcut.ps1`.
+
 ## v3.2.0 (2026-08-29)
 
 Space Engineers Block Exchanger (Tactical Command) for Windows. Convert and analyse `.sbc` blueprints. In the GUI, **Convert writes a new copy**; the original ship is not overwritten.

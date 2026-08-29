@@ -15,6 +15,7 @@ import safe_xml
 from mapping_profiles import ProfileManager
 from mappings import MappingRegistry, build_registry
 from mappings.armor import ARMOR_PAIRS
+from resource_paths import bundled_profiles_dir
 from version import __version__
 
 
@@ -38,7 +39,7 @@ class ArmorBlockReplacer:
         enabled_categories: Optional[Sequence[str]] = None,
         registry: Optional[MappingRegistry] = None,
         include_profiles: bool = True,
-        profile_dir: Path = Path("profiles"),
+        profile_dir: Optional[Path] = None,
     ):
         self.verbose = verbose
         self.reverse = reverse
@@ -47,7 +48,7 @@ class ArmorBlockReplacer:
         self.change_log: List[Tuple[str, str]] = []
 
         self.registry = registry if registry else build_registry(include_builtin=True)
-        self.profile_manager = ProfileManager(profile_dir)
+        self.profile_manager = ProfileManager(profile_dir or bundled_profiles_dir())
         if include_profiles:
             self._load_profiles()
 

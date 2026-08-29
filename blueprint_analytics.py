@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Set
 
 import safe_xml
+from resource_paths import resource_path
 
 
 SEVERITY_INFO = "Info"
@@ -96,13 +97,19 @@ class BlockCostDatabase:
 
     def __init__(self, file_path: Path):
         self.file_path = Path(file_path)
+        self.metadata: Dict = {}
+        self.component_to_ingot: Dict[str, Dict[str, float]] = {}
+        self.ore_yields: Dict[str, float] = {}
+        self.blocks: Dict[str, Dict] = {}
+        if not self.file_path.exists():
+            return
         with open(self.file_path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
 
         self.metadata = data.get("metadata", {})
-        self.component_to_ingot: Dict[str, Dict[str, float]] = data.get("component_to_ingot", {})
-        self.ore_yields: Dict[str, float] = data.get("ore_yields", {})
-        self.blocks: Dict[str, Dict] = data.get("blocks", {})
+        self.component_to_ingot = data.get("component_to_ingot", {})
+        self.ore_yields = data.get("ore_yields", {})
+        self.blocks = data.get("blocks", {})
 
     def get_block(self, subtype: str) -> Optional[Dict]:
         if subtype in self.blocks:
@@ -194,8 +201,8 @@ class BlockCostDatabase:
 class BlueprintAnalyticsEngine:
     """Performs analytics, health audits, and conversion cost comparisons."""
 
-    def __init__(self, cost_db_path: Path = Path("data") / "block_costs.json"):
-        self.db = BlockCostDatabase(cost_db_path)
+    def __init__(self, cost_db_path: Optional[Path] = None):
+        self.db = BlockCostDatabase(cost_db_path or resource_path("data", "block_costs.json"))
 
     def analyze_blueprint(self, blueprint_file: Path) -> BlueprintAnalyticsResult:
         tree = safe_xml.parse(blueprint_file)

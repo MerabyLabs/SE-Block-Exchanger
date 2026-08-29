@@ -36,13 +36,19 @@ from ui.profile_editor import ProfileEditorDialog
 from ui.selective_exchange_panel import SelectiveExchangePanel
 from ui.theme import TacticalTheme
 from ui.widgets.toast import ToastManager
+from resource_paths import (
+    bundled_profiles_dir,
+    is_frozen,
+    project_root,
+    resource_path,
+    writable_profiles_dir,
+)
 from update_checker import UpdateChecker, UpdateInfo
 from version import __version__
 
 
 def get_resource_path(relative_path: str) -> str:
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(base, relative_path)
+    return str(resource_path(relative_path))
 
 
 class TacticalCommandCenter(ctk.CTk):
@@ -62,7 +68,12 @@ class TacticalCommandCenter(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._set_icon()
 
-        self.profile_manager = ProfileManager(Path("profiles"))
+        extra_profile_dirs = []
+        bundled = bundled_profiles_dir()
+        writable = writable_profiles_dir()
+        if bundled.resolve() != writable.resolve():
+            extra_profile_dirs.append(bundled)
+        self.profile_manager = ProfileManager(writable, extra_read_dirs=extra_profile_dirs)
         self.profile_manager.load_all()
         self.registry = build_registry(include_builtin=True)
         self.profile_manager.register_profile_categories(self.registry)
@@ -903,19 +914,47 @@ class TacticalCommandCenter(ctk.CTk):
         try:
             import subprocess
 
-            ps_script = Path(get_resource_path("create_desktop_shortcut.ps1"))
-            if not ps_script.exists():
-                ps_script = Path(__file__).resolve().parent.parent / "create_desktop_shortcut.ps1"
-            if ps_script.exists():
-                subprocess.run(
-                    ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(ps_script)],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                self.toasts.toast("Desktop shortcut created.", level="success")
+            if is_frozen():
+                target = Path(sys.executable)
+                workdir = target.parent
+                icon = f"{target},0"
             else:
-                self.toasts.toast("Shortcut script not found.", level="error")
+                root = project_root()
+                exe_hits = sorted(root.glob("SE_Tactical_Command*.exe"))
+                if exe_hits:
+                    target = exe_hits[-1]
+                    icon = f"{target},0"
+                else:
+                    launcher = root / "launch.bat"
+                    target = launcher if launcher.exists() else root / "launch_gui.bat"
+                    icon_file = root / "app_icon.ico"
+                    icon = f"{icon_file},0" if icon_file.exists() else f"{target},0"
+                workdir = root
+
+            ps_dir = (
+                "[Environment]::GetFolderPath('Desktop')"
+            )
+            target_lit = str(target).replace("'", "''")
+            work_lit = str(workdir).replace("'", "''")
+            icon_lit = icon.replace("'", "''")
+            script = (
+                f"$Desktop = {ps_dir}; "
+                f"$Shortcut = Join-Path $Desktop 'SE Tactical Command.lnk'; "
+                "$Wsh = New-Object -ComObject WScript.Shell; "
+                "$Link = $Wsh.CreateShortcut($Shortcut); "
+                f"$Link.TargetPath = '{target_lit}'; "
+                f"$Link.WorkingDirectory = '{work_lit}'; "
+                f"$Link.IconLocation = '{icon_lit}'; "
+                "$Link.Description = 'Space Engineers Tactical Command'; "
+                "$Link.Save()"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.toasts.toast("Desktop shortcut created.", level="success")
         except Exception as exc:
             self.toasts.toast(f"Could not create desktop shortcut: {exc}", level="error")
 
@@ -1315,9 +1354,9 @@ class TacticalCommandCenter(ctk.CTk):
                 f"URL: {self._latest_update.release_url}\n\n"
             )
             return heading + self._latest_update.changelog
+        notes = resource_path("RELEASE_NOTES.md")
         try:
-            with open("RELEASE_NOTES.md", "r", encoding="utf-8") as handle:
-                return handle.read()
+            return notes.read_text(encoding="utf-8")
         except Exception as exc:
             return f"Could not load release notes: {exc}"
 

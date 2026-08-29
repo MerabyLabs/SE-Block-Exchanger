@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import safe_xml
+from version import __version__
 
 
 class GameEngine(str, Enum):
@@ -252,7 +253,7 @@ class SE2MigrationBridge:
             "format_version": "3.0.0",
             "blueprint_name": bp_folder.name,
             "grids": grids_data,
-            "generator": "SE-Block-Exchanger-3.2.0",
+            "generator": f"SE-Block-Exchanger-{__version__}",
         }
 
         output_json = target_dir / "blueprint.json"

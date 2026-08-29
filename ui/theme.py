@@ -63,6 +63,7 @@ class TacticalTheme:
     FONT_MONO_SMALL = ("Consolas", 16)
     FONT_CODE = ("Consolas", 16)
     FONT_CODE_SMALL = ("Consolas", 16)
+    FONT_CODE_BOLD = ("Consolas", 16, "bold")
 
     @classmethod
     def normalize_appearance_mode(cls, mode: str) -> str:
@@ -104,6 +105,7 @@ class TacticalTheme:
         cls.FONT_MONO_SMALL = (cls.FONT_MONO, 16)
         cls.FONT_CODE = (cls.FONT_MONO, 16)
         cls.FONT_CODE_SMALL = (cls.FONT_MONO, 16)
+        cls.FONT_CODE_BOLD = (cls.FONT_MONO, 16, "bold")
 
     @classmethod
     def ui_font(cls, size: int = 17, weight: str = "normal"):

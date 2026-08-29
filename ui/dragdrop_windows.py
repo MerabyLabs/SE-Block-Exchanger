@@ -26,14 +26,44 @@ if sys.platform.startswith("win"):
     user32 = ctypes.windll.user32
     shell32 = ctypes.windll.shell32
     kernel32 = ctypes.windll.kernel32
+    # 64-bit Windows uses pointer-sized WPARAM/LPARAM. Without explicit
+    # prototypes, ctypes treats them as 32-bit ints and overflows.
+    LRESULT = ctypes.c_ssize_t
+    WPARAM = ctypes.c_size_t
+    LPARAM = ctypes.c_ssize_t
+    HWND = wintypes.HWND
     LONG_PTR = ctypes.c_ssize_t
-    WNDPROC = ctypes.WINFUNCTYPE(
-        LONG_PTR,
-        wintypes.HWND,
-        wintypes.UINT,
-        wintypes.WPARAM,
-        wintypes.LPARAM,
-    )
+    WNDPROC = ctypes.WINFUNCTYPE(LRESULT, HWND, wintypes.UINT, WPARAM, LPARAM)
+
+    user32.SetWindowLongPtrW.argtypes = [HWND, ctypes.c_int, ctypes.c_void_p]
+    user32.SetWindowLongPtrW.restype = ctypes.c_void_p
+    user32.CallWindowProcW.argtypes = [ctypes.c_void_p, HWND, wintypes.UINT, WPARAM, LPARAM]
+    user32.CallWindowProcW.restype = LRESULT
+    user32.DefWindowProcW.argtypes = [HWND, wintypes.UINT, WPARAM, LPARAM]
+    user32.DefWindowProcW.restype = LRESULT
+    user32.GetAncestor.argtypes = [HWND, wintypes.UINT]
+    user32.GetAncestor.restype = HWND
+    kernel32.SetLastError.argtypes = [wintypes.DWORD]
+    kernel32.SetLastError.restype = None
+    kernel32.GetLastError.argtypes = []
+    kernel32.GetLastError.restype = wintypes.DWORD
+    shell32.DragAcceptFiles.argtypes = [HWND, wintypes.BOOL]
+    shell32.DragAcceptFiles.restype = None
+    shell32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
+    shell32.DragQueryFileW.restype = wintypes.UINT
+    shell32.DragFinish.argtypes = [wintypes.HANDLE]
+    shell32.DragFinish.restype = None
+
+
+def _mask_wparam(value) -> int:
+    return int(value) & 0xFFFFFFFFFFFFFFFF
+
+
+def _mask_lparam(value) -> int:
+    raw = int(value) & 0xFFFFFFFFFFFFFFFF
+    if raw >= 1 << 63:
+        raw -= 1 << 64
+    return raw
 
 
 def _is_close_message(msg: int, wparam: int) -> bool:
@@ -68,8 +98,12 @@ class WindowsFileDropTarget:
         self._hwnd = hwnd
         self._wndproc = WNDPROC(self._handle_window_message)
         kernel32.SetLastError(0)
-        previous = user32.SetWindowLongPtrW(self._hwnd, GWLP_WNDPROC, self._wndproc)
-        if previous == 0 and kernel32.GetLastError() != 0:
+        previous = user32.SetWindowLongPtrW(
+            self._hwnd,
+            GWLP_WNDPROC,
+            ctypes.cast(self._wndproc, ctypes.c_void_p),
+        )
+        if not previous and kernel32.GetLastError() != 0:
             # Subclassing failed. Do not leave a window with a Python WndProc
             # and nothing to forward close/paint to.
             self._wndproc = None
@@ -104,28 +138,37 @@ class WindowsFileDropTarget:
             self._hwnd = None
 
     def _forward(self, hwnd, msg, wparam, lparam):
+        wp = _mask_wparam(wparam)
+        lp = _mask_lparam(lparam)
         if self._old_wndproc:
-            return user32.CallWindowProcW(self._old_wndproc, hwnd, msg, wparam, lparam)
-        return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+            return user32.CallWindowProcW(self._old_wndproc, hwnd, msg, wp, lp)
+        return user32.DefWindowProcW(hwnd, msg, wp, lp)
 
     def _handle_window_message(self, hwnd, msg, wparam, lparam):
         # Never swallow close. The previous handler returned 0 for WM_CLOSE,
         # which made the Windows title-bar X do nothing.
-        if _is_close_message(msg, wparam):
+        try:
+            if _is_close_message(msg, wparam):
+                return self._forward(hwnd, msg, wparam, lparam)
+            if msg == WM_DROPFILES:
+                files = self._extract_drop_files(wparam)
+                if files:
+                    self._invoke_drop_callback(files)
+                return 0
+            if msg == WM_DESTROY:
+                result = self._forward(hwnd, msg, wparam, lparam)
+                self.enabled = False
+                self._old_wndproc = None
+                self._wndproc = None
+                self._hwnd = None
+                return result
             return self._forward(hwnd, msg, wparam, lparam)
-        if msg == WM_DROPFILES:
-            files = self._extract_drop_files(wparam)
-            if files:
-                self._invoke_drop_callback(files)
-            return 0
-        if msg == WM_DESTROY:
-            result = self._forward(hwnd, msg, wparam, lparam)
-            self.enabled = False
-            self._old_wndproc = None
-            self._wndproc = None
-            self._hwnd = None
-            return result
-        return self._forward(hwnd, msg, wparam, lparam)
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            try:
+                return self._forward(hwnd, msg, wparam, lparam)
+            except Exception:
+                return 0
 
     def _invoke_drop_callback(self, files: List[str]) -> None:
         """Run the drop callback; log failures but do not raise into Explorer."""

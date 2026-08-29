@@ -7,9 +7,8 @@ from ui.theme import TacticalTheme
 
 def get_resource_path(relative_path: str) -> str:
     """Get absolute path to resource, works for dev and PyInstaller."""
-    import sys
-    base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(base, relative_path)
+    from resource_paths import resource_path
+    return str(resource_path(relative_path))
 
 
 class Header(ctk.CTkFrame):

@@ -1,6 +1,6 @@
 # Space Engineers Block Exchanger
 
-**Version 3.2.0 · A Meraby Labs product. Proprietary software. Free for personal, non-commercial use. Commercial use requires a license.**
+**Version 3.2.1 · A Meraby Labs product. Proprietary software. Free for personal, non-commercial use. Commercial use requires a license.**
 
 [![CI](https://github.com/MerabyLabs/SE-Block-Exchanger/actions/workflows/ci.yml/badge.svg)](https://github.com/MerabyLabs/SE-Block-Exchanger/actions/workflows/ci.yml)
 [![Release](https://github.com/MerabyLabs/SE-Block-Exchanger/actions/workflows/release.yml/badge.svg)](https://github.com/MerabyLabs/SE-Block-Exchanger/actions/workflows/release.yml)
@@ -51,7 +51,7 @@ Do not trust copies obtained from any other source. Typical blueprints folder:
 
 ### Windows executable (recommended)
 
-1. Download `SE_Tactical_Command_v3.2.0.exe` from the official Releases page.
+1. Download `SE_Tactical_Command_v3.2.1.exe` from the official Releases page. Do not use the v3.2.0 exe — it crashes when opened from a desktop shortcut.
 2. Double-click it. No installer is required.
 3. If the app does not find your ships, open that local blueprints folder (`Ctrl+O`).
 
@@ -70,7 +70,7 @@ Then launch with any of:
 - `python main.py`
 - `python gui_standalone.py`
 
-Desktop shortcut: `Create Desktop Shortcut.bat` (points at `launch.bat`). File → Create desktop shortcut does the same from inside the app.
+Desktop shortcut: `Create Desktop Shortcut.bat` or File → Create desktop shortcut. The packaged exe shortcut targets the `.exe`; from source it points at `launch.bat`.
 
 Dependencies: CustomTkinter 5.x, `defusedxml`, Pillow (header logo).
 
@@ -175,14 +175,14 @@ python se_armor_replacer.py --version
 
 GUI conversions, projector splits, Workshop import, and other production SBC writes use a temp file then replace, so an interrupted run does not leave a half-written `bp.sbc`. XML is parsed with `defusedxml`. Report security issues privately to Meraby Labs (do not open a public issue for vulnerabilities).
 
-Tagged Windows builds embed README, LICENSE, RELEASE_NOTES, `profiles/`, `data/`, `app_icon.ico`, and `logo.png`.
+Tagged Windows builds embed README, LICENSE, RELEASE_NOTES, `profiles/`, `data/`, `create_desktop_shortcut.ps1`, `app_icon.ico`, and `logo.png`.
 
 ---
 
 ## Verify a download
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\SE_Tactical_Command_v3.2.0.exe
+Get-FileHash -Algorithm SHA256 .\SE_Tactical_Command_v3.2.1.exe
 ```
 
 Compare the hash to `SHA256SUMS.txt` from the **same** release.
