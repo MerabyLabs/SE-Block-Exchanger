@@ -1,4 +1,4 @@
-# SE Block Exchanger â€” Development Plan v3.0
+# SE Block Exchanger — Development Plan v3.0
 
 **Meraby Labs** | Created: 2026-02-07  
 **Current Version:** 3.0 | **Target:** 3.0+
@@ -11,7 +11,7 @@ Five-phase roadmap to evolve SE Block Exchanger from a single-purpose armor swap
 
 ---
 
-## Phase 1 â€” Modern UI Overhaul
+## Phase 1 — Modern UI Overhaul
 
 **Goal:** Replace raw tkinter with CustomTkinter; decompose the monolithic `gui_standalone.py` (1,144 lines) into clean, testable modules.
 
@@ -34,10 +34,10 @@ Five-phase roadmap to evolve SE Block Exchanger from a single-purpose armor swap
 | `ui/widgets/` | Reusable custom widgets (below) |
 
 ### 1.3 New Widgets
-- [x] **Blueprint Card** (`ui/widgets/blueprint_card.py`) â€” Thumbnail, name, grid size, block count, status badge
-- [x] **Toast Notifications** (`ui/widgets/toast.py`) â€” Auto-dismissing success/error/info popups
-- [x] **Progress Ring** (`ui/widgets/progress_ring.py`) â€” Animated circular progress for batch operations
-- [x] **Before/After Preview** â€” Side-by-side or tabbed diff showing exactly which blocks change
+- [x] **Blueprint Card** (`ui/widgets/blueprint_card.py`) — Thumbnail, name, grid size, block count, status badge
+- [x] **Toast Notifications** (`ui/widgets/toast.py`) — Auto-dismissing success/error/info popups
+- [x] **Progress Ring** (`ui/widgets/progress_ring.py`) — Animated circular progress for batch operations
+- [x] **Before/After Preview** — Side-by-side or tabbed diff showing exactly which blocks change
 
 ### 1.4 UX Improvements
 - [x] Drag-and-drop blueprint folder/file loading
@@ -52,7 +52,7 @@ Five-phase roadmap to evolve SE Block Exchanger from a single-purpose armor swap
 
 ---
 
-## Phase 2 â€” Expanded Block Conversions
+## Phase 2 — Expanded Block Conversions
 
 **Goal:** Move beyond armor-only swaps. Add thruster tiers, weapon upgrades, functional block swaps. Make the mapping system pluggable.
 
@@ -72,25 +72,25 @@ Five-phase roadmap to evolve SE Block Exchanger from a single-purpose armor swap
 
 ### 2.2 New Mapping Categories
 
-**Thrusters** (Small â†” Large component variants):
+**Thrusters** (Small ↔ Large component variants):
 | Swap | Example |
 |---|---|
-| Ion tier | Small â†’ Large Ion Thruster |
-| Hydrogen tier | Small â†’ Large Hydrogen Thruster |
-| Atmospheric tier | Small â†’ Large Atmospheric Thruster |
+| Ion tier | Small → Large Ion Thruster |
+| Hydrogen tier | Small → Large Hydrogen Thruster |
+| Atmospheric tier | Small → Large Atmospheric Thruster |
 
 **Weapons:**
 | Swap | Example |
 |---|---|
-| Gatling â†’ Autocannon | Interior Turret â†’ Assault Cannon |
-| Rocket â†’ Artillery | Rocket Launcher â†’ Artillery |
+| Gatling → Autocannon | Interior Turret → Assault Cannon |
+| Rocket → Artillery | Rocket Launcher → Artillery |
 
 **Functional Blocks:**
 | Swap | Example |
 |---|---|
-| Basic â†’ Upgraded | Basic Refinery â†’ Refinery |
-| Basic â†’ Upgraded | Basic Assembler â†’ Assembler |
-| Battery variants | Small Battery â†’ Battery |
+| Basic → Upgraded | Basic Refinery → Refinery |
+| Basic → Upgraded | Basic Assembler → Assembler |
+| Battery variants | Small Battery → Battery |
 
 ### 2.3 Engine Refactor
 - [x] Refactor `blueprint_scanner.py` / `blueprint_converter.py` to accept any `MappingCategory`
@@ -106,9 +106,9 @@ Five-phase roadmap to evolve SE Block Exchanger from a single-purpose armor swap
 
 ---
 
-## Phase 3 â€” Blueprint Analytics Dashboard
+## Phase 3 — Blueprint Analytics Dashboard
 
-**Goal:** Give users deep insight into their blueprints â€” resource costs, PCU, mass, block distribution, and conversion cost comparisons.
+**Goal:** Give users deep insight into their blueprints — resource costs, PCU, mass, block distribution, and conversion cost comparisons.
 
 ### 3.1 Resource Cost Calculator
 - [x] Build component-cost database (`data/block_costs.json`):
@@ -117,7 +117,7 @@ Five-phase roadmap to evolve SE Block Exchanger from a single-purpose armor swap
 - [x] Calculate total components needed for entire blueprint
 - [x] Calculate ingot requirements (smelt-back from components)
 - [x] Calculate raw ore requirements (refine-back from ingots)
-- [x] Display in collapsible tree: Ores â†’ Ingots â†’ Components â†’ Blocks
+- [x] Display in collapsible tree: Ores → Ingots → Components → Blocks
 
 ### 3.2 PCU & Mass Analysis
 - [x] PCU counter per block type, total PCU, PCU budget warnings
@@ -148,7 +148,7 @@ Five-phase roadmap to evolve SE Block Exchanger from a single-purpose armor swap
 
 ---
 
-## Phase 4 â€” Custom Mapping Profiles & Mod Support
+## Phase 4 — Custom Mapping Profiles & Mod Support
 
 **Goal:** Let users create, edit, import/export, and share custom mapping profiles. Ship built-in profiles for popular mods.
 
@@ -184,13 +184,13 @@ Five-phase roadmap to evolve SE Block Exchanger from a single-purpose armor swap
 ### 4.3 Import/Export & Sharing
 - [x] Export profile as `.sebx-profile` (JSON with metadata)
 - [x] Import from file or URL
-- [x] "Share on Discord" button â€” copies profile JSON to clipboard with formatted message
+- [x] "Share on Discord" button — copies profile JSON to clipboard with formatted message
 - [x] Built-in profile browser for community-submitted profiles (future)
 
 ### 4.4 Built-in Mod Profiles
-- [x] **WeaponCore** â€” Vanilla â†’ WC weapon equivalents
-- [x] **Build Vision** â€” Enhanced block variants
-- [x] **Assertive Armaments** â€” Military weapon swaps
+- [x] **WeaponCore** — Vanilla → WC weapon equivalents
+- [x] **Build Vision** — Enhanced block variants
+- [x] **Assertive Armaments** — Military weapon swaps
 - [x] Community contribution guide for creating profiles
 
 ### Deliverables
@@ -202,7 +202,7 @@ Five-phase roadmap to evolve SE Block Exchanger from a single-purpose armor swap
 
 ---
 
-## Phase 5 â€” Distribution & Community
+## Phase 5 — Distribution & Community
 
 **Goal:** Automate releases, add in-app updates, changelog viewer, and centralized version management.
 
@@ -229,7 +229,7 @@ Five-phase roadmap to evolve SE Block Exchanger from a single-purpose armor swap
 
 ### 5.3 In-App Update Checker
 - [x] Check GitHub Releases API on startup (with 24h cache)
-- [x] Non-intrusive notification: "Version 3.1.0 available â€” [View Changelog] [Download]"
+- [x] Non-intrusive notification: "Version 3.1.0 available — [View Changelog] [Download]"
 - [x] User preference to disable auto-check
 - [x] Changelog viewer: render markdown release notes in-app
 
@@ -250,21 +250,21 @@ Five-phase roadmap to evolve SE Block Exchanger from a single-purpose armor swap
 ## Priority & Sequencing
 
 ```
-Phase 1 â”€â”€â–º Phase 2 â”€â”€â–º Phase 3
-                â”‚              â”‚
-                â””â”€â”€â–º Phase 4 â”€â”€â”˜
-                         â”‚
-                         â–¼
+Phase 1 ──► Phase 2 ──► Phase 3
+                │              │
+                └──► Phase 4 ──┘
+                         │
+                         ▼
                       Phase 5
 ```
 
 | Phase | Est. Effort | Dependencies |
 |---|---|---|
-| 1 â€” Modern UI | Medium | None (can start immediately) |
-| 2 â€” Expanded Conversions | Medium | Core engine refactor |
-| 3 â€” Analytics Dashboard | High | Phase 2 mapping registry |
-| 4 â€” Custom Profiles | Medium | Phase 2 mapping registry |
-| 5 â€” Distribution | Low-Medium | All phases (final polish) |
+| 1 — Modern UI | Medium | None (can start immediately) |
+| 2 — Expanded Conversions | Medium | Core engine refactor |
+| 3 — Analytics Dashboard | High | Phase 2 mapping registry |
+| 4 — Custom Profiles | Medium | Phase 2 mapping registry |
+| 5 — Distribution | Low-Medium | All phases (final polish) |
 
 **Phases 3 and 4** can be developed in parallel after Phase 2 completes.  
 **Phase 5** is independent but best done last to package everything.
@@ -285,7 +285,7 @@ Phase 1 â”€â”€â–º Phase 2 â”€â”€â–º Phase 3
 
 | Metric | Target |
 |---|---|
-| Test coverage | â‰¥ 85% across all modules |
+| Test coverage | ≥ 85% across all modules |
 | Startup time | < 2 seconds (GUI cold start) |
 | Conversion speed | < 1 second per blueprint (single pass) |
 | Profile load time | < 100ms per profile |
@@ -294,5 +294,5 @@ Phase 1 â”€â”€â–º Phase 2 â”€â”€â–º Phase 3
 
 ---
 
-*Meraby Labs â€” Building better blueprints, one block at a time.*
+*Meraby Labs — Building better blueprints, one block at a time.*
 
