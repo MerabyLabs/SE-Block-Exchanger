@@ -3,8 +3,8 @@ Unit tests for Prototech mappings and Survival Sanity conversions.
 """
 
 import unittest
+from mappings import build_registry
 from mappings.prototech import (
-    get_category,
     get_survival_sanity_mapping,
     VANILLA_TO_PROTOTECH_PAIRS,
     PROTOTECH_SUBTYPES,
@@ -13,7 +13,7 @@ from mappings.prototech import (
 
 class TestPrototech(unittest.TestCase):
     def test_category_definition(self):
-        cat = get_category()
+        cat = build_registry().get("prototech")
         self.assertEqual(cat.name, "prototech")
         self.assertIn("endgame", cat.tags)
         self.assertGreater(len(cat.pairs), 10)

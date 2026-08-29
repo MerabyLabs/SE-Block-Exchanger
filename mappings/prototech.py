@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import Dict, Set
 
-# MappingCategory is imported lazily in get_category() to avoid a registry cycle.
-
 # Standard Vanilla -> Prototech Upgrades
 VANILLA_TO_PROTOTECH_PAIRS: Dict[str, str] = {
     # Power & Energy
@@ -98,19 +96,11 @@ PROTOTECH_TO_VANILLA_PAIRS: Dict[str, str] = {
 # Set of all known Prototech subtypes for fast lookup and survival audits
 PROTOTECH_SUBTYPES: Set[str] = set(PROTOTECH_TO_VANILLA_PAIRS.keys())
 
-
-def get_category():
-    from mappings.registry import MappingCategory
-
-    return MappingCategory(
-        name="prototech",
-        description="Bidirectional swaps between standard Vanilla blocks and Factorum Prototech tech.",
-        pairs=VANILLA_TO_PROTOTECH_PAIRS,
-        grid_sizes=("Large", "Small"),
-        source="endgame",
-        enabled_by_default=False,
-        tags=("endgame", "factorum", "prototech", "upgrade"),
-    )
+CATEGORY_NAME = "prototech"
+CATEGORY_DESCRIPTION = (
+    "Bidirectional swaps between standard Vanilla blocks and Factorum Prototech tech."
+)
+CATEGORY_TAGS = ("endgame", "factorum", "prototech", "upgrade")
 
 
 def get_survival_sanity_mapping() -> Dict[str, str]:
