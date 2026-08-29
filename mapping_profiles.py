@@ -52,9 +52,10 @@ class MappingProfile:
 class ProfileManager:
     """Manage profile discovery and profile->mapping registry integration."""
 
-    def __init__(self, profile_dir: Path):
+    def __init__(self, profile_dir: Path, extra_read_dirs: Optional[List[Path]] = None):
         self.profile_dir = Path(profile_dir)
         self.profile_dir.mkdir(parents=True, exist_ok=True)
+        self.extra_read_dirs = [Path(path) for path in (extra_read_dirs or [])]
         self._profiles: Dict[str, MappingProfile] = {}
 
     @staticmethod
@@ -161,19 +162,33 @@ class ProfileManager:
         self._profiles[self._normalize_name(profile.name)] = profile
         return profile
 
+    def _iter_profile_files(self, directory: Path) -> List[Path]:
+        if not directory.exists():
+            return []
+        files = list(sorted(directory.glob(f"*{PROFILE_EXTENSION}")))
+        for path in sorted(directory.glob("*.json")):
+            if path.name.lower().endswith(".schema.json"):
+                continue
+            files.append(path)
+        return files
+
     def load_all(self) -> List[MappingProfile]:
         loaded: List[MappingProfile] = []
         self._profiles.clear()
-        for path in sorted(self.profile_dir.glob(f"*{PROFILE_EXTENSION}")):
-            loaded.append(self.load_profile_file(path))
-        for path in sorted(self.profile_dir.glob("*.json")):
-            if path.name.lower().endswith(".schema.json"):
-                continue
-            try:
-                loaded.append(self.load_profile_file(path))
-            except ProfileValidationError:
-                # Non-profile JSON files can coexist in the directory.
-                continue
+        seen: set[str] = set()
+        # Extra (bundled) dirs first, then the writable dir so user copies win.
+        for directory in [*self.extra_read_dirs, self.profile_dir]:
+            for path in self._iter_profile_files(directory):
+                key = str(path.resolve()).lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    loaded.append(self.load_profile_file(path))
+                except ProfileValidationError:
+                    if path.suffix.lower() == ".json":
+                        continue
+                    raise
         return loaded
 
     def list_profiles(self) -> List[MappingProfile]:

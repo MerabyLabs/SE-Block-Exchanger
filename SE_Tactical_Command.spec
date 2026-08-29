@@ -9,6 +9,7 @@ datas_list = [
     ('RELEASE_NOTES.md', '.'),
     ('profiles', 'profiles'),
     ('data', 'data'),
+    ('create_desktop_shortcut.ps1', '.'),
 ]
 if os.path.exists('app_icon.ico'):
     datas_list.append(('app_icon.ico', '.'))
@@ -20,7 +21,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas_list,
-    hiddenimports=[],
+    hiddenimports=['resource_paths'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

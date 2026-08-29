@@ -26,6 +26,7 @@ if exist "app_icon.ico" (
         --add-data "RELEASE_NOTES.md;." ^
         --add-data "profiles;profiles" ^
         --add-data "data;data" ^
+        --add-data "create_desktop_shortcut.ps1;." ^
         --add-data "app_icon.ico;." ^
         --add-data "logo.png;." ^
         gui_standalone.py
@@ -38,6 +39,7 @@ if exist "app_icon.ico" (
         --add-data "RELEASE_NOTES.md;." ^
         --add-data "profiles;profiles" ^
         --add-data "data;data" ^
+        --add-data "create_desktop_shortcut.ps1;." ^
         --add-data "logo.png;." ^
         gui_standalone.py
 )

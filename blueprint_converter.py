@@ -46,7 +46,7 @@ class BlueprintConverter:
         reverse: bool = False,
         enabled_categories: Optional[Sequence[str]] = None,
         include_profiles: bool = True,
-        profile_dir: Path = Path("profiles"),
+        profile_dir: Optional[Path] = None,
         registry: Optional[MappingRegistry] = None,
     ):
         self.verbose = verbose
