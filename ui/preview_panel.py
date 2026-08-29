@@ -570,9 +570,11 @@ class PreviewPanel(ctk.CTkFrame):
                 content = chunk[:XML_PREVIEW_LIMIT]
                 if truncated:
                     content += "\n\n… truncated so the UI stays responsive. Open the .sbc file in an editor for the full XML."
+                header = status_text
             except Exception as exc:
                 content = f"Error reading file: {exc}"
-            self._ui(lambda: self._apply_xml(content, status_text, path))
+                header = f"Could not open XML: {exc}"
+            self._ui(lambda c=content, h=header, p=path: self._apply_xml(c, h, p))
 
         threading.Thread(target=task, daemon=True).start()
 

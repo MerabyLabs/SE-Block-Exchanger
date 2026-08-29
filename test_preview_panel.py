@@ -57,5 +57,70 @@ class TestSubgridRenderCache(unittest.TestCase):
         self.assertEqual(panel.hierarchy_view.render.call_count, 2)
 
 
+class TestXmlPreviewStatus(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not os.environ.get("DISPLAY"):
+            raise unittest.SkipTest("DISPLAY is required to construct PreviewPanel")
+        cls.app = ctk.CTk()
+        cls.app.withdraw()
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls.app.destroy()
+        except Exception:
+            pass  # CTk destroy is racy after tests that already quit the window
+
+    def test_failed_xml_load_shows_error_in_status(self):
+        from unittest.mock import patch
+
+        panel = PreviewPanel(self.app)
+        panel._ui = lambda callback: callback()
+        panel._xml_path = "/tmp/sebx-missing-blueprint.sbc"
+        panel._xml_status_text = "Source: MissingShip"
+        panel._xml_loaded_path = None
+
+        class ImmediateThread:
+            def __init__(self, target=None, daemon=False):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        with patch("ui.preview_panel.threading.Thread", ImmediateThread):
+            panel._ensure_xml_loaded()
+
+        status = panel.xml_status.cget("text")
+        self.assertNotEqual(status, "Source: MissingShip")
+        self.assertIn("Could not open XML", status)
+
+    def test_successful_xml_load_keeps_source_status(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        panel = PreviewPanel(self.app)
+        panel._ui = lambda callback: callback()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bp.sbc"
+            path.write_text("<MyObjectBuilder_ShipBlueprint/>\n", encoding="utf-8")
+            panel._xml_path = str(path)
+            panel._xml_status_text = "Source: TinyShip"
+            panel._xml_loaded_path = None
+
+            class ImmediateThread:
+                def __init__(self, target=None, daemon=False):
+                    self._target = target
+
+                def start(self):
+                    self._target()
+
+            with patch("ui.preview_panel.threading.Thread", ImmediateThread):
+                panel._ensure_xml_loaded()
+
+        self.assertEqual(panel.xml_status.cget("text"), "Source: TinyShip")
+
+
 if __name__ == "__main__":
     unittest.main()
