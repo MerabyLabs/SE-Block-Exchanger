@@ -5,3 +5,7 @@ defusedxml>=0.7.1
 
 # Optional dependencies
 Pillow>=12.3.0
+
+# Subgrids 3D preview (standalone ModernGL context; falls back to the 2D map)
+numpy>=1.24.0
+moderngl>=5.10.0
