@@ -2,29 +2,64 @@
 
 ## v3.2.0 (2026-08-29)
 
-### Desktop app
-- Convert a ship from a clearer converter window: sentence-case labels, grouped categories, and a Convert button that states how many blocks will change.
-- Selecting a blueprint opens a live before/after preview. Convert writes a **new copy**; the original stays untouched.
+Space Engineers Block Exchanger (Tactical Command) for Windows. Convert and analyse `.sbc` blueprints. In the GUI, **Convert writes a new copy**; the original ship is not overwritten.
+
+A Meraby Labs product. Free for personal, non-commercial use. Commercial use requires a license. See LICENSE. Not affiliated with or endorsed by Keen Software House.
+
+### Desktop converter
+- Converter window is a product flow: pick a ship, see a live before/after, then convert a copy. Sentence-case labels, readable 15–17pt type, grouped category names, and a Convert button that states how many blocks will change.
+- Selecting a blueprint opens the live preview automatically.
+- Armor before/after counts only use armor conversions. Enabling thrusters, DLC substitution, or other categories no longer inflates or goes negative on the armor totals.
+- Convert stays disabled and the “Will convert” chip clears as soon as you change categories or direction, then comes back from a fresh dry-run so you cannot convert against stale scanner counts.
+- Clearing the selection no longer leaves Convert stuck on “Updating conversion counts…”.
+- Empty toast overlay no longer paints a solid box over Profiles, Changelog, Rescan, and the control panel. The overlay shows only while a toast is visible.
 - Stays on CustomTkinter 5.x.
 
+### Subgrids map
+- Subgrids tab lists CubeGrid hierarchy as a clickable tree and draws a 2D voxel map from `Min` coordinates, including `TopGridId` parent/child links.
+- Clicking a rotor, turret, or other subgrid isolates that grid; redraw and Fit use that grid’s bounds so it is not left off-center and tiny.
+- The map refreshes after the tab is shown, including single-grid ships (no empty black panel). Reopening the tab does not rebuild the map if the ship has not changed.
+- The main hull is chosen by block count, not XML order.
+- Hierarchy painting no longer collides with CustomTkinter’s internal redraw (the Subgrids tab crashed on startup when that happened).
+
+### Window, tabs, and Windows desktop
+- XML, analytics, SE2, and map painting wait until those tabs are shown so switching ships stays responsive.
+- Preview work runs on a worker thread; results are applied on the UI thread through a queue (no Tk calls from background threads).
+- Each inspect parses the blueprint XML once and reuses it for dry-run conversion, analytics, and the subgrid map.
+- Failed XML loads set the XML tab status to the error instead of a normal “Source:” label.
+- File → Exit. The Windows title-bar close button quits (drag-and-drop no longer swallows `WM_CLOSE`). The process exits after destroy so `python.exe` does not hang around.
+- File → Create desktop shortcut (shortcut targets `launch.bat`). Launchers: `launch.bat` / `main.py` and `launch_gui.bat` / `gui_standalone.py`.
+- Native Windows drag-and-drop: Explorer still gets a successful ack if a drop callback fails; the traceback is printed to stderr.
+
 ### Import and tools
-- **File → Import Workshop / Mod.io blueprint** — paste a Steam Workshop URL or ID, or a Mod.io URL, and copy the ship into your local blueprints folder.
-- **Tools → Selective block exchange** — choose individual subtype swaps instead of a whole category.
-- **Tools → PB Doctor** — inspect and fix programmable-block scripts against the Space Engineers whitelist.
-- **Tools → Split into projector subgrids** — write projector-friendly copies of connected subgrids.
+- **File → Import Workshop / Mod.io blueprint** — paste a Steam Workshop URL or ID, or a Mod.io URL, and copy the ship into `%APPDATA%\SpaceEngineers\Blueprints\local`.
+- Workshop folders that only have a fallback `*.sbc` (no `bp.sbc`) still import: the chosen file is copied to `bp.sbc` so the GUI scanner lists the ship. If several `.sbc` files exist, the first name in sorted order is used.
+- Import refuses symlink/junction item roots, nested reparse points, and zip members with `C:/`, UNC, or absolute paths. An existing local folder is replaced only when it is a real directory inside the local blueprints root (`rmtree` will not follow a junction out of that folder).
+- **Tools → Selective block exchange** — pick individual subtype swaps instead of a whole category.
+- **Tools → PB Doctor** — inspect and fix programmable-block C# against the Space Engineers whitelist. Allowed `using` directives (`System`, VRage, and similar) are kept. Forbidden namespaces are stripped, including `using static`, aliases (`using IO = System.IO`), and `global::`. Brace/`#region` balance and forbidden-token scans ignore comments and string literals.
+- **Tools → Split into projector subgrids** — writes projector-friendly copies of connected subgrids. Generated SBC uses a real `xsi:type` XML namespace. A successful single-grid skip is not reported as an error.
 - **Tools → Survival Sanity** — Prototech → vanilla copy for survival crafting.
 - **Tools → Upgrade to Prototech** — vanilla → Prototech copy.
 - **Tools → Harden armor around cores** and **Lightweight outer hull**.
 - **Tools → Export Space Engineers 2 JSON**.
+- Armor skin / HSV palette engine: primary hex paints armor (or every matching block if secondary is omitted); secondary hex paints non-armor accents, or heavy armor when both colors are set with armor-only.
 
-### Mappings
-- DLC substitution: 96 premium DLC → base-game pairs.
-- Opt-in Prototech category (23 pairs). It is off by default and is not included in `--all-categories`.
+### Mappings and CLI
+- Built-in categories: armor (70 light ↔ heavy pairs), thrusters, weapons, functional, DLC substitution (96 premium DLC → base-game pairs).
+- Opt-in Prototech (23 vanilla ↔ Factorum Prototech pairs). Off by default; **not** included in `--all-categories` (it overlaps thrusters/functional/weapons).
+- `--all-categories` enables built-in mappings only. Bundled WeaponCore and Assertive Armaments profiles stay opt-in so they cannot crash the CLI with duplicate sources.
+- CLI accepts any `.sbc` path (not only a folder named with `bp.sbc`). Nested search prefers `bp.sbc`, then a sorted `*.sbc`.
+- Binary cache cleanup looks for `bp.sbcB5`.
+- Scanner tracks reverse-mode convertible blocks so Convert matches `--reverse`.
+- Grid rescale (large ↔ small) multiplies/divides `Min` coordinates by the 5:1 ratio. Small → large truncates toward zero so negative coordinates are not shifted by floor division.
+- Profile export can write to an existing extensionless file path instead of treating it as a directory.
+- Bundled profiles: WeaponCore, Assertive Armaments, Build Vision.
 
 ### Reliability
-- Blueprint XML writes go through a hardened writer (unique temp files, no leftover half-written `bp.sbc`).
-- Workshop and Mod.io import refuse unsafe zip paths and Windows junctions/symlinks.
-- PB Doctor keeps valid `using` directives (`System`, VRage) and strips forbidden namespaces, including `using static` and aliases.
+- Production blueprint writes go through `safe_xml.safe_write` (unique temp names, replace). An interrupted conversion cannot leave a truncated `bp.sbc`.
+- XML parse path uses `defusedxml` (XXE / entity expansion).
+- Pillow ≥ 12.3.0 for the header logo. Tagged Windows builds embed `logo.png`, `app_icon.ico`, README, LICENSE, RELEASE_NOTES, `profiles/`, and `data/`.
+- Official README is the 3.2.0 user guide. The public GitHub tree is the runtime app (test suite and internal planning notes are not published). GitHub Releases use this version’s notes as the release body and publish `SHA256SUMS.txt`.
 
 ## v3.1.2 (2026-05-24)
 
