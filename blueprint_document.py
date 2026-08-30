@@ -63,6 +63,10 @@ class JobHub:
         self.scan.cancel()
         self.catalog.cancel()
 
+    def cancel_catalog(self) -> None:
+        """File → Clear must drop only the SE catalog, not folder scan/inspect."""
+        self.catalog.cancel()
+
 
 def catalog_completion_allowed(token: JobToken, generation: int, *, cleared: bool) -> bool:
     """File → Clear must reject an in-flight catalog even if the worker finishes."""

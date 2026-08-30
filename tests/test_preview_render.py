@@ -816,6 +816,8 @@ class ProgressiveBuildTests(unittest.TestCase):
             "16,200 blocks  ·  3D preview",
         )
         self.assertIn("of", format_preview_count_caption(6157, 13929, simplified=False))
+        self.assertIn("uploading", format_preview_count_caption(8, 16200, uploading=True))
+        self.assertNotIn("uploading", format_preview_count_caption(16200, 16200, uploading=True))
 
 
 class WheelZoomHelperTests(unittest.TestCase):

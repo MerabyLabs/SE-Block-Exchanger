@@ -202,18 +202,8 @@ def _lookup_indexed_block(ident: Identity, index: dict) -> Optional[Tuple[ET.Ele
     gid, mn, eid = ident
     if eid:
         if gid:
-            hit = index["by_eid"].get((gid, eid))
-            if hit is not None:
-                return hit
-        else:
-            hits = index["by_eid_any"].get(eid) or []
-            if hits:
-                return hits[0][0], hits[0][1]
-        if gid:
-            hit = index["by_min"].get((gid, mn))
-            if hit is not None:
-                return hit
-        hits = index["by_min_any"].get(mn) or []
+            return index["by_eid"].get((gid, eid))
+        hits = index["by_eid_any"].get(eid) or []
         if hits:
             return hits[0][0], hits[0][1]
         return None
@@ -309,11 +299,18 @@ def save_blueprint_as(
     dest = Path(dest_dir) if dest_dir is not None else unique_edited_dir(source_dir)
     if dest.exists():
         raise FileExistsError(f"Destination already exists: {dest}")
-    bp_file = copy_blueprint_folder(source_dir, dest)
-    tree = safe_xml.parse(bp_file)
-    apply_edits_to_tree(tree, deleted_list, moves, new_name=dest.name)
-    safe_xml.safe_write(tree, bp_file)
-    return dest
+    created = False
+    try:
+        bp_file = copy_blueprint_folder(source_dir, dest)
+        created = True
+        tree = safe_xml.parse(bp_file)
+        apply_edits_to_tree(tree, deleted_list, moves, new_name=dest.name)
+        safe_xml.safe_write(tree, bp_file)
+        return dest
+    except Exception:
+        if created and dest.exists() and not _same_path(dest, source_dir):
+            shutil.rmtree(dest, ignore_errors=True)
+        raise
 
 
 def nudge_block_instance(block: BlockInstance, delta: Sequence[int]) -> BlockInstance:

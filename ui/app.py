@@ -405,14 +405,13 @@ class TacticalCommandCenter(ctk.CTk):
             pass
 
     def clear_space_engineers_path(self) -> None:
-        self._jobs.cancel_stale()
+        self._jobs.cancel_catalog()
         self.settings.space_engineers_install = ""
         self.settings.space_engineers_cleared = True
         self.settings_store.save(self.settings)
         self._se_install_status = resolve_install("", allow_detect=False)
         self._apply_se_install_state()
-        if self.preview_panel.ship_preview is not None:
-            self.preview_panel.ship_preview.set_catalog(None)
+        self.preview_panel.set_se_catalog(None)
         self.toasts.toast("Cleared the Space Engineers path. Using the 2D map.", level="info")
 
     def set_appearance_mode(self, mode: str):

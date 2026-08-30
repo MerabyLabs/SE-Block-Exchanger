@@ -36,6 +36,13 @@ def xml_reload_required(loaded_path, path) -> bool:
     return loaded_path != path
 
 
+def pending_catalog_for(catalog, meshes=None):
+    """None catalog clears a queued catalog so File→Clear cannot resurrect it."""
+    if catalog is None:
+        return None
+    return (catalog, meshes)
+
+
 class PreviewPanel(ctk.CTkFrame):
     """Center panel with tabbed views for blueprint information."""
 
@@ -362,7 +369,7 @@ class PreviewPanel(ctk.CTkFrame):
             self.ship_preview.set_install_state(valid, path_text, message)
 
     def set_se_catalog(self, catalog: Optional[CubeBlockCatalog], meshes: Optional[MeshLibrary] = None) -> None:
-        self._pending_catalog = (catalog, meshes)
+        self._pending_catalog = pending_catalog_for(catalog, meshes)
         if self.ship_preview is not None:
             self.ship_preview.set_catalog(catalog, meshes)
 

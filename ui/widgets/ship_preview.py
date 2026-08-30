@@ -138,6 +138,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._edits = GridEditSession()
         self._source_path: Optional[Path] = None
         self._idle_job = None
+        self._save_generation = 0
 
         self._banner = ctk.CTkFrame(self, fg_color=TacticalTheme.BG_GLASS, corner_radius=8)
         self._banner.pack(fill="x", padx=8, pady=(8, 0))
@@ -583,8 +584,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         else:
             self.ship_canvas.fit_to_view()
 
-    def _cancel_build(self) -> None:
-        self._job.cancel()
+    def _cancel_chunk_job(self) -> None:
         if self._upload_chunk_job is not None:
             try:
                 self.after_cancel(self._upload_chunk_job)
@@ -593,6 +593,10 @@ class ShipPreviewHost(ctk.CTkFrame):
             self._upload_chunk_job = None
         if self._renderer is not None:
             self._renderer.cancel_chunked_upload()
+
+    def _cancel_build(self) -> None:
+        self._job.cancel()
+        self._cancel_chunk_job()
 
     def _start_build(self) -> None:
         if not self._install_valid or self._gl_failed or self._scene is None:
@@ -895,6 +899,7 @@ class ShipPreviewHost(ctk.CTkFrame):
             return False
         try:
             if patch:
+                self._cancel_chunk_job()
                 renderer.patch_assembled(cpu)
             elif chunked and len(cpu.assembled) > UPLOAD_BATCH_CHUNK:
                 more = renderer.begin_cpu_upload(
@@ -940,6 +945,8 @@ class ShipPreviewHost(ctk.CTkFrame):
             more = self._renderer.continue_cpu_upload()
         except Exception:
             return
+        self._sync_user_hidden()
+        self._refresh_status()
         self._schedule_redraw(interactive=False)
         if more:
             self._upload_chunk_job = self.after_idle(lambda: self._continue_gl_upload(generation))
@@ -991,13 +998,22 @@ class ShipPreviewHost(ctk.CTkFrame):
         if self._scene is None:
             self._gl_status.configure(text="No ship loaded")
             return
+        uploading = self._renderer is not None and self._renderer.upload_pending()
+        uploaded = self._renderer.uploaded_instance_count() if self._renderer is not None else 0
+        if uploading:
+            shown = uploaded
+        elif self._simplified:
+            shown = self._shown_count
+        else:
+            shown = None
         text = scene_bounds_caption(
             self._scene,
             self._grid_filter,
             self._declared_total,
-            shown=self._shown_count if self._simplified else None,
+            shown=shown,
             simplified=self._simplified,
             grid_entity_id=self._grid_entity_id,
+            uploading=uploading,
         )
         if self._building and not self._mesh_ready:
             text = "Building 3D preview…"
@@ -1519,6 +1535,7 @@ class ShipPreviewHost(ctk.CTkFrame):
             self._renderer.hidden_subtypes = set()
             self._renderer.hide_armor = False
             self._renderer.isolate_id = -1.0
+            self._sync_user_hidden()
         try:
             self._layer_slider.set(0)
             self._layer_label.configure(text="0")
@@ -1672,6 +1689,8 @@ class ShipPreviewHost(ctk.CTkFrame):
             return
         deleted = set(self._edits.deleted)
         moves = dict(self._edits.moves)
+        self._save_generation += 1
+        generation = self._save_generation
 
         def task() -> None:
             try:
@@ -1683,16 +1702,26 @@ class ShipPreviewHost(ctk.CTkFrame):
                     overwrite_original=overwrite,
                 )
             except FileExistsError:
-                self.after(0, lambda: self._toast("Save As cancelled — destination already exists.", "warning"))
+                self.after(0, lambda: self._on_save_as_done(generation, None, "exists"))
                 return
             except Exception as exc:
                 message = str(exc)
-                self.after(0, lambda: self._toast(f"Save failed: {message}", "error"))
+                self.after(0, lambda msg=message: self._on_save_as_done(generation, None, msg))
                 return
-            self.after(0, lambda: self._toast(f"Saved new blueprint: {written}", "success"))
+            self.after(0, lambda: self._on_save_as_done(generation, written, None))
 
         threading.Thread(target=task, daemon=True).start()
         self._toast("Saving edited blueprint…", "info")
+
+    def _on_save_as_done(self, generation: int, written, error: Optional[str]) -> None:
+        if generation != self._save_generation:
+            return
+        if error == "exists":
+            self._toast("Save As cancelled — destination already exists.", "warning")
+        elif error:
+            self._toast(f"Save failed: {error}", "error")
+        elif written is not None:
+            self._toast(f"Saved new blueprint: {written}", "success")
 
     def gl_failed_message(self) -> str:
         return last_gl_error() or "OpenGL preview is unavailable on this machine."

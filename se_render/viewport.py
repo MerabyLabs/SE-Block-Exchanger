@@ -36,6 +36,51 @@ from se_render.scene_graph import PreviewScene
 from se_render.shaders import FRAGMENT_SHADER, VERTEX_SHADER
 
 
+def cpu_batch_delta_key(batch: CpuBatch) -> tuple:
+    """Identity of a CPU batch: instance set + mesh size. Used for GPU patch reuse."""
+    return (
+        frozenset(int(i) for i in batch.instance_ids),
+        int(batch.positions.shape[0]),
+        int(batch.indices.size),
+        int(batch.models.shape[0]),
+    )
+
+
+def gpu_batch_delta_key(batch: dict) -> tuple:
+    ids = batch.get("instance_ids")
+    return (
+        frozenset(int(i) for i in ids) if ids is not None else frozenset(),
+        int(batch.get("vertex_count") or 0),
+        int(batch.get("index_count") or batch.get("count") or 0),
+        int(batch.get("instances") or 0),
+    )
+
+
+def plan_batch_delta(
+    old_gpu: Sequence[dict],
+    new_cpu: Sequence[CpuBatch],
+) -> Tuple[List[Tuple[str, int]], List[int]]:
+    """
+    Map each new CPU batch to keep-an-old-GPU-batch or upload.
+    Returns (actions, release_old_indices). Actions are ('keep', old_i) or ('upload', new_j).
+    """
+    old_by_key: Dict[tuple, List[int]] = {}
+    for i, old in enumerate(old_gpu):
+        old_by_key.setdefault(gpu_batch_delta_key(old), []).append(i)
+    actions: List[Tuple[str, int]] = []
+    used: set = set()
+    for j, new in enumerate(new_cpu):
+        slots = old_by_key.get(cpu_batch_delta_key(new)) or []
+        if slots:
+            idx = slots.pop(0)
+            actions.append(("keep", idx))
+            used.add(idx)
+        else:
+            actions.append(("upload", j))
+    release = [i for i in range(len(old_gpu)) if i not in used]
+    return actions, release
+
+
 def _ray_aabb(
     origin: Sequence[float],
     direction: Sequence[float],
@@ -299,6 +344,13 @@ class GLPreviewRenderer:
     def cancel_chunked_upload(self) -> None:
         self._chunk_queue = []
 
+    def upload_pending(self) -> bool:
+        return bool(self._chunk_queue)
+
+    def uploaded_instance_count(self) -> int:
+        batches = self._sets.get("assembled") or []
+        return sum(int(batch.get("instances") or 0) for batch in batches)
+
     def _begin_set_uploads(self, cpu: PreviewCpuScene, *, defer_secondary: bool) -> bool:
         self._break_set_aliases()
         self._chunk_queue = []
@@ -331,26 +383,29 @@ class GLPreviewRenderer:
             self._sets["exploded_lod"] = self._sets.get("exploded") or []
 
     def patch_assembled(self, cpu: PreviewCpuScene) -> None:
-        """Re-upload assembled after an MWM patch. Alias LOD; leave exploded if still pending."""
+        """Patch assembled after an MWM refine. Cancel leftover shell chunks; reuse unchanged GPU batches."""
+        self.cancel_chunked_upload()
         if not self.available:
             self._cpu = cpu
             return
         self._cpu = cpu
         self.block_count = cpu.block_count
+        self._break_set_aliases()
         assembled = filter_batches(cpu.assembled, self._grid_filter, self._grid_entity_id)
-        self._upload_named("assembled", assembled)
+        self._patch_named("assembled", assembled)
         if should_alias_lod_sets(cpu.assembled, cpu.assembled_lod) or not cpu.huge:
             self._sets["assembled_lod"] = self._sets["assembled"]
         else:
-            self._upload_named(
+            self._patch_named(
                 "assembled_lod",
                 filter_batches(cpu.assembled_lod, self._grid_filter, self._grid_entity_id),
             )
         if cpu.exploded and not self._secondary_pending:
-            self._upload_named("exploded", filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id))
+            self._patch_named("exploded", filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id))
             if should_alias_lod_sets(cpu.exploded, cpu.exploded_lod) or not cpu.huge:
                 self._sets["exploded_lod"] = self._sets["exploded"]
         self.upload_generation += 1
+        self._write_inspect_hidden()
 
     def upload_secondary_sets(self) -> None:
         """Exploded / LOD-exploded buffers. Safe to call after the first blit."""
@@ -517,14 +572,24 @@ class GLPreviewRenderer:
         self._release_batches(batches)
         self._sets[name] = []
 
-    def _upload_named(self, name: str, batches: Sequence[CpuBatch], *, append: bool = False) -> None:
+    def _patch_named(self, name: str, batches: Sequence[CpuBatch]) -> None:
+        """Reuse GPU batches whose instance set + mesh size still match."""
+        old = list(self._sets.get(name) or [])
+        actions, release = plan_batch_delta(old, batches)
+        if release:
+            self._release_batches([old[i] for i in release])
+        uploaded: List[dict] = []
+        for action, idx in actions:
+            if action == "keep":
+                uploaded.append(old[idx])
+            else:
+                uploaded.extend(self._gpu_batches_from_cpu([batches[idx]]))
+        self._sets[name] = uploaded
+
+    def _gpu_batches_from_cpu(self, batches: Sequence[CpuBatch]) -> List[dict]:
         ctx = self._ctx
         assert ctx is not None and self._prog is not None
-        if append:
-            uploaded = self._sets.get(name) or []
-        else:
-            self._detach_and_release(name)
-            uploaded = []
+        uploaded: List[dict] = []
         for batch in batches:
             if batch.positions.size == 0 or batch.indices.size == 0 or batch.models.shape[0] == 0:
                 continue
@@ -546,8 +611,6 @@ class GLPreviewRenderer:
             inspect = _inspect_channel(batch)
             ibo_inspect = ctx.buffer(inspect.tobytes())
             ido = ctx.buffer(batch.instance_ids.tobytes())
-            # instance_ids index PreviewScene.blocks. A later editor should
-            # resolve cubes via PickRecord.identity() (grid + Min + entity id).
             vao = ctx.vertex_array(
                 self._prog,
                 [
@@ -571,6 +634,8 @@ class GLPreviewRenderer:
                     "vao": vao,
                     "count": len(batch.indices),
                     "instances": int(batch.models.shape[0]),
+                    "vertex_count": int(batch.positions.shape[0]),
+                    "index_count": int(batch.indices.size),
                     "kind": batch.kind,
                     "inspect": inspect,
                     "inspect_buf": ibo_inspect,
@@ -586,6 +651,15 @@ class GLPreviewRenderer:
                     ],
                 }
             )
+        return uploaded
+
+    def _upload_named(self, name: str, batches: Sequence[CpuBatch], *, append: bool = False) -> None:
+        if append:
+            uploaded = self._sets.get(name) or []
+            uploaded.extend(self._gpu_batches_from_cpu(batches))
+        else:
+            self._detach_and_release(name)
+            uploaded = self._gpu_batches_from_cpu(batches)
         self._sets[name] = uploaded
 
     def _active_batches(self, interactive: bool) -> List[dict]:
@@ -827,6 +901,7 @@ def scene_bounds_caption(
     shown: Optional[int] = None,
     simplified: bool = False,
     grid_entity_id: Optional[str] = None,
+    uploading: bool = False,
 ) -> str:
     if grid_entity_id or grid_filter:
         blocks = scene.filter_grid(grid_filter, grid_entity_id).blocks
@@ -838,5 +913,7 @@ def scene_bounds_caption(
     count = int(shown) if shown is not None else len(blocks)
     total = int(declared_total or scene.total_blocks or len(blocks))
     if grid_filter:
+        if uploading and total > count:
+            return f"{prefix}{count:,} of {total:,} blocks  ·  uploading"
         return f"{prefix}{count:,} blocks  ·  3D preview"
-    return prefix + format_preview_count_caption(count, total, simplified=simplified)
+    return prefix + format_preview_count_caption(count, total, simplified=simplified, uploading=uploading)

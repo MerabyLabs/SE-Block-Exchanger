@@ -259,6 +259,16 @@ class JobTokenTests(unittest.TestCase):
         self.assertFalse(catalog_completion_allowed(hub.catalog, again, cleared=True))
         self.assertTrue(catalog_completion_allowed(hub.catalog, again, cleared=False))
 
+    def test_cancel_catalog_leaves_scan_and_inspect(self):
+        hub = JobHub()
+        scan_gen = hub.scan.begin()
+        inspect_gen = hub.inspect.begin()
+        catalog_gen = hub.catalog.begin()
+        hub.cancel_catalog()
+        self.assertTrue(hub.scan.is_current(scan_gen))
+        self.assertTrue(hub.inspect.is_current(inspect_gen))
+        self.assertFalse(hub.catalog.is_current(catalog_gen))
+
 
 if __name__ == "__main__":
     unittest.main()

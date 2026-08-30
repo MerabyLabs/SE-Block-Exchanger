@@ -46,10 +46,14 @@ def format_preview_count_caption(
     total: int,
     *,
     simplified: bool = False,
+    uploading: bool = False,
 ) -> str:
     """Toolbar line for how many blocks the 3D view is drawing."""
     shown_n = max(0, int(shown))
     total_n = max(shown_n, int(total))
+    if uploading and total_n > shown_n:
+        extra = " — simplified" if simplified else ""
+        return f"{shown_n:,} of {total_n:,} blocks  ·  uploading{extra}"
     if simplified and total_n > shown_n:
         return f"3D {shown_n:,} of {total_n:,} — simplified"
     if total_n > shown_n:
