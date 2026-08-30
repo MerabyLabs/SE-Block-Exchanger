@@ -43,7 +43,7 @@ from ui.dragdrop_windows import WindowsFileDropTarget
 from ui.footer import Footer
 from ui.header import Header
 from ui.labels import category_label, conversion_target_phrase, convertible_total
-from ui.preview_panel import PreviewPanel
+from ui.preview_panel import PreviewPanel, subgrids_voxels_for_ui
 from ui.profile_editor import ProfileEditorDialog
 from ui.selective_exchange_panel import SelectiveExchangePanel
 from ui.theme import TacticalTheme
@@ -826,6 +826,10 @@ class TacticalCommandCenter(ctk.CTk):
         self._update_convert_state(preview_count)
         self.control_panel.set_pending_change_count(preview_count)
 
+    def _subgrids_will_show_3d(self) -> bool:
+        preview = getattr(self.preview_panel, "ship_preview", None)
+        return bool(preview is not None and preview.will_show_3d())
+
     def _ensure_subgrids_document(self) -> None:
         if not self.selected_blueprint or self._closing:
             return
@@ -840,7 +844,10 @@ class TacticalCommandCenter(ctk.CTk):
             try:
                 self.preview_panel.update_subgrids(
                     cached.structure,
-                    voxels=cached.voxels,
+                    voxels=subgrids_voxels_for_ui(
+                        self._subgrids_will_show_3d(),
+                        lambda: cached.voxels,
+                    ),
                     scene=cached.scene,
                     path=cached.path.parent,
                     generation=self.preview_panel.subgrids_generation,
@@ -890,7 +897,10 @@ class TacticalCommandCenter(ctk.CTk):
         try:
             self.preview_panel.update_subgrids(
                 doc.structure,
-                voxels=doc.voxels,
+                voxels=subgrids_voxels_for_ui(
+                    self._subgrids_will_show_3d(),
+                    lambda: doc.voxels,
+                ),
                 scene=doc.scene,
                 path=doc.path.parent,
                 generation=self.preview_panel.subgrids_generation,

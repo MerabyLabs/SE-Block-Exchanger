@@ -55,7 +55,7 @@ from se_render.preview_style import (
     stale_shell_blocks_edits,
     staged_3d_caption,
 )
-from se_render.scene_graph import PreviewScene
+from se_render.scene_graph import PreviewScene, voxels_from_scene
 from se_render.viewport import GLPreviewRenderer
 from ui.theme import TacticalTheme
 from ui.widgets.ship_canvas import ShipCanvas, VoxelBlock, voxels_to_blocks
@@ -548,6 +548,18 @@ class ShipPreviewHost(ctk.CTkFrame):
     def will_show_3d(self) -> bool:
         return bool(self._install_valid and not self._gl_failed)
 
+    def prewarm_gl(self) -> None:
+        """Pay try_init after list paint so the first A→B switch does not."""
+        if self._gl_failed or not self._install_valid:
+            return
+        if self._renderer is None:
+            self._renderer = GLPreviewRenderer(init=False)
+        if self._renderer.available:
+            return
+        if self._gl_init_job is not None:
+            return
+        self._run_gl_init()
+
     def begin_switch(self, ship_name: str = "") -> None:
         """Cancel in-flight 3D work but keep the last usable shell on screen."""
         self._cancel_build()
@@ -815,7 +827,11 @@ class ShipPreviewHost(ctk.CTkFrame):
             pass
 
     def _materialize_2d_fallback(self) -> None:
-        if self.ship_canvas.blocks or not self._deferred_voxels:
+        if self.ship_canvas.blocks:
+            return
+        if not self._deferred_voxels and self._scene is not None:
+            self._deferred_voxels = voxels_from_scene(self._scene)
+        if not self._deferred_voxels:
             return
         self.ship_canvas.load_structure_data(voxels_to_blocks(self._deferred_voxels), draw=True)
 

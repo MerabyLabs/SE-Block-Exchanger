@@ -51,6 +51,15 @@ def subgrids_same_ship_is_noop(
     if rendered_for is None:
         return False
     return int(rendered_for) == int(revision)
+
+
+def subgrids_voxels_for_ui(will_show_3d: bool, load_voxels=None):
+    """Skip voxels_from_scene on Tk when 3D will draw the scene."""
+    if will_show_3d:
+        return None
+    if load_voxels is None:
+        return None
+    return load_voxels()
 from ui.widgets.ship_canvas import voxels_to_blocks
 from ui.widgets.ship_preview import ShipPreviewHost
 
@@ -374,6 +383,8 @@ class PreviewPanel(ctk.CTkFrame):
     def prewarm_subgrids(self) -> None:
         """Build Subgrids chrome after the list first paints so first tab open skips Tk construct."""
         self._ensure_subgrids_widgets()
+        if self.ship_preview is not None:
+            self.ship_preview.prewarm_gl()
 
     def current_tab(self) -> str:
         try:
@@ -496,6 +507,12 @@ class PreviewPanel(ctk.CTkFrame):
             revision=self._subgrids_revision,
         ):
             return
+        if (
+            self.ship_preview is not None
+            and self.ship_preview.will_show_3d()
+            and scene is not None
+        ):
+            voxels = None
         self._pending_structure = structure
         self._pending_voxels = voxels or []
         self._pending_scene = scene
@@ -547,7 +564,7 @@ class PreviewPanel(ctk.CTkFrame):
             return
         want_3d = self.ship_preview.will_show_3d() and scene is not None
         if want_3d:
-            self.ship_preview.load_scene(scene, voxels=voxels)
+            self.ship_preview.load_scene(scene, voxels=None)
         else:
             self.ship_preview.load_structure_data(voxels_to_blocks(voxels), scene=scene)
         self._subgrids_rendered_for = render_key
