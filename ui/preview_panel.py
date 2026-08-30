@@ -23,8 +23,12 @@ from blueprint_analytics import (
 from subgrid_engine.hierarchy_parser import MultiGridStructure
 from ui.labels import category_label
 from ui.theme import TacticalTheme
+from se_assets.cube_catalog import CubeBlockCatalog
+from se_assets.mesh_cache import MeshLibrary
+from se_render.scene_graph import PreviewScene
 from ui.widgets.grid_tree import GridHierarchyView
-from ui.widgets.ship_canvas import ShipCanvas, VoxelBlock
+from ui.widgets.ship_canvas import VoxelBlock
+from ui.widgets.ship_preview import ShipPreviewHost
 
 
 class PreviewPanel(ctk.CTkFrame):
@@ -39,6 +43,8 @@ class PreviewPanel(ctk.CTkFrame):
         on_apply_fix=None,
         on_vanillafy=None,
         on_scale_grid=None,
+        on_locate_space_engineers=None,
+        on_toast=None,
         **kwargs,
     ):
         super().__init__(
@@ -55,7 +61,10 @@ class PreviewPanel(ctk.CTkFrame):
         self._on_apply_fix = on_apply_fix
         self._on_vanillafy = on_vanillafy
         self._on_scale_grid = on_scale_grid
+        self._on_locate_space_engineers = on_locate_space_engineers
+        self._on_toast = on_toast
         self._latest_health_issues: List[HealthIssue] = []
+        self._pending_scene = None
         self._xml_path = None
         self._xml_loaded_path = None
         self._xml_status_text = ""
@@ -268,7 +277,7 @@ class PreviewPanel(ctk.CTkFrame):
         ).pack(anchor="w", padx=12, pady=(12, 2))
         ctk.CTkLabel(
             left_box,
-            text="Main hull first, then rotors, hinges, and pistons. Click a row to isolate it on the map.",
+            text="Main hull first, then rotors, hinges, and pistons. Click a row to isolate it in the preview.",
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.TEXT_GRAY,
             wraplength=240,
@@ -282,8 +291,13 @@ class PreviewPanel(ctk.CTkFrame):
         self.hierarchy_view.pack(fill="both", expand=True, padx=8, pady=(0, 10))
         self.hierarchy_view.render(None)
 
-        self.ship_canvas = ShipCanvas(container)
-        self.ship_canvas.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self.ship_preview = ShipPreviewHost(
+            container,
+            on_locate=self._on_locate_space_engineers,
+            on_toast=self._on_toast,
+        )
+        self.ship_preview.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self.ship_canvas = self.ship_preview.ship_canvas
 
     def current_tab(self) -> str:
         try:
@@ -295,8 +309,8 @@ class PreviewPanel(ctk.CTkFrame):
         name = self.current_tab()
         if name == "Subgrids":
             self._render_subgrids()
-            self.after(40, self.ship_canvas.refresh)
-            self.after(180, self.ship_canvas.refresh)
+            self.after(40, self.ship_preview.refresh)
+            self.after(180, self.ship_preview.refresh)
         elif name == "XML":
             self._ensure_xml_loaded()
         elif name == "Analytics":
@@ -305,12 +319,26 @@ class PreviewPanel(ctk.CTkFrame):
             self._apply_pending_se2()
 
     def _on_hierarchy_select(self, grid_name: Optional[str]):
-        self.ship_canvas.filter_by_grid(grid_name)
+        self.ship_preview.filter_by_grid(grid_name)
 
-    def update_subgrids(self, structure: MultiGridStructure, matrix_summaries=None, voxels: Optional[List[dict]] = None):
+    def set_se_preview_state(self, valid: bool, path_text: str = "", message: str = "") -> None:
+        self.ship_preview.set_install_state(valid, path_text, message)
+
+    def set_se_catalog(self, catalog: Optional[CubeBlockCatalog], meshes: Optional[MeshLibrary] = None) -> None:
+        self.ship_preview.set_catalog(catalog, meshes)
+
+    def update_subgrids(
+        self,
+        structure: MultiGridStructure,
+        matrix_summaries=None,
+        voxels: Optional[List[dict]] = None,
+        scene: Optional[PreviewScene] = None,
+    ):
         self._pending_structure = structure
         self._pending_voxels = list(voxels or [])
+        self._pending_scene = scene
         self._subgrids_rendered_for = None
+        self.ship_preview.set_declared_total(getattr(structure, "total_blocks", 0) or 0)
         if self.current_tab() == "Subgrids":
             self._render_subgrids()
 
@@ -329,36 +357,37 @@ class PreviewPanel(ctk.CTkFrame):
         render_key = self._subgrids_render_key()
         if self._subgrids_rendered_for == render_key:
             # Same ship, tab just reselected — keep the map, refresh after remap.
-            self.after_idle(self.ship_canvas.refresh)
+            self.after_idle(self.ship_preview.refresh)
             return
         self.hierarchy_view.render(structure if structure and getattr(structure, "total_grids", 0) else None)
         if not voxels:
-            self.ship_canvas.clear()
+            self.ship_preview.clear()
             self._subgrids_rendered_for = render_key
             return
-        self.ship_canvas.load_structure_data(
-            [
-                VoxelBlock(
-                    x=int(v["x"]),
-                    y=int(v["y"]),
-                    z=int(v["z"]),
-                    subtype=v["subtype"],
-                    grid_name=v["grid_name"],
-                    grid_size=v.get("grid_size", "Large"),
-                    is_subgrid=bool(v.get("is_subgrid", False)),
-                )
-                for v in voxels
-            ]
-        )
+        blocks = [
+            VoxelBlock(
+                x=int(v["x"]),
+                y=int(v["y"]),
+                z=int(v["z"]),
+                subtype=v["subtype"],
+                grid_name=v["grid_name"],
+                grid_size=v.get("grid_size", "Large"),
+                is_subgrid=bool(v.get("is_subgrid", False)),
+                color_rgb=v.get("color_rgb"),
+            )
+            for v in voxels
+        ]
+        self.ship_preview.load_structure_data(blocks, scene=self._pending_scene)
         self._subgrids_rendered_for = render_key
-        self.after_idle(self.ship_canvas.refresh)
+        self.after_idle(self.ship_preview.refresh)
 
     def clear_subgrids(self):
         self._pending_structure = None
         self._pending_voxels = []
+        self._pending_scene = None
         self._subgrids_rendered_for = None
         self.hierarchy_view.render(None)
-        self.ship_canvas.clear()
+        self.ship_preview.clear()
 
     def _build_analytics_tab(self):
         self.tab_analytics = self.tabview.add("Analytics")
@@ -547,6 +576,7 @@ class PreviewPanel(ctk.CTkFrame):
     def load_xml(self, file_path, status_text: str):
         self._xml_path = str(file_path)
         self._xml_status_text = status_text
+        self.ship_preview.set_blueprint_source(file_path)
         if self._xml_loaded_path != self._xml_path:
             self.xml_status.configure(text="Ready — open the XML tab to view it")
         if self.current_tab() == "XML":

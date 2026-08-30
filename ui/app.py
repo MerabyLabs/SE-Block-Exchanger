@@ -17,6 +17,10 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
 from app_settings import AppSettings, SettingsStore
+from se_assets.cube_catalog import CubeBlockCatalog
+from se_assets.install_locator import resolve_install, validate_install, normalize_install_root
+from se_assets.mesh_cache import MeshLibrary
+from se_render.scene_graph import extract_scene_from_root
 from blueprint_analytics import BlueprintAnalyticsEngine, compute_se2_readiness
 from blueprint_converter import BlueprintConverter
 from blueprint_scanner import BlueprintInfo, BlueprintScanner
@@ -106,6 +110,12 @@ class TacticalCommandCenter(ctk.CTk):
         self._preview_convert_count = None
         self._closing = False
         self._ui_queue: SimpleQueue = SimpleQueue()
+        self._se_catalog = CubeBlockCatalog()
+        self._se_meshes = MeshLibrary()
+        self._se_install_status = resolve_install(
+            self.settings.space_engineers_install,
+            allow_detect=not self.settings.space_engineers_cleared,
+        )
 
         self._build_ui()
         self.toasts = ToastManager(self)
@@ -125,6 +135,7 @@ class TacticalCommandCenter(ctk.CTk):
         )
 
         self.after(200, self.load_blueprints_async)
+        self.after(250, self._apply_se_install_state)
         if self.settings.auto_check_updates:
             self.after(900, self._check_updates_async)
 
@@ -199,6 +210,8 @@ class TacticalCommandCenter(ctk.CTk):
             on_apply_fix=self.apply_health_fix,
             on_vanillafy=self.vanillafy_blueprint,
             on_scale_grid=self.scale_grid_choice,
+            on_locate_space_engineers=self.locate_space_engineers,
+            on_toast=lambda msg, level="info": self.toasts.toast(msg, level=level),
         )
         self.preview_panel.grid(row=0, column=1, sticky="nsew", padx=3)
 
@@ -228,6 +241,9 @@ class TacticalCommandCenter(ctk.CTk):
         file_menu.add_command(label="Refresh blueprints", command=self.load_blueprints_async, accelerator="F5")
         file_menu.add_separator()
         file_menu.add_command(label="Create desktop shortcut", command=self.create_desktop_shortcut)
+        file_menu.add_separator()
+        file_menu.add_command(label="Locate Space Engineers…", command=self.locate_space_engineers)
+        file_menu.add_command(label="Clear Space Engineers path", command=self.clear_space_engineers_path)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_close, accelerator="Alt+F4")
         menubar.add_cascade(label="File", menu=file_menu)
@@ -290,6 +306,82 @@ class TacticalCommandCenter(ctk.CTk):
     # ------------------------------------------------------------------
     # Settings and appearance
     # ------------------------------------------------------------------
+
+    def _apply_se_install_state(self) -> None:
+        status = self._se_install_status
+        path_text = str(status.path) if status.path else ""
+        self.preview_panel.set_se_preview_state(status.valid, path_text, status.reason)
+        if status.valid and status.path is not None and not self.settings.space_engineers_cleared:
+            if str(status.path) != self.settings.space_engineers_install:
+                self.settings.space_engineers_install = str(status.path)
+                self.settings_store.save(self.settings)
+            self._load_se_catalog_async(status.path)
+
+    def _load_se_catalog_async(self, install) -> None:
+        def task():
+            try:
+                catalog = CubeBlockCatalog()
+                catalog.load(install)
+                meshes = MeshLibrary(install)
+                self._ui(lambda: self._on_se_catalog_ready(catalog, meshes))
+            except Exception as exc:
+                self._ui(lambda msg=str(exc): self.toasts.toast(f"Block catalog failed: {msg}", level="warning"))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_se_catalog_ready(self, catalog: CubeBlockCatalog, meshes: MeshLibrary) -> None:
+        if self._closing:
+            return
+        self._se_catalog = catalog
+        self._se_meshes = meshes
+        self.preview_panel.set_se_catalog(catalog, meshes)
+        if catalog:
+            self.footer.set_status(f"Loaded {len(catalog):,} CubeBlocks definitions")
+
+    def locate_space_engineers(self) -> None:
+        try:
+            chosen = filedialog.askdirectory(title="Select the Space Engineers install folder")
+        except Exception:
+            return
+        if not chosen:
+            return
+        try:
+            root = normalize_install_root(Path(chosen))
+        except Exception:
+            self.after(0, self._warn_invalid_se_folder)
+            return
+        if not validate_install(root):
+            # Defer the warning so dismissing the folder dialog cannot
+            # tear down the Tk mainloop (seen after an SE2 pick on Windows).
+            self.after(0, self._warn_invalid_se_folder)
+            return
+        self.settings.space_engineers_install = str(root)
+        self.settings.space_engineers_cleared = False
+        self.settings_store.save(self.settings)
+        self._se_install_status = resolve_install(str(root), allow_detect=False)
+        self._apply_se_install_state()
+        self.toasts.toast("Space Engineers folder saved. 3D preview will use official models.", level="success")
+
+    def _warn_invalid_se_folder(self) -> None:
+        if self._closing:
+            return
+        try:
+            messagebox.showwarning(
+                "Not a Space Engineers folder",
+                "That folder needs Bin64\\SpaceEngineers.exe, Content\\Data\\CubeBlocks, and Content\\Models.\n\n"
+                "The 2D map stays available until a valid install is selected.",
+                parent=self,
+            )
+        except Exception:
+            pass
+
+    def clear_space_engineers_path(self) -> None:
+        self.settings.space_engineers_install = ""
+        self.settings.space_engineers_cleared = True
+        self.settings_store.save(self.settings)
+        self._se_install_status = resolve_install("", allow_detect=False)
+        self._apply_se_install_state()
+        self.toasts.toast("Cleared the Space Engineers path. Using the 2D map.", level="info")
 
     def set_appearance_mode(self, mode: str):
         normalized = TacticalTheme.normalize_appearance_mode(mode)
@@ -616,6 +708,7 @@ class TacticalCommandCenter(ctk.CTk):
                 )
                 structure = SubgridHierarchyParser.parse_element(root)
                 voxels = GridMatrixVisualizer.extract_voxels_from_root(root)
+                scene = extract_scene_from_root(root)
                 self._ui(
                     lambda: self._on_inspect_ready(
                         generation,
@@ -627,6 +720,7 @@ class TacticalCommandCenter(ctk.CTk):
                         comparison,
                         structure,
                         voxels,
+                        scene,
                     )
                 )
             except Exception as exc:
@@ -646,6 +740,7 @@ class TacticalCommandCenter(ctk.CTk):
         comparison,
         structure,
         voxels,
+        scene=None,
     ):
         if self._closing or generation != self._inspect_generation:
             return
@@ -657,7 +752,7 @@ class TacticalCommandCenter(ctk.CTk):
         self.preview_panel.update_analytics(analytics, comparison)
         self.preview_panel.update_se2_transition(bp, compute_se2_readiness(analytics.block_counts))
         try:
-            self.preview_panel.update_subgrids(structure, voxels=voxels)
+            self.preview_panel.update_subgrids(structure, voxels=voxels, scene=scene)
         except Exception as exc:
             self.toasts.toast(f"Map view failed: {exc}", level="warning")
         self.preview_panel.load_xml(bp.path / "bp.sbc", f"Source: {bp.name}")

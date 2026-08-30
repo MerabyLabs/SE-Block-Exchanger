@@ -19,6 +19,8 @@ class MechanicalLink:
     custom_name: str
     base_entity_id: str
     top_entity_id: Optional[str]
+    angle: float = 0.0
+    displacement: float = 0.0
 
 
 @dataclass
@@ -77,7 +79,14 @@ class SubgridHierarchyParser:
 
     @classmethod
     def parse_element(cls, root: ET.Element) -> MultiGridStructure:
-        grids = root.findall(".//CubeGrid")
+        grids = []
+        seen_grids = set()
+        for grid in list(root.findall(".//CubeGrid")) + list(root.findall(".//{*}CubeGrid")):
+            key = id(grid)
+            if key in seen_grids:
+                continue
+            seen_grids.add(key)
+            grids.append(grid)
         if not grids:
             blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock") or root.findall(".//MyObjectBuilder_CubeBlock")
             if blocks:
@@ -138,6 +147,8 @@ class SubgridHierarchyParser:
                         custom_name=custom_name,
                         base_entity_id=grid_entity_id,
                         top_entity_id=top_part_id,
+                        angle=_optional_float(block, "CurrentPosition"),
+                        displacement=_optional_float(block, "DummyDisplacement"),
                     )
                     all_links.append(link)
                     top_to_base_map[top_part_id] = grid_entity_id
@@ -225,12 +236,19 @@ class SubgridHierarchyParser:
 
     @staticmethod
     def _findall_blocks(grid: ET.Element) -> List[ET.Element]:
-        blocks = grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
-        if not blocks:
-            blocks = grid.findall(".//{*}CubeBlocks/{*}MyObjectBuilder_CubeBlock")
-        if not blocks:
-            blocks = grid.findall(".//MyObjectBuilder_CubeBlock")
-        return blocks
+        # Direct CubeBlocks children only — `.//` would double-count nested grids.
+        cube = grid.find("CubeBlocks")
+        if cube is None:
+            cube = grid.find("{*}CubeBlocks")
+        if cube is not None:
+            children = [child for child in list(cube) if isinstance(child.tag, str)]
+            if children:
+                return children
+        return (
+            grid.findall("./CubeBlocks/MyObjectBuilder_CubeBlock")
+            or grid.findall("./{*}CubeBlocks/{*}MyObjectBuilder_CubeBlock")
+            or grid.findall("./MyObjectBuilder_CubeBlock")
+        )
 
     @staticmethod
     def _grid_label(grid: ET.Element, fallback: str) -> str:
@@ -250,3 +268,15 @@ class SubgridHierarchyParser:
         if child is not None and child.text:
             return child.text.strip()
         return None
+
+
+def _optional_float(element: ET.Element, tag: str) -> float:
+    child = element.find(tag)
+    if child is None:
+        child = element.find(f"{{*}}{tag}")
+    if child is None or not (child.text and child.text.strip()):
+        return 0.0
+    try:
+        return float(child.text.strip())
+    except ValueError:
+        return 0.0
