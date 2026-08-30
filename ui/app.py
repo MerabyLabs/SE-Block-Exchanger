@@ -20,15 +20,18 @@ from app_settings import AppSettings, SettingsStore
 from se_assets.cube_catalog import CubeBlockCatalog
 from se_assets.install_locator import resolve_install, validate_install, normalize_install_root
 from se_assets.mesh_cache import MeshLibrary
-from se_render.scene_graph import extract_scene_from_root
 from blueprint_analytics import BlueprintAnalyticsEngine, compute_se2_readiness
 from blueprint_converter import BlueprintConverter
+from blueprint_document import (
+    BlueprintDocument,
+    BlueprintDocumentCache,
+    CancelledError,
+    JobToken,
+    dry_run_from_counts,
+)
 from blueprint_scanner import BlueprintInfo, BlueprintScanner
 from mapping_profiles import ProfileManager
 from mappings import build_registry
-import safe_xml
-from se_armor_replacer import ArmorBlockReplacer
-from subgrid_engine import GridMatrixVisualizer, SubgridHierarchyParser
 from ui.blueprint_panel import BlueprintPanel
 from ui.control_panel import ControlPanel
 from ui.dragdrop_windows import WindowsFileDropTarget
@@ -110,6 +113,10 @@ class TacticalCommandCenter(ctk.CTk):
         self._preview_convert_count = None
         self._closing = False
         self._ui_queue: SimpleQueue = SimpleQueue()
+        self._documents = BlueprintDocumentCache()
+        self._inspect_token = JobToken()
+        self._scan_token = JobToken()
+        self._document: Optional[BlueprintDocument] = None
         self._se_catalog = CubeBlockCatalog()
         self._se_meshes = MeshLibrary()
         self._se_install_status = resolve_install(
@@ -211,6 +218,7 @@ class TacticalCommandCenter(ctk.CTk):
             on_vanillafy=self.vanillafy_blueprint,
             on_scale_grid=self.scale_grid_choice,
             on_locate_space_engineers=self.locate_space_engineers,
+            on_need_subgrids=self._ensure_subgrids_document,
             on_toast=lambda msg, level="info": self.toasts.toast(msg, level=level),
         )
         self.preview_panel.grid(row=0, column=1, sticky="nsew", padx=3)
@@ -507,8 +515,9 @@ class TacticalCommandCenter(ctk.CTk):
             self.footer.set_status(
                 "Categories: " + ", ".join(category_label(name) for name in categories)
             )
+            self._remap_scanned_blueprints()
             if self.selected_blueprint:
-                self._inspect_blueprint_async()
+                self._apply_instant_inspect(self.selected_blueprint)
             self._schedule_rescan()
         except Exception as exc:
             self.scanner.set_enabled_categories(previous)
@@ -523,14 +532,25 @@ class TacticalCommandCenter(ctk.CTk):
     def load_blueprints_async(self):
         self.footer.set_status("Scanning blueprints…")
 
+        generation = self._scan_token.begin()
+
         def load_task():
             try:
                 scan_dir = self.custom_blueprint_dir or None
-                self.blueprints = self.scanner.scan_blueprints(scan_dir)
+                blueprints = self.scanner.scan_blueprints(
+                    scan_dir,
+                    cancel=lambda: not self._scan_token.is_current(generation),
+                )
+                if not self._scan_token.is_current(generation):
+                    return
+                self.blueprints = blueprints
                 self._ui(self._on_blueprints_loaded)
             except FileNotFoundError:
-                self._ui(self._on_scan_not_found)
+                if self._scan_token.is_current(generation):
+                    self._ui(self._on_scan_not_found)
             except Exception as exc:
+                if not self._scan_token.is_current(generation):
+                    return
                 error_message = str(exc)
                 self._ui(lambda msg=error_message: self._show_error(f"Scan failed: {msg}"))
 
@@ -589,9 +609,13 @@ class TacticalCommandCenter(ctk.CTk):
 
         self.control_panel.update_details(bp)
         self.preview_panel.update_intel(bp, self.conversion_mode)
-        self._update_convert_state()
+        if self._document is None or self._document.path.parent != bp.path:
+            self._document = None
+            self.preview_panel.clear_subgrids()
+        self._apply_instant_inspect(bp)
         self.footer.set_status(f"Selected: {bp.display_name}")
-        self._inspect_blueprint_async()
+        if self.preview_panel.current_tab() == "Subgrids":
+            self._inspect_blueprint_async()
 
     def _get_selected_blueprint_file(self) -> Optional[str]:
         if not self.selected_blueprint:
@@ -607,16 +631,16 @@ class TacticalCommandCenter(ctk.CTk):
         self.scanner.set_reverse(mode == "heavy_to_light")
         self.converter = self._build_converter()
         self._invalidate_preview_counts()
+        self._remap_scanned_blueprints()
         if self.selected_blueprint:
             self.preview_panel.update_intel(self.selected_blueprint, mode)
-            self._inspect_blueprint_async()
+            self._apply_instant_inspect(self.selected_blueprint)
         else:
             self._update_convert_state()
         self.footer.set_status("Heavy → Light" if mode == "heavy_to_light" else "Light → Heavy")
 
     def _invalidate_preview_counts(self):
-        """Drop in-flight inspect results and freeze Convert on stale scanner totals."""
-        self._inspect_generation += 1
+        """Freeze Convert until instant inspect rematerializes counts for the new mapping."""
         self._preview_convert_count = None
         self.control_panel.mark_counts_stale()
 
@@ -651,11 +675,57 @@ class TacticalCommandCenter(ctk.CTk):
             self._pending_select_name = self.selected_blueprint.display_name
         self.load_blueprints_async()
 
-    def _schedule_preview(self):
-        self._inspect_blueprint_async()
+    def _remap_scanned_blueprints(self) -> None:
+        if not getattr(self.scanner, "_records", None):
+            return
+        remapped = self.scanner.remap_cached()
+        self.blueprints = remapped
+        selected_name = self.selected_blueprint.display_name if self.selected_blueprint else None
+        self.blueprint_panel.set_blueprints(remapped)
+        if selected_name:
+            found = next((bp for bp in remapped if bp.display_name == selected_name), None)
+            if found is not None:
+                self.selected_blueprint = found
+                self.blueprint_panel.select_blueprint_by_name(selected_name, notify=False)
 
-    def _run_scheduled_preview(self):
-        self._preview_after_id = None
+    def _apply_instant_inspect(self, bp: BlueprintInfo) -> None:
+        """Fill Overview / Preview / Analytics / SE2 / Convert from scan counts. No XML."""
+        mapping = self.converter.replacer.mapping
+        before_counts, after_counts, report, preview_count = dry_run_from_counts(
+            bp.subtype_counts or {},
+            mapping,
+        )
+        analytics = self.analytics_engine.analyze_counts(
+            bp.subtype_counts or {},
+            blueprint_name=bp.name,
+            grid_size=bp.grid_size,
+            thruster_forwards=getattr(bp, "thruster_forwards", None) or None,
+        )
+        comparison = self.analytics_engine.compare_conversion_cost_from_result(
+            analytics,
+            mapping,
+            self.conversion_mode,
+        )
+        self._latest_analytics = analytics
+        self._latest_comparison = comparison
+        self.preview_panel.show_preview_diff(before_counts, after_counts, report, switch_tab=False)
+        self.preview_panel.update_analytics(analytics, comparison)
+        self.preview_panel.update_se2_transition(bp, compute_se2_readiness(analytics.block_counts))
+        self.preview_panel.load_xml(bp.path / "bp.sbc", f"Source: {bp.name}")
+        self._update_convert_state(preview_count)
+        self.control_panel.set_pending_change_count(preview_count)
+
+    def _ensure_subgrids_document(self) -> None:
+        if not self.selected_blueprint or self._closing:
+            return
+        cached = self._documents.get(self.selected_blueprint.path)
+        if cached is not None:
+            self._document = cached
+            try:
+                self.preview_panel.update_subgrids(cached.structure, voxels=cached.voxels, scene=cached.scene)
+            except Exception as exc:
+                self.toasts.toast(f"Map view failed: {exc}", level="warning")
+            return
         self._inspect_blueprint_async()
 
     def _inspect_blueprint_async(self):
@@ -670,98 +740,35 @@ class TacticalCommandCenter(ctk.CTk):
         if not self.selected_blueprint or self._closing:
             return
         self._inspect_generation += 1
-        generation = self._inspect_generation
+        generation = self._inspect_token.begin()
+        self._inspect_generation = generation
         bp = self.selected_blueprint
-        bp_file = bp.path / "bp.sbc"
-        mode = self.conversion_mode
-        categories = list(self.enabled_categories)
-        reverse = mode == "heavy_to_light"
 
         def task():
             try:
-                # Profiles are already registered on self.registry. Reloading them
-                # with include_profiles=True would disagree with _build_converter().
-                replacer = ArmorBlockReplacer(
-                    verbose=False,
-                    reverse=reverse,
-                    enabled_categories=categories,
-                    registry=self.registry,
-                    include_profiles=False,
-                )
-                tree = safe_xml.parse(bp_file)
-                root = tree.getroot()
-                replacer.blocks_scanned = 0
-                replacer.replacements_made = 0
-                replacer.change_log = []
-                replacer.replace_blocks(tree, dry_run=True)
-                before_counts: Dict[str, int] = {}
-                after_counts: Dict[str, int] = {}
-                for source, target in replacer.change_log:
-                    before_counts[source] = before_counts.get(source, 0) + 1
-                    after_counts[target] = after_counts.get(target, 0) + 1
-                report = replacer.get_dry_run_report()
-                analytics = self.analytics_engine.analyze_root(root, blueprint_name=bp.name)
-                comparison = self.analytics_engine.compare_conversion_cost_from_result(
-                    analytics,
-                    replacer.mapping,
-                    mode,
-                )
-                structure = SubgridHierarchyParser.parse_element(root)
-                voxels = GridMatrixVisualizer.extract_voxels_from_root(root)
-                scene = extract_scene_from_root(root)
-                self._ui(
-                    lambda: self._on_inspect_ready(
-                        generation,
-                        bp,
-                        before_counts,
-                        after_counts,
-                        report,
-                        analytics,
-                        comparison,
-                        structure,
-                        voxels,
-                        scene,
-                    )
-                )
+                doc = self._documents.get_or_load(bp.path, token=self._inspect_token, generation=generation)
+                self._ui(lambda: self._on_document_ready(generation, bp, doc))
+            except CancelledError:
+                return
             except Exception as exc:
                 error_message = str(exc)
                 self._ui(lambda msg=error_message: self._on_inspect_error(generation, msg))
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _on_inspect_ready(
-        self,
-        generation: int,
-        bp: BlueprintInfo,
-        before_counts,
-        after_counts,
-        report,
-        analytics,
-        comparison,
-        structure,
-        voxels,
-        scene=None,
-    ):
-        if self._closing or generation != self._inspect_generation:
+    def _on_document_ready(self, generation: int, bp: BlueprintInfo, doc: BlueprintDocument):
+        if self._closing or not self._inspect_token.is_current(generation):
             return
         if not self.selected_blueprint or self.selected_blueprint.path != bp.path:
             return
-        self._latest_analytics = analytics
-        self._latest_comparison = comparison
-        self.preview_panel.show_preview_diff(before_counts, after_counts, report, switch_tab=False)
-        self.preview_panel.update_analytics(analytics, comparison)
-        self.preview_panel.update_se2_transition(bp, compute_se2_readiness(analytics.block_counts))
+        self._document = doc
         try:
-            self.preview_panel.update_subgrids(structure, voxels=voxels, scene=scene)
+            self.preview_panel.update_subgrids(doc.structure, voxels=doc.voxels, scene=doc.scene)
         except Exception as exc:
             self.toasts.toast(f"Map view failed: {exc}", level="warning")
-        self.preview_panel.load_xml(bp.path / "bp.sbc", f"Source: {bp.name}")
-        preview_count = sum(before_counts.values()) if before_counts else 0
-        self._update_convert_state(preview_count)
-        self.control_panel.set_pending_change_count(preview_count)
 
     def _on_inspect_error(self, generation: int, message: str):
-        if self._closing or generation != self._inspect_generation:
+        if self._closing or not self._inspect_token.is_current(generation):
             return
         self._show_error(f"Preview failed: {message}")
         self._update_convert_state()
@@ -1364,10 +1371,11 @@ class TacticalCommandCenter(ctk.CTk):
         if not self.selected_blueprint:
             self.toasts.toast("Select a blueprint first.", level="warning")
             return
-        self._inspect_blueprint_async()
+        self._apply_instant_inspect(self.selected_blueprint)
 
     def refresh_analytics_async(self):
-        self._inspect_blueprint_async()
+        if self.selected_blueprint:
+            self._apply_instant_inspect(self.selected_blueprint)
 
     def export_comparison_csv(self):
         if not self._latest_comparison:
@@ -1490,6 +1498,11 @@ class TacticalCommandCenter(ctk.CTk):
             os._exit(0)
         self._closing = True
         self._inspect_generation += 1
+        try:
+            self._inspect_token.cancel()
+            self._scan_token.cancel()
+        except Exception:
+            pass
         for attr in ("_rescan_after_id", "_preview_after_id"):
             job = getattr(self, attr, None)
             if job is not None:

@@ -79,14 +79,7 @@ class SubgridHierarchyParser:
 
     @classmethod
     def parse_element(cls, root: ET.Element) -> MultiGridStructure:
-        grids = []
-        seen_grids = set()
-        for grid in list(root.findall(".//CubeGrid")) + list(root.findall(".//{*}CubeGrid")):
-            key = id(grid)
-            if key in seen_grids:
-                continue
-            seen_grids.add(key)
-            grids.append(grid)
+        grids = safe_xml.iter_cube_grids(root)
         if not grids:
             blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock") or root.findall(".//MyObjectBuilder_CubeBlock")
             if blocks:
@@ -234,21 +227,78 @@ class SubgridHierarchyParser:
             orphaned_grids=orphans,
         )
 
+    @classmethod
+    def from_scene(cls, scene) -> MultiGridStructure:
+        """Build the hierarchy tree from a PreviewScene — no second XML walk."""
+        grids = getattr(scene, "grids", None) or []
+        blocks = getattr(scene, "blocks", None) or []
+        if not grids and not blocks:
+            return MultiGridStructure(root_node=None, total_grids=0, total_blocks=0, mechanical_links=[])
+
+        counts: Dict[str, int] = {}
+        for block in blocks:
+            gid = getattr(block, "grid_entity_id", "") or ""
+            counts[gid] = counts.get(gid, 0) + 1
+
+        nodes: Dict[str, SubgridNode] = {}
+        main_name = getattr(scene, "main_grid_name", "") or ""
+        for grid in grids:
+            eid = grid.entity_id
+            nodes[eid] = SubgridNode(
+                grid_name=grid.name,
+                entity_id=eid,
+                grid_size=grid.grid_size,
+                block_count=counts.get(eid, 0),
+                is_main_grid=(grid.name == main_name),
+                attachment_via=grid.attachment_via,
+                children=[],
+            )
+
+        if not nodes and blocks:
+            node = SubgridNode(
+                grid_name=main_name or "MainGrid",
+                entity_id="grid_default",
+                grid_size=getattr(blocks[0], "grid_size", "Large"),
+                block_count=len(blocks),
+                is_main_grid=True,
+                attachment_via=None,
+                children=[],
+            )
+            return MultiGridStructure(
+                root_node=node,
+                total_grids=1,
+                total_blocks=len(blocks),
+                mechanical_links=[],
+                orphaned_grids=[],
+            )
+
+        parent_of = getattr(scene, "parent_of", None) or {}
+        child_ids = set()
+        for child_id, parent_id in parent_of.items():
+            parent = nodes.get(parent_id)
+            child = nodes.get(child_id)
+            if parent is None or child is None or parent is child:
+                continue
+            if child in parent.children:
+                continue
+            parent.children.append(child)
+            child_ids.add(child_id)
+
+        main = next((g for g in grids if g.name == main_name), grids[0] if grids else None)
+        root_id = main.entity_id if main is not None else next(iter(nodes))
+        root_node = nodes.get(root_id)
+        orphans = [node for eid, node in nodes.items() if eid != root_id and eid not in child_ids]
+        return MultiGridStructure(
+            root_node=root_node,
+            total_grids=len(nodes),
+            total_blocks=sum(counts.values()) if counts else len(blocks),
+            mechanical_links=[],
+            orphaned_grids=orphans,
+        )
+
     @staticmethod
     def _findall_blocks(grid: ET.Element) -> List[ET.Element]:
-        # Direct CubeBlocks children only — `.//` would double-count nested grids.
-        cube = grid.find("CubeBlocks")
-        if cube is None:
-            cube = grid.find("{*}CubeBlocks")
-        if cube is not None:
-            children = [child for child in list(cube) if isinstance(child.tag, str)]
-            if children:
-                return children
-        return (
-            grid.findall("./CubeBlocks/MyObjectBuilder_CubeBlock")
-            or grid.findall("./{*}CubeBlocks/{*}MyObjectBuilder_CubeBlock")
-            or grid.findall("./MyObjectBuilder_CubeBlock")
-        )
+        return safe_xml.iter_blocks_in_grid(grid)
 
     @staticmethod
     def _grid_label(grid: ET.Element, fallback: str) -> str:

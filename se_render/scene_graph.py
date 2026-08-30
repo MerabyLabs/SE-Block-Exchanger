@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import xml.etree.ElementTree as ET
 
+import safe_xml
 from se_render.hsv import hsv_offset_to_rgb
 from se_render.orientation import (
     BASE6,
@@ -70,17 +71,21 @@ class PreviewScene:
     grids: List[GridPose] = field(default_factory=list)
     main_grid_name: str = ""
     total_blocks: int = 0
+    # child CubeGrid EntityId → parent CubeGrid EntityId (mechanical attach)
+    parent_of: Dict[str, str] = field(default_factory=dict)
 
     def filter_grid(self, grid_name: Optional[str]) -> "PreviewScene":
         if not grid_name:
             return self
         filtered = [b for b in self.blocks if b.grid_name == grid_name]
         grids = [g for g in self.grids if g.name == grid_name]
+        keep_ids = {g.entity_id for g in grids}
         return PreviewScene(
             blocks=filtered,
             grids=grids,
             main_grid_name=self.main_grid_name,
             total_blocks=len(filtered),
+            parent_of={c: p for c, p in self.parent_of.items() if c in keep_ids and p in keep_ids},
         )
 
 
@@ -98,7 +103,7 @@ def extract_scene_from_root(root: ET.Element) -> PreviewScene:
         return PreviewScene()
 
     main = max(parsed, key=lambda g: (len(g["blocks"]), -parsed.index(g)))
-    world = _assemble_grid_worlds(parsed, main["entity_id"])
+    world, parent_of = _assemble_grid_worlds(parsed, main["entity_id"])
 
     instances: List[BlockInstance] = []
     poses: List[GridPose] = []
@@ -117,6 +122,7 @@ def extract_scene_from_root(root: ET.Element) -> PreviewScene:
         )
         cell = cell_size_meters(grid["grid_size"])
         is_sub = gid != main["entity_id"]
+        identity_world = _is_identity_mat4(grid_world)
         for block in grid["blocks"]:
             local = _block_local_matrix(block, cell)
             instances.append(
@@ -136,7 +142,7 @@ def extract_scene_from_root(root: ET.Element) -> PreviewScene:
                     hsv=block["hsv"],
                     color_rgb=block["color_rgb"],
                     skin=block["skin"],
-                    world_matrix=mul_mat4(grid_world, local),
+                    world_matrix=local if identity_world else mul_mat4(grid_world, local),
                     local_min=block["min"],
                 )
             )
@@ -146,7 +152,26 @@ def extract_scene_from_root(root: ET.Element) -> PreviewScene:
         grids=poses,
         main_grid_name=main["name"],
         total_blocks=len(instances),
+        parent_of=parent_of,
     )
+
+
+def voxels_from_scene(scene: PreviewScene) -> List[dict]:
+    """2D map points derived from the same BlockInstance list the 3D preview uses."""
+    return [
+        {
+            "x": block.min_x,
+            "y": block.min_y,
+            "z": block.min_z,
+            "subtype": block.subtype,
+            "grid_name": block.grid_name,
+            "grid_size": block.grid_size,
+            "is_subgrid": block.is_subgrid,
+            "hsv": block.hsv,
+            "color_rgb": block.color_rgb,
+        }
+        for block in scene.blocks
+    ]
 
 
 def _single_grid_from_root(root: ET.Element) -> Optional[ET.Element]:
@@ -164,7 +189,7 @@ def _parse_grid(grid: ET.Element, idx: int) -> Optional[dict]:
     grid_size = _text(grid, "GridSizeEnum") or "Large"
     pose, has_pose = _grid_pose(grid)
     blocks = []
-    for b_idx, block in enumerate(_blocks_in_grid(grid)):
+    for b_idx, block in enumerate(safe_xml.iter_blocks_in_grid(grid)):
         blocks.append(_parse_block(block, b_idx))
     if not blocks and idx > 0:
         return None
@@ -180,10 +205,22 @@ def _parse_grid(grid: ET.Element, idx: int) -> Optional[dict]:
     }
 
 
+_HSV_RGB_CACHE: Dict[Tuple[float, float, float], Tuple[float, float, float]] = {}
+
+
+def _color_rgb(hsv: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    key = (round(hsv[0], 5), round(hsv[1], 5), round(hsv[2], 5))
+    cached = _HSV_RGB_CACHE.get(key)
+    if cached is not None:
+        return cached
+    color = hsv_offset_to_rgb(*hsv)
+    _HSV_RGB_CACHE[key] = color
+    return color
+
+
 def _parse_block(block: ET.Element, index: int) -> dict:
-    min_elem = block.find("Min")
-    if min_elem is None:
-        min_elem = block.find("{*}Min")
+    kids = safe_xml.index_children(block)
+    min_elem = kids.get("Min")
     if min_elem is not None:
         mn = (
             int(float(min_elem.attrib.get("x", 0))),
@@ -193,37 +230,40 @@ def _parse_block(block: ET.Element, index: int) -> dict:
     else:
         mn = (index % 5, index // 25, (index // 5) % 5)
 
-    subtype = _text(block, "SubtypeName") or _text(block, "SubtypeId") or "Block"
+    subtype = _kid_text(kids, "SubtypeName") or _kid_text(kids, "SubtypeId") or "Block"
     type_id = _type_id(block)
-    orient = block.find("BlockOrientation")
-    if orient is None:
-        orient = block.find("{*}BlockOrientation")
+    orient = kids.get("BlockOrientation")
     forward = "Forward"
     up = "Up"
     if orient is not None:
         forward = orient.attrib.get("Forward") or _text(orient, "Forward") or "Forward"
         up = orient.attrib.get("Up") or _text(orient, "Up") or "Up"
 
-    hsv_elem = block.find("ColorMaskHSV")
-    if hsv_elem is None:
-        hsv_elem = block.find("{*}ColorMaskHSV")
+    hsv_elem = kids.get("ColorMaskHSV")
     hsv = parse_xyz_attrib(hsv_elem, 0.0) if hsv_elem is not None else (0.0, 0.0, 0.0)
-    color = hsv_offset_to_rgb(*hsv)
-    skin = _text(block, "SkinSubtypeId") or "None"
-    entity_id = _text(block, "EntityId") or ""
+    color = _color_rgb(hsv)
+    skin = _kid_text(kids, "SkinSubtypeId") or "None"
+    entity_id = _kid_text(kids, "EntityId") or ""
     xsi_type = block.attrib.get(f"{XSI}type", "") or block.attrib.get("xsi:type", "")
 
-    top_id = (
-        _text(block, "TopBlockId")
-        or _text(block, "TopPartEntityId")
-        or _text(block, "RotorEntityId")
-        or _text(block, "AttachedSubgridId")
-        or _text(block, "TopGridId")
-    )
     joint = _classify_joint(xsi_type, subtype)
-    angle = _first_float(block, ("CurrentPosition", "Angle", "CurrentAngle", "WeldRotation"))
-    displacement = _first_float(block, ("DummyDisplacement", "Displacement", "RotorDisplacement"))
-    piston_pos = _first_float(block, ("CurrentPosition",)) if joint == "Piston" else 0.0
+    top_id = None
+    angle = 0.0
+    displacement = 0.0
+    piston_pos = 0.0
+    if joint or _looks_mechanical(xsi_type, subtype, kids):
+        top_id = (
+            _kid_text(kids, "TopBlockId")
+            or _kid_text(kids, "TopPartEntityId")
+            or _kid_text(kids, "RotorEntityId")
+            or _kid_text(kids, "AttachedSubgridId")
+            or _kid_text(kids, "TopGridId")
+        )
+        if top_id == "0":
+            top_id = None
+        angle = _kid_float(kids, ("CurrentPosition", "Angle", "CurrentAngle", "WeldRotation"))
+        displacement = _kid_float(kids, ("DummyDisplacement", "Displacement", "RotorDisplacement"))
+        piston_pos = _kid_float(kids, ("CurrentPosition",)) if joint == "Piston" else 0.0
 
     return {
         "min": mn,
@@ -236,7 +276,7 @@ def _parse_block(block: ET.Element, index: int) -> dict:
         "skin": skin,
         "entity_id": entity_id,
         "xsi_type": xsi_type,
-        "top_id": top_id if top_id and top_id != "0" else None,
+        "top_id": top_id,
         "joint": joint,
         "angle": angle,
         "displacement": displacement,
@@ -248,8 +288,32 @@ def _block_local_matrix(block: dict, cell: float) -> list:
     mx, my, mz = block["min"]
     # Occupancy box origin at Min; mesh centered on the first cell.
     center = ((mx + 0.5) * cell, (my + 0.5) * cell, (mz + 0.5) * cell)
+    if block["forward"] == "Forward" and block["up"] == "Up":
+        return [
+            [1.0, 0.0, 0.0, center[0]],
+            [0.0, 1.0, 0.0, center[1]],
+            [0.0, 0.0, 1.0, center[2]],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
     rotation = orientation_matrix(block["forward"], block["up"])
     return mat3_to_mat4(rotation, center)
+
+
+def _is_identity_mat4(matrix: list) -> bool:
+    return (
+        matrix[0][0] == 1.0
+        and matrix[1][1] == 1.0
+        and matrix[2][2] == 1.0
+        and matrix[0][3] == 0.0
+        and matrix[1][3] == 0.0
+        and matrix[2][3] == 0.0
+        and matrix[0][1] == 0.0
+        and matrix[0][2] == 0.0
+        and matrix[1][0] == 0.0
+        and matrix[1][2] == 0.0
+        and matrix[2][0] == 0.0
+        and matrix[2][1] == 0.0
+    )
 
 
 def _grid_pose(grid: ET.Element) -> Tuple[list, bool]:
@@ -282,7 +346,7 @@ def _grid_pose(grid: ET.Element) -> Tuple[list, bool]:
     return pose_matrix(pos, forward, up), True
 
 
-def _assemble_grid_worlds(parsed: List[dict], main_id: str) -> Dict[str, list]:
+def _assemble_grid_worlds(parsed: List[dict], main_id: str) -> Tuple[Dict[str, list], Dict[str, str]]:
     by_id = {g["entity_id"]: g for g in parsed}
     block_owner: Dict[str, str] = {}
     for grid in parsed:
@@ -291,6 +355,7 @@ def _assemble_grid_worlds(parsed: List[dict], main_id: str) -> Dict[str, list]:
                 block_owner[block["entity_id"]] = grid["entity_id"]
 
     children: Dict[str, List[tuple]] = {g["entity_id"]: [] for g in parsed}
+    parent_of: Dict[str, str] = {}
     child_ids = set()
     for grid in parsed:
         for block in grid["blocks"]:
@@ -305,13 +370,14 @@ def _assemble_grid_worlds(parsed: List[dict], main_id: str) -> Dict[str, list]:
             if child_id and child_id != grid["entity_id"]:
                 children[grid["entity_id"]].append((child_id, block))
                 child_ids.add(child_id)
+                parent_of[child_id] = grid["entity_id"]
                 child_grid = by_id.get(child_id)
                 if child_grid is not None:
                     child_grid["attachment_via"] = f"{block['joint'] or 'Mechanical'} ({block['subtype']})"
 
     usable_poses = sum(1 for g in parsed if g["has_pose"])
     if usable_poses == len(parsed) and len(parsed) > 0:
-        return {g["entity_id"]: g["pose"] for g in parsed}
+        return {g["entity_id"]: g["pose"] for g in parsed}, parent_of
 
     worlds: Dict[str, list] = {}
     main = by_id[main_id]
@@ -332,7 +398,7 @@ def _assemble_grid_worlds(parsed: List[dict], main_id: str) -> Dict[str, list]:
     for grid in parsed:
         if grid["entity_id"] not in worlds:
             worlds[grid["entity_id"]] = grid["pose"] if grid["has_pose"] else identity_mat4()
-    return worlds
+    return worlds, parent_of
 
 
 def _child_world(parent_world: list, base_block: dict, child_grid: dict, parent_cell: float) -> list:
@@ -426,31 +492,40 @@ def _type_id(block: ET.Element) -> str:
 
 
 def _iter_cube_grids(root: ET.Element) -> List[ET.Element]:
-    found = root.findall(".//CubeGrid") + root.findall(".//{*}CubeGrid")
-    unique: List[ET.Element] = []
-    seen = set()
-    for grid in found:
-        key = id(grid)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(grid)
-    return unique
+    return safe_xml.iter_cube_grids(root)
 
 
 def _blocks_in_grid(grid: ET.Element) -> List[ET.Element]:
-    cube_blocks = grid.find("CubeBlocks")
-    if cube_blocks is None:
-        cube_blocks = grid.find("{*}CubeBlocks")
-    if cube_blocks is not None:
-        children = [child for child in list(cube_blocks) if isinstance(child.tag, str)]
-        if children:
-            return children
-    return (
-        grid.findall("./CubeBlocks/MyObjectBuilder_CubeBlock")
-        or grid.findall("./{*}CubeBlocks/{*}MyObjectBuilder_CubeBlock")
-        or grid.findall("./MyObjectBuilder_CubeBlock")
-    )
+    return safe_xml.iter_blocks_in_grid(grid)
+
+
+def _looks_mechanical(xsi_type: str, subtype: str, kids: Dict[str, ET.Element]) -> bool:
+    if any(tag in kids for tag in ("TopBlockId", "TopPartEntityId", "RotorEntityId", "AttachedSubgridId", "TopGridId")):
+        return True
+    blob = f"{xsi_type} {subtype}".lower()
+    return "rotor" in blob or "stator" in blob or "hinge" in blob or "piston" in blob
+
+
+def _kid_text(kids: Dict[str, ET.Element], tag: str) -> Optional[str]:
+    child = kids.get(tag)
+    if child is not None and child.text and child.text.strip():
+        return child.text.strip()
+    return None
+
+
+def _kid_float(kids: Dict[str, ET.Element], tags: Tuple[str, ...]) -> float:
+    for tag in tags:
+        value = _kid_text(kids, tag)
+        if not value:
+            continue
+        try:
+            raw = float(value)
+        except ValueError:
+            continue
+        if tag in ("Angle", "CurrentAngle", "WeldRotation") and abs(raw) > math.pi * 2 + 0.01:
+            return math.radians(raw)
+        return raw
+    return 0.0
 
 
 def _grid_label(grid: ET.Element, fallback: str) -> str:
@@ -468,20 +543,3 @@ def _text(element: ET.Element, tag: str) -> Optional[str]:
     if child is not None and child.text and child.text.strip():
         return child.text.strip()
     return None
-
-
-def _first_float(element: ET.Element, tags: Tuple[str, ...]) -> float:
-    for tag in tags:
-        value = _text(element, tag)
-        if value:
-            try:
-                raw = float(value)
-            except ValueError:
-                continue
-            # Rotor CurrentPosition is radians in modern blueprints; if a
-            # value looks like degrees (> 2π and a multiple-ish of 1), keep it
-            # as radians anyway — Keen stores radians here.
-            if tag in ("Angle", "CurrentAngle", "WeldRotation") and abs(raw) > math.pi * 2 + 0.01:
-                return math.radians(raw)
-            return raw
-    return 0.0

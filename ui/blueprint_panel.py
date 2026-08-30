@@ -103,6 +103,15 @@ class BlueprintPanel(ctk.CTkFrame):
 
     def set_blueprints(self, blueprints):
         """Populate the card list with blueprint data."""
+        if (
+            self._cards
+            and len(self._cards) == len(blueprints)
+            and all(self._cards[i].bp_info.path == blueprints[i].path for i in range(len(blueprints)))
+        ):
+            self._blueprints = blueprints
+            for card, bp in zip(self._cards, blueprints):
+                card.update_info(bp)
+            return
         self._blueprints = blueprints
         self._selected_indices.clear()
         self._rebuild_cards(blueprints)
@@ -170,18 +179,23 @@ class BlueprintPanel(ctk.CTkFrame):
             self._on_select(visible[index])
 
     def _on_search(self):
-        """Filter cards based on search text."""
-        search = self.search_var.get().lower()
-        if not search:
+        """Filter cards based on search text without destroying widgets."""
+        if not self._cards:
             self._rebuild_cards(self._blueprints)
             return
-
-        filtered = [
-            bp for bp in self._blueprints
-            if search in bp.name.lower() or search in bp.display_name.lower()
-        ]
+        search = self.search_var.get().lower()
+        visible = 0
         self._selected_indices.clear()
-        self._rebuild_cards(filtered)
+        for i, card in enumerate(self._cards):
+            bp = self._blueprints[i]
+            match = (not search) or search in bp.name.lower() or search in bp.display_name.lower()
+            if match:
+                card.index = visible
+                card.pack(fill="x", padx=4, pady=3)
+                visible += 1
+            else:
+                card.index = -1
+                card.pack_forget()
 
     def _get_visible_blueprints(self):
         """Return the currently visible (possibly filtered) blueprints."""
@@ -221,10 +235,15 @@ class BlueprintPanel(ctk.CTkFrame):
         if self._on_recent_select:
             self._on_recent_select(name)
 
-    def select_blueprint_by_name(self, name: str) -> bool:
+    def select_blueprint_by_name(self, name: str, notify: bool = True) -> bool:
         visible = self._get_visible_blueprints()
         for idx, bp in enumerate(visible):
             if bp.display_name == name or bp.name == name:
-                self._handle_card_select(idx, multi=False)
+                if notify:
+                    self._handle_card_select(idx, multi=False)
+                else:
+                    self._selected_indices = {idx}
+                    for i, card in enumerate(self._cards):
+                        card.set_selected(card.index == idx)
                 return True
         return False

@@ -44,6 +44,7 @@ class PreviewPanel(ctk.CTkFrame):
         on_vanillafy=None,
         on_scale_grid=None,
         on_locate_space_engineers=None,
+        on_need_subgrids=None,
         on_toast=None,
         **kwargs,
     ):
@@ -62,7 +63,15 @@ class PreviewPanel(ctk.CTkFrame):
         self._on_vanillafy = on_vanillafy
         self._on_scale_grid = on_scale_grid
         self._on_locate_space_engineers = on_locate_space_engineers
+        self._on_need_subgrids = on_need_subgrids
         self._on_toast = on_toast
+        self._subgrids_built = False
+        self.ship_preview = None
+        self.hierarchy_view = None
+        self.ship_canvas = None
+        self._pending_se_state = None
+        self._pending_catalog = None
+        self._pending_source_path = None
         self._latest_health_issues: List[HealthIssue] = []
         self._pending_scene = None
         self._xml_path = None
@@ -254,6 +263,10 @@ class PreviewPanel(ctk.CTkFrame):
         self.tab_subgrids = self.tabview.add("Subgrids")
         self.tab_subgrids.configure(fg_color=TacticalTheme.BG_DARK)
 
+    def _ensure_subgrids_widgets(self):
+        if self._subgrids_built:
+            return
+        self._subgrids_built = True
         container = ctk.CTkFrame(self.tab_subgrids, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=8, pady=8)
         container.columnconfigure(0, weight=2, minsize=260)
@@ -298,6 +311,14 @@ class PreviewPanel(ctk.CTkFrame):
         )
         self.ship_preview.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         self.ship_canvas = self.ship_preview.ship_canvas
+        if self._pending_se_state is not None:
+            valid, path_text, message = self._pending_se_state
+            self.ship_preview.set_install_state(valid, path_text, message)
+        if self._pending_catalog is not None:
+            catalog, meshes = self._pending_catalog
+            self.ship_preview.set_catalog(catalog, meshes)
+        if self._pending_source_path is not None:
+            self.ship_preview.set_blueprint_source(self._pending_source_path)
 
     def current_tab(self) -> str:
         try:
@@ -308,9 +329,13 @@ class PreviewPanel(ctk.CTkFrame):
     def _on_tab_changed(self):
         name = self.current_tab()
         if name == "Subgrids":
+            self._ensure_subgrids_widgets()
+            if self._on_need_subgrids:
+                self._on_need_subgrids()
             self._render_subgrids()
-            self.after(40, self.ship_preview.refresh)
-            self.after(180, self.ship_preview.refresh)
+            if self.ship_preview is not None:
+                self.after(40, self.ship_preview.refresh)
+                self.after(180, self.ship_preview.refresh)
         elif name == "XML":
             self._ensure_xml_loaded()
         elif name == "Analytics":
@@ -319,13 +344,18 @@ class PreviewPanel(ctk.CTkFrame):
             self._apply_pending_se2()
 
     def _on_hierarchy_select(self, grid_name: Optional[str]):
-        self.ship_preview.filter_by_grid(grid_name)
+        if self.ship_preview is not None:
+            self.ship_preview.filter_by_grid(grid_name)
 
     def set_se_preview_state(self, valid: bool, path_text: str = "", message: str = "") -> None:
-        self.ship_preview.set_install_state(valid, path_text, message)
+        self._pending_se_state = (valid, path_text, message)
+        if self.ship_preview is not None:
+            self.ship_preview.set_install_state(valid, path_text, message)
 
     def set_se_catalog(self, catalog: Optional[CubeBlockCatalog], meshes: Optional[MeshLibrary] = None) -> None:
-        self.ship_preview.set_catalog(catalog, meshes)
+        self._pending_catalog = (catalog, meshes)
+        if self.ship_preview is not None:
+            self.ship_preview.set_catalog(catalog, meshes)
 
     def update_subgrids(
         self,
@@ -338,7 +368,8 @@ class PreviewPanel(ctk.CTkFrame):
         self._pending_voxels = list(voxels or [])
         self._pending_scene = scene
         self._subgrids_rendered_for = None
-        self.ship_preview.set_declared_total(getattr(structure, "total_blocks", 0) or 0)
+        if self.ship_preview is not None:
+            self.ship_preview.set_declared_total(getattr(structure, "total_blocks", 0) or 0)
         if self.current_tab() == "Subgrids":
             self._render_subgrids()
 
@@ -352,12 +383,14 @@ class PreviewPanel(ctk.CTkFrame):
         )
 
     def _render_subgrids(self):
+        self._ensure_subgrids_widgets()
         structure = self._pending_structure
         voxels = self._pending_voxels
         render_key = self._subgrids_render_key()
         if self._subgrids_rendered_for == render_key:
             # Same ship, tab just reselected — keep the map, refresh after remap.
-            self.after_idle(self.ship_preview.refresh)
+            if self.ship_preview is not None:
+                self.after_idle(self.ship_preview.refresh)
             return
         self.hierarchy_view.render(structure if structure and getattr(structure, "total_grids", 0) else None)
         if not voxels:
@@ -386,8 +419,10 @@ class PreviewPanel(ctk.CTkFrame):
         self._pending_voxels = []
         self._pending_scene = None
         self._subgrids_rendered_for = None
-        self.hierarchy_view.render(None)
-        self.ship_preview.clear()
+        if self.hierarchy_view is not None:
+            self.hierarchy_view.render(None)
+        if self.ship_preview is not None:
+            self.ship_preview.clear()
 
     def _build_analytics_tab(self):
         self.tab_analytics = self.tabview.add("Analytics")
@@ -576,7 +611,9 @@ class PreviewPanel(ctk.CTkFrame):
     def load_xml(self, file_path, status_text: str):
         self._xml_path = str(file_path)
         self._xml_status_text = status_text
-        self.ship_preview.set_blueprint_source(file_path)
+        self._pending_source_path = file_path
+        if self.ship_preview is not None:
+            self.ship_preview.set_blueprint_source(file_path)
         if self._xml_loaded_path != self._xml_path:
             self.xml_status.configure(text="Ready — open the XML tab to view it")
         if self.current_tab() == "XML":

@@ -110,11 +110,16 @@ class BlockCostDatabase:
         self.component_to_ingot = data.get("component_to_ingot", {})
         self.ore_yields = data.get("ore_yields", {})
         self.blocks = data.get("blocks", {})
+        self._infer_cache: Dict[str, Optional[Dict]] = {}
 
     def get_block(self, subtype: str) -> Optional[Dict]:
         if subtype in self.blocks:
             return self.blocks[subtype]
-        return self._infer_cost(subtype)
+        if subtype in self._infer_cache:
+            return self._infer_cache[subtype]
+        inferred = self._infer_cost(subtype)
+        self._infer_cache[subtype] = inferred
+        return inferred
 
     def known_block_ids(self) -> List[str]:
         return sorted(self.blocks.keys())
@@ -213,42 +218,72 @@ class BlueprintAnalyticsEngine:
 
     def analyze_root(self, root: ET.Element, *, blueprint_name: str) -> BlueprintAnalyticsResult:
         grid_size = self._detect_grid_size(root)
-
-        blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
         subtype_counts: Dict[str, int] = Counter()
-        component_totals: Dict[str, int] = defaultdict(int)
-        category_totals: Dict[str, int] = defaultdict(int)
-        unknown_subtypes: Set[str] = set()
-        pcu_total = 0
-        mass_total = 0.0
-
+        thruster_forwards: Dict[str, int] = Counter()
+        blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
         for block in blocks:
             subtype = self._get_block_subtype(block)
             if not subtype:
                 continue
             subtype_counts[subtype] += 1
+            if "thrust" in subtype.lower():
+                orientation = block.find("BlockOrientation")
+                if orientation is not None:
+                    forward = orientation.attrib.get("Forward")
+                    if forward:
+                        thruster_forwards[forward] += 1
+        return self.analyze_counts(
+            subtype_counts,
+            blueprint_name=blueprint_name,
+            grid_size=grid_size,
+            thruster_forwards=thruster_forwards,
+        )
 
+    def analyze_counts(
+        self,
+        subtype_counts: Mapping[str, int],
+        *,
+        blueprint_name: str,
+        grid_size: str = "Unknown",
+        thruster_forwards: Optional[Mapping[str, int]] = None,
+    ) -> BlueprintAnalyticsResult:
+        component_totals: Dict[str, int] = defaultdict(int)
+        category_totals: Dict[str, int] = defaultdict(int)
+        unknown_subtypes: Set[str] = set()
+        pcu_total = 0
+        mass_total = 0.0
+        counted: Dict[str, int] = {}
+
+        for subtype, raw_count in subtype_counts.items():
+            count = int(raw_count)
+            if count <= 0 or not subtype:
+                continue
+            counted[subtype] = counted.get(subtype, 0) + count
             block_cost = self.db.get_block(subtype)
             if not block_cost:
                 unknown_subtypes.add(subtype)
-                category_totals["unknown"] += 1
+                category_totals["unknown"] += count
                 continue
-
             category = block_cost.get("category", "utility")
-            category_totals[category] += 1
-            pcu_total += int(block_cost.get("pcu", 0))
-            mass_total += float(block_cost.get("mass", 0.0))
+            category_totals[category] += count
+            pcu_total += int(block_cost.get("pcu", 0)) * count
+            mass_total += float(block_cost.get("mass", 0.0)) * count
             for component, qty in block_cost.get("components", {}).items():
-                component_totals[component] += int(qty)
+                component_totals[component] += int(qty) * count
 
         ingot_totals = self.db.component_to_ingot_totals(component_totals)
         ore_totals = self.db.ingot_to_ore_totals(ingot_totals)
-        issues = self._run_health_audit(root, subtype_counts, sorted(unknown_subtypes))
+        issues = self._run_health_audit(
+            None,
+            counted,
+            sorted(unknown_subtypes),
+            thruster_forwards=thruster_forwards,
+        )
 
         return BlueprintAnalyticsResult(
             blueprint_name=blueprint_name,
-            block_count=sum(subtype_counts.values()),
-            block_counts=dict(sorted(subtype_counts.items())),
+            block_count=sum(counted.values()),
+            block_counts=dict(sorted(counted.items())),
             category_counts=dict(sorted(category_totals.items())),
             unknown_subtypes=sorted(unknown_subtypes),
             component_totals=dict(sorted(component_totals.items())),
@@ -460,9 +495,10 @@ class BlueprintAnalyticsEngine:
 
     def _run_health_audit(
         self,
-        root: ET.Element,
+        root: Optional[ET.Element],
         subtype_counts: Dict[str, int],
         unknown_subtypes: List[str],
+        thruster_forwards: Optional[Mapping[str, int]] = None,
     ) -> List[HealthIssue]:
         issues: List[HealthIssue] = []
         subtype_keys = list(subtype_counts.keys())
@@ -501,7 +537,15 @@ class BlueprintAnalyticsEngine:
                 )
             )
 
-        thruster_balance = self._thruster_balance(root)
+        if thruster_forwards is not None:
+            thruster_balance = self._thruster_balance_from_dirs(
+                Counter(thruster_forwards),
+                sum(int(v) for v in thruster_forwards.values()),
+            )
+        elif root is not None:
+            thruster_balance = self._thruster_balance(root)
+        else:
+            thruster_balance = None
         if thruster_balance:
             issues.append(
                 HealthIssue(
@@ -540,15 +584,20 @@ class BlueprintAnalyticsEngine:
             forward = orientation.attrib.get("Forward")
             if forward:
                 directions[forward] += 1
+        return self._thruster_balance_from_dirs(directions, thruster_blocks)
 
+    @staticmethod
+    def _thruster_balance_from_dirs(directions: Mapping[str, int], thruster_blocks: int) -> Optional[str]:
         if thruster_blocks < 6:
             return None
-
-        missing = [direction for direction in ("Forward", "Backward", "Up", "Down", "Left", "Right") if directions[direction] == 0]
+        missing = [
+            direction
+            for direction in ("Forward", "Backward", "Up", "Down", "Left", "Right")
+            if int(directions.get(direction, 0)) == 0
+        ]
         if missing:
             return f"Thrusters are missing in direction(s): {', '.join(missing)}."
-
-        counts = [directions[d] for d in ("Forward", "Backward", "Up", "Down", "Left", "Right")]
+        counts = [int(directions.get(d, 0)) for d in ("Forward", "Backward", "Up", "Down", "Left", "Right")]
         if min(counts) == 0:
             return None
         if max(counts) / min(counts) >= 2.5:
