@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -120,6 +121,63 @@ def rasterize_projected_cells(
     return Image.fromarray(arr, "RGB")
 
 
+def visible_map_blocks(
+    blocks: List["VoxelBlock"],
+    grid_filter: Optional[str] = None,
+    grid_entity_id: Optional[str] = None,
+) -> List["VoxelBlock"]:
+    if grid_entity_id:
+        return [b for b in blocks if b.grid_entity_id == grid_entity_id]
+    if grid_filter:
+        return [b for b in blocks if b.grid_name == grid_filter]
+    return blocks
+
+
+def render_map_bitmap(
+    blocks: List["VoxelBlock"],
+    *,
+    projection: str,
+    width: int,
+    height: int,
+    scale: float,
+    pan_x: float,
+    pan_y: float,
+    grid_filter: Optional[str] = None,
+    grid_entity_id: Optional[str] = None,
+) -> Optional[Image.Image]:
+    """collect + raster. Call from a worker, never from Tk during a ship switch."""
+    w = max(1, int(width))
+    h = max(1, int(height))
+    active = visible_map_blocks(blocks, grid_filter, grid_entity_id)
+    if not active:
+        return None
+    min_c, max_c = ShipCanvas.bounds_for(active)
+    mid_x = (min_c[0] + max_c[0]) / 2.0
+    mid_y = (min_c[1] + max_c[1]) / 2.0
+    mid_z = (min_c[2] + max_c[2]) / 2.0
+    if projection == "Top":
+        axis_mid_x, axis_mid_y = mid_x, mid_z
+    elif projection == "Side":
+        axis_mid_x, axis_mid_y = mid_x, mid_y
+    else:
+        axis_mid_x, axis_mid_y = mid_z, mid_y
+    cells = collect_projected_cells(active, projection)
+    cx = w / 2 + float(pan_x)
+    cy = h / 2 + float(pan_y)
+    return rasterize_projected_cells(
+        cells,
+        width=w,
+        height=h,
+        step=max(4.0, float(scale)),
+        cx=cx,
+        cy=cy,
+        mid_x=axis_mid_x,
+        mid_y=axis_mid_y,
+        projection=projection,
+        draw_grid=True,
+    )
+
+
 def voxels_to_blocks(voxels: Iterable[dict]) -> List["VoxelBlock"]:
     """Build 2D map cubes. Call only when the 2D map will actually draw."""
     return [
@@ -177,6 +235,9 @@ class ShipCanvas(ctk.CTkFrame):
         self._photo = None
         self._photo_size = (0, 0)
         self._map_image_id = None
+        self._map_gen = 0
+        self._map_busy = False
+        self._map_pending = False
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -259,7 +320,8 @@ class ShipCanvas(ctk.CTkFrame):
         self.info_status.pack(side="right")
 
     def load_structure_data(self, blocks: List[VoxelBlock], *, draw: bool = True) -> None:
-        self.blocks = list(blocks)
+        self._map_gen += 1
+        self.blocks = blocks if blocks is not None else []
         self.selected_grid_filter = None
         self.selected_grid_entity_id = None
         if not self.blocks:
@@ -267,7 +329,7 @@ class ShipCanvas(ctk.CTkFrame):
             self.max_coords = (0, 0, 0)
             self.info_status.configure(text="No blocks to draw")
             if draw:
-                self._redraw_now()
+                self._request_map_bitmap()
             return
         self.min_coords, self.max_coords = self.bounds_for(self.blocks)
         self._update_status_caption(self.blocks)
@@ -279,6 +341,7 @@ class ShipCanvas(ctk.CTkFrame):
         grid_name: Optional[str] = None,
         grid_entity_id: Optional[str] = None,
     ) -> None:
+        self._map_gen += 1
         self.selected_grid_filter = grid_name
         self.selected_grid_entity_id = grid_entity_id
         visible = self._visible_blocks()
@@ -289,11 +352,9 @@ class ShipCanvas(ctk.CTkFrame):
             self._schedule_redraw()
 
     def _visible_blocks(self) -> List[VoxelBlock]:
-        if self.selected_grid_entity_id:
-            return [b for b in self.blocks if b.grid_entity_id == self.selected_grid_entity_id]
-        if not self.selected_grid_filter:
-            return self.blocks
-        return [b for b in self.blocks if b.grid_name == self.selected_grid_filter]
+        return visible_map_blocks(
+            self.blocks, self.selected_grid_filter, self.selected_grid_entity_id
+        )
 
     @staticmethod
     def bounds_for(blocks: List[VoxelBlock]) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
@@ -322,10 +383,13 @@ class ShipCanvas(ctk.CTkFrame):
         )
 
     def clear(self) -> None:
+        self._map_gen += 1
+        self._map_pending = False
         self.blocks = []
         self.selected_grid_filter = None
+        self.selected_grid_entity_id = None
         self.info_status.configure(text="No ship loaded")
-        self._schedule_redraw()
+        self._request_map_bitmap()
 
     @staticmethod
     def _rgb_to_hex(rgb: Tuple[float, float, float]) -> str:
@@ -399,7 +463,7 @@ class ShipCanvas(ctk.CTkFrame):
             return
         if self._redraw_job is not None:
             self.after_cancel(self._redraw_job)
-        self._redraw_job = self.after(40, self.redraw)
+        self._redraw_job = self.after(40, self._request_map_bitmap)
 
     def _redraw_now(self) -> None:
         if self._redraw_job is not None:
@@ -408,9 +472,24 @@ class ShipCanvas(ctk.CTkFrame):
             except Exception:
                 pass
             self._redraw_job = None
-        self.redraw()
+        self._request_map_bitmap()
 
     def redraw(self) -> None:
+        self._request_map_bitmap()
+
+    def _paint_empty_map(self, width: int, height: int, text: str) -> None:
+        self._clear_map_image()
+        self.canvas.delete("all")
+        self.canvas.create_text(
+            width // 2,
+            height // 2,
+            text=text,
+            font=TacticalTheme.FONT_LARGE,
+            fill=TacticalTheme.TEXT_MUTED,
+            justify="center",
+        )
+
+    def _request_map_bitmap(self) -> None:
         self._redraw_job = None
         if not self._is_drawn():
             return
@@ -421,56 +500,64 @@ class ShipCanvas(ctk.CTkFrame):
                 self.after(80, self.refresh)
             return
         if not self.blocks:
-            self._clear_map_image()
-            self.canvas.delete("all")
-            self.canvas.create_text(
-                w // 2,
-                h // 2,
-                text="Select a blueprint to see its grids on this map.",
-                font=TacticalTheme.FONT_LARGE,
-                fill=TacticalTheme.TEXT_MUTED,
-                justify="center",
+            self._paint_empty_map(
+                w, h, "Select a blueprint to see its grids on this map."
             )
             return
-
-        cx = w / 2 + self.pan_x
-        cy = h / 2 + self.pan_y
-        active = self._visible_blocks()
-        if not active:
-            self._clear_map_image()
-            self.canvas.delete("all")
-            self.canvas.create_text(
-                w // 2, h // 2,
-                text="No blocks on this grid.",
-                font=TacticalTheme.FONT_LARGE,
-                fill=TacticalTheme.TEXT_MUTED,
-            )
+        if self._map_busy:
+            self._map_pending = True
             return
+        self._map_busy = True
+        self._map_pending = False
+        gen = self._map_gen
+        blocks = self.blocks
+        projection = self.projection_mode
+        scale = self.scale
+        pan_x = self.pan_x
+        pan_y = self.pan_y
+        grid_filter = self.selected_grid_filter
+        grid_entity_id = self.selected_grid_entity_id
 
-        min_c, max_c = self.bounds_for(active)
-        mid_x = (min_c[0] + max_c[0]) / 2.0
-        mid_y = (min_c[1] + max_c[1]) / 2.0
-        mid_z = (min_c[2] + max_c[2]) / 2.0
-        step = max(4.0, self.scale)
-        cells = collect_projected_cells(active, self.projection_mode)
-        if self.projection_mode == "Top":
-            axis_mid_x, axis_mid_y = mid_x, mid_z
-        elif self.projection_mode == "Side":
-            axis_mid_x, axis_mid_y = mid_x, mid_y
-        else:
-            axis_mid_x, axis_mid_y = mid_z, mid_y
-        image = rasterize_projected_cells(
-            cells,
-            width=w,
-            height=h,
-            step=step,
-            cx=cx,
-            cy=cy,
-            mid_x=axis_mid_x,
-            mid_y=axis_mid_y,
-            projection=self.projection_mode,
-            draw_grid=True,
-        )
+        def work() -> None:
+            image = render_map_bitmap(
+                blocks,
+                projection=projection,
+                width=w,
+                height=h,
+                scale=scale,
+                pan_x=pan_x,
+                pan_y=pan_y,
+                grid_filter=grid_filter,
+                grid_entity_id=grid_entity_id,
+            )
+            try:
+                self.after(0, lambda img=image: self._apply_map_bitmap(gen, img, w, h))
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=work, daemon=True, name="se-map-raster").start()
+
+    def _apply_map_bitmap(
+        self,
+        gen: int,
+        image: Optional[Image.Image],
+        width: int,
+        height: int,
+    ) -> None:
+        self._map_busy = False
+        pending = self._map_pending
+        self._map_pending = False
+        if gen != self._map_gen:
+            if pending:
+                self._request_map_bitmap()
+            return
+        w = max(1, self.canvas.winfo_width())
+        h = max(1, self.canvas.winfo_height())
+        if image is None:
+            self._paint_empty_map(w, h, "No blocks on this grid.")
+            if pending:
+                self._request_map_bitmap()
+            return
         if self._photo is not None and self._photo_size == image.size:
             self._photo.paste(image)
         else:
@@ -483,6 +570,8 @@ class ShipCanvas(ctk.CTkFrame):
                 self.canvas.itemconfig(self._map_image_id, image=self._photo)
         if self._map_image_id is not None:
             self.canvas.coords(self._map_image_id, 0, 0)
+        if pending or w != width or h != height:
+            self._request_map_bitmap()
 
     def fit_to_view(self) -> None:
         w = max(self.canvas.winfo_width(), 320)
@@ -492,7 +581,7 @@ class ShipCanvas(ctk.CTkFrame):
             self.scale = 16.0
             self.pan_x = 0.0
             self.pan_y = 0.0
-            self._redraw_now()
+            self._request_map_bitmap()
             return
         min_c, max_c = self.bounds_for(visible)
         dim_x = max(1, max_c[0] - min_c[0] + 1)
@@ -507,7 +596,7 @@ class ShipCanvas(ctk.CTkFrame):
         self.scale = max(6.0, min(40.0, min((w * 0.8) / span_w, (h * 0.8) / span_h)))
         self.pan_x = 0.0
         self.pan_y = 0.0
-        self._redraw_now()
+        self._request_map_bitmap()
 
     def _zoom(self, factor: float) -> None:
         self.scale = max(4.0, min(48.0, self.scale * factor))
@@ -535,6 +624,7 @@ class ShipCanvas(ctk.CTkFrame):
         self._schedule_redraw()
 
     def _on_projection_changed(self, choice: str) -> None:
+        self._map_gen += 1
         self.projection_mode = choice
         ShipCanvas._session_projection = choice
         if callable(self._on_session_prefs):

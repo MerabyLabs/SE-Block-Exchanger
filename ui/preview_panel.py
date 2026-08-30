@@ -28,7 +28,6 @@ from se_assets.mesh_cache import MeshLibrary
 from se_render.scene_graph import PreviewScene
 from ui.widgets.grid_tree import GridHierarchyView
 from blueprint_document import subgrids_ui_applies
-from ui.widgets.ship_canvas import voxels_to_blocks
 from ui.widgets.ship_preview import ShipPreviewHost
 
 
@@ -71,20 +70,13 @@ def subgrids_already_showing(*, path, current_path, preview) -> bool:
     return bool(getattr(canvas, "blocks", None))
 
 
-def subgrids_voxels_for_ui(will_show_3d: bool, load_voxels=None):
-    """Skip voxels_from_scene on Tk when 3D will draw the scene."""
-    if will_show_3d:
-        return None
-    if load_voxels is None:
-        return None
-    return load_voxels()
-
-
 def subgrids_map_payload(will_show_3d: bool, doc):
     """Tk-safe 2D/3D payload. Never reads doc.voxels (that walk belongs on a worker)."""
-    if will_show_3d or doc is None:
+    if doc is None:
         return None, None
     blocks = getattr(doc, "_map_blocks", None)
+    if will_show_3d:
+        return None, blocks
     if blocks is not None:
         return None, blocks
     return getattr(doc, "_voxels", None), None
@@ -555,7 +547,6 @@ class PreviewPanel(ctk.CTkFrame):
             and scene is not None
         ):
             voxels = None
-            blocks = None
         self._pending_structure = structure
         self._pending_voxels = voxels or []
         self._pending_map_blocks = blocks
@@ -609,11 +600,11 @@ class PreviewPanel(ctk.CTkFrame):
             return
         want_3d = self.ship_preview.will_show_3d() and scene is not None
         if want_3d:
-            self.ship_preview.load_scene(scene, voxels=None)
+            self.ship_preview.load_scene(scene, voxels=None, blocks=map_blocks)
         elif map_blocks is not None:
             self.ship_preview.load_structure_data(map_blocks, scene=scene)
         else:
-            self.ship_preview.load_structure_data(voxels_to_blocks(voxels), scene=scene)
+            self.ship_preview.load_scene(scene, voxels=voxels or None, blocks=None)
         self._subgrids_rendered_for = render_key
 
     def clear_subgrids(self):

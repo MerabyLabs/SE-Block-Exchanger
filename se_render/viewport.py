@@ -33,7 +33,6 @@ from se_render.preview_style import (
     GL_UPLOAD_BYTE_BUDGET,
     GL_UPLOAD_INSTANCE_BUDGET,
     GL_UPLOAD_TIME_BUDGET_S,
-    UPLOAD_BATCH_CHUNK,
     active_preview_set,
     format_preview_count_caption,
     gl_upload_should_yield,
@@ -319,7 +318,6 @@ class GLPreviewRenderer:
         grid_entity_id: Optional[str] = None,
         defer_secondary: bool = False,
         refit: bool = True,
-        chunk_size: int = UPLOAD_BATCH_CHUNK,
     ) -> bool:
         """Queue GPU work. Keep the last shell until the first new slice swaps in."""
         if not self.available:
@@ -563,23 +561,6 @@ class GLPreviewRenderer:
             if self._sets.get(lod_key) is self._sets.get(src_key):
                 self._sets[lod_key] = []
 
-    def _upload_secondary(self) -> None:
-        cpu = self._cpu
-        if cpu is None:
-            return
-        if self._sets.get("exploded_lod") is self._sets.get("exploded"):
-            self._sets["exploded_lod"] = []
-        exploded = filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id)
-        self._upload_named("exploded", exploded)
-        if should_alias_lod_sets(cpu.exploded, cpu.exploded_lod) or not cpu.huge:
-            self._sets["exploded_lod"] = self._sets["exploded"]
-        else:
-            self._upload_named(
-                "exploded_lod",
-                filter_batches(cpu.exploded_lod, self._grid_filter, self._grid_entity_id),
-            )
-        self._secondary_pending = False
-
     def set_grid_filter(
         self,
         grid_name: Optional[str] = None,
@@ -737,20 +718,6 @@ class GLPreviewRenderer:
         remaining = [batch for batch in (self._sets.get(name) or []) if id(batch) not in drop_set]
         self._release_batches(drop)
         self._sets[name] = remaining
-
-    def _patch_named(self, name: str, batches: Sequence[CpuBatch]) -> None:
-        """Reuse GPU batches whose instance set + mesh size still match."""
-        old = list(self._sets.get(name) or [])
-        actions, release = plan_batch_delta(old, batches)
-        if release:
-            self._release_batches([old[i] for i in release])
-        uploaded: List[dict] = []
-        for action, idx in actions:
-            if action == "keep":
-                uploaded.append(old[idx])
-            else:
-                uploaded.extend(self._gpu_batches_from_cpu([batches[idx]]))
-        self._sets[name] = uploaded
 
     def _gpu_batches_from_cpu(self, batches: Sequence[CpuBatch]) -> List[dict]:
         ctx = self._ctx

@@ -878,10 +878,10 @@ class TacticalCommandCenter(ctk.CTk):
         cached = self._documents.get(self.selected_blueprint.path)
         if cached is not None:
             self._document = cached
-            will_3d = self._subgrids_will_show_3d()
-            if (not will_3d) and cached._map_blocks is None:
+            if cached._map_blocks is None:
                 self._inspect_blueprint_async(immediate=True)
-                return
+                if not self._subgrids_will_show_3d():
+                    return
             try:
                 self._publish_subgrids_document(cached)
             except Exception as exc:
@@ -903,15 +903,13 @@ class TacticalCommandCenter(ctk.CTk):
             return
         generation = self._inspect_token.begin()
         bp = self.selected_blueprint
-        prepare_2d = not self._subgrids_will_show_3d()
 
         def task():
             try:
                 doc = self._documents.get_or_load(bp.path, token=self._inspect_token, generation=generation)
-                if prepare_2d:
-                    from ui.widgets.ship_canvas import voxels_to_blocks
+                from ui.widgets.ship_canvas import voxels_to_blocks
 
-                    doc.ensure_map_blocks(voxels_to_blocks)
+                doc.ensure_map_blocks(voxels_to_blocks)
                 self._ui(lambda: self._on_document_ready(generation, bp, doc))
             except CancelledError:
                 return

@@ -56,7 +56,6 @@ from ui.preview_panel import (
     subgrids_already_showing,
     subgrids_map_payload,
     subgrids_same_ship_is_noop,
-    subgrids_voxels_for_ui,
 )
 from se_render.scene_graph import PreviewScene, extract_scene_from_root
 from tests.test_preview_render import _block, _catalog_with, _cube, _def
@@ -944,12 +943,6 @@ class CachedMwmRevisitTests(unittest.TestCase):
 
 
 class SkipVoxelsWhen3dTests(unittest.TestCase):
-    def test_helper_does_not_call_loader_when_3d(self):
-        calls = []
-        self.assertIsNone(subgrids_voxels_for_ui(True, lambda: calls.append(1) or ["v"]))
-        self.assertEqual(calls, [])
-        self.assertEqual(subgrids_voxels_for_ui(False, lambda: ["v"]), ["v"])
-
     def test_map_payload_never_reads_voxels_property(self):
         class ExplosiveDoc:
             _map_blocks = None
@@ -963,10 +956,12 @@ class SkipVoxelsWhen3dTests(unittest.TestCase):
         self.assertEqual(subgrids_map_payload(False, ExplosiveDoc()), (None, None))
         doc = ExplosiveDoc()
         doc._map_blocks = ["cube"]
+        self.assertEqual(subgrids_map_payload(True, doc), (None, ["cube"]))
         self.assertEqual(subgrids_map_payload(False, doc), (None, ["cube"]))
         doc2 = ExplosiveDoc()
         doc2._voxels = [{"x": 0}]
         self.assertEqual(subgrids_map_payload(False, doc2), ([{"x": 0}], None))
+        self.assertEqual(subgrids_map_payload(True, doc2), (None, None))
 
     def test_already_showing_covers_2d_and_3d(self):
         preview_3d = SimpleNamespace(_switching=False, _mesh_ready=True, _mode="3d", ship_canvas=None)
@@ -994,17 +989,36 @@ class SkipVoxelsWhen3dTests(unittest.TestCase):
         self.assertIn("_publish_subgrids_document", ensure)
         self.assertIn("_publish_subgrids_document", ready)
         self.assertIn("ensure_map_blocks", inspect_now)
+        self.assertNotIn("prepare_2d", inspect_now)
         self.assertLess(select.find("_ensure_subgrids_document"), select.find("_apply_instant_inspect"))
         render = inspect.getsource(PreviewPanel._render_subgrids)
         want = render[render.find("want_3d") :]
-        self.assertIn("load_scene(scene, voxels=None)", want)
-        self.assertLess(want.find("load_scene"), want.find("voxels_to_blocks"))
+        self.assertIn("load_scene(scene, voxels=None, blocks=map_blocks)", want)
+        self.assertNotIn("voxels_to_blocks", render)
         tabs = inspect.getsource(PreviewPanel._on_tab_changed)
         self.assertIn('_mode", "") == "3d"', tabs)
-        canvas_src = inspect.getsource(__import__("ui.widgets.ship_canvas", fromlist=["ShipCanvas"]).ShipCanvas.fit_to_view)
-        self.assertIn("_redraw_now", canvas_src)
+        canvas = __import__("ui.widgets.ship_canvas", fromlist=["ShipCanvas"]).ShipCanvas
+        for method in (
+            canvas.load_structure_data,
+            canvas.fit_to_view,
+            canvas.redraw,
+            canvas._request_map_bitmap,
+        ):
+            body = inspect.getsource(method)
+            self.assertNotIn("collect_projected_cells", body)
+            self.assertNotIn("rasterize_projected_cells", body)
+        self.assertIn("render_map_bitmap", inspect.getsource(canvas._request_map_bitmap))
+        self.assertIn("threading.Thread", inspect.getsource(canvas._request_map_bitmap))
+        self.assertIn("_request_map_bitmap", inspect.getsource(canvas.fit_to_view))
         load_src = inspect.getsource(ShipPreviewHost.load_scene)
         self.assertIn("self._switching = False", load_src)
+        materialize = inspect.getsource(ShipPreviewHost._materialize_2d_fallback)
+        self.assertNotIn("voxels_from_scene", materialize)
+        self.assertNotIn("voxels_to_blocks", materialize)
+        queue = inspect.getsource(ShipPreviewHost._queue_2d_materialize)
+        self.assertIn("threading.Thread", queue)
+        self.assertIn("voxels_from_scene", queue)
+        self.assertIn("voxels_to_blocks", queue)
 
     def test_cache_hit_does_not_materialize_voxels_when_3d(self):
         from ui.app import TacticalCommandCenter
@@ -1022,6 +1036,7 @@ class SkipVoxelsWhen3dTests(unittest.TestCase):
                 raise AssertionError("voxels_from_scene ran on Tk")
 
         seen = []
+        inspect_calls = []
         app = TacticalCommandCenter.__new__(TacticalCommandCenter)
         app.selected_blueprint = SimpleNamespace(path=Path("/ships/A"), display_name="A")
         app._closing = False
@@ -1033,10 +1048,12 @@ class SkipVoxelsWhen3dTests(unittest.TestCase):
             ship_preview=SimpleNamespace(will_show_3d=lambda: True),
             update_subgrids=lambda *a, **k: seen.append(k),
         )
+        app._inspect_blueprint_async = lambda immediate=False: inspect_calls.append(immediate)
         app._ensure_subgrids_document()
         self.assertEqual(len(seen), 1)
         self.assertIsNone(seen[0].get("voxels"))
         self.assertIsNone(seen[0].get("blocks"))
+        self.assertEqual(inspect_calls, [True])
 
     def test_2d_cache_without_map_blocks_does_not_walk_voxels_on_tk(self):
         from ui.app import TacticalCommandCenter
@@ -1103,6 +1120,27 @@ class VisibleBoundsSkipTests(unittest.TestCase):
         self.assertNotIn("upload_cpu_scene", edit)
         rebuild = inspect.getsource(ShipPreviewHost._rebuild_after_edit)
         self.assertIn("_edits_live", rebuild)
+
+
+class DeadOrphanRemovalTests(unittest.TestCase):
+    def test_listed_orphans_have_zero_callers(self):
+        import ui.preview_panel as preview_panel
+        import se_render.preview_style as preview_style
+
+        self.assertFalse(hasattr(preview_panel, "subgrids_voxels_for_ui"))
+        self.assertFalse(hasattr(preview_style, "FIRST_UPLOAD_CHUNK"))
+        viewport = inspect.getsource(GLPreviewRenderer)
+        self.assertNotIn("def _upload_secondary", viewport)
+        self.assertNotIn("def _patch_named", viewport)
+        self.assertIn("def _queue_patch_named", viewport)
+        self.assertIn("def _patch_one", viewport)
+        self.assertIn("def upload_secondary_sets", viewport)
+        host = inspect.getsource(ShipPreviewHost)
+        self.assertNotIn("def _ensure_renderer", host)
+        self.assertNotIn("def _refine_is_cancelled", host)
+        begin = inspect.getsource(GLPreviewRenderer.begin_cpu_upload)
+        self.assertNotIn("chunk_size", begin)
+        self.assertIn("def continue_cpu_upload", viewport)
 
 
 if __name__ == "__main__":

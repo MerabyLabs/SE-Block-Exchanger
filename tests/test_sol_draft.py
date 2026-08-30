@@ -28,6 +28,7 @@ from ui.widgets.ship_canvas import (
     VoxelBlock,
     collect_projected_cells,
     rasterize_projected_cells,
+    render_map_bitmap,
 )
 
 
@@ -223,6 +224,34 @@ class RasterizeMapTests(unittest.TestCase):
         ]
         cells = collect_projected_cells(blocks, "Top")
         self.assertEqual(len(cells), 10000)
+
+    def test_render_map_bitmap_matches_collect_raster(self):
+        blocks = [
+            VoxelBlock(0, 0, 0, "LargeBlockCockpit", "Hull", False),
+            VoxelBlock(2, 0, 1, "LargeBlockArmorBlock", "Hull", False),
+        ]
+        image = render_map_bitmap(
+            blocks,
+            projection="Top",
+            width=64,
+            height=64,
+            scale=8,
+            pan_x=0,
+            pan_y=0,
+        )
+        self.assertIsNotNone(image)
+        self.assertEqual(image.size, (64, 64))
+        isolated = render_map_bitmap(
+            blocks,
+            projection="Top",
+            width=64,
+            height=64,
+            scale=8,
+            pan_x=0,
+            pan_y=0,
+            grid_entity_id="missing",
+        )
+        self.assertIsNone(isolated)
 
 
 class SelectiveTableChunkTests(unittest.TestCase):

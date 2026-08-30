@@ -39,8 +39,6 @@ MWM_REFINE_CHUNK = 32
 
 # First GPU upload: this many CpuBatches per Tk idle slice.
 UPLOAD_BATCH_CHUNK = 8
-# Opening slice stays one batch so the first after() cannot hitch Tk.
-FIRST_UPLOAD_CHUNK = 1
 # Further slices yield if they exceed this wall time or payload.
 GL_UPLOAD_TIME_BUDGET_S = 0.008
 GL_UPLOAD_BYTE_BUDGET = 2_000_000

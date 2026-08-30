@@ -168,6 +168,8 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._ship_name = ""
         self._isolated_count: Optional[int] = None
         self._deferred_voxels: List[dict] = []
+        self._deferred_blocks: List[VoxelBlock] = []
+        self._fallback_gen = 0
         self._pending_cpu: Optional[PreviewCpuScene] = None
         self._pending_refine = False
 
@@ -598,7 +600,8 @@ class ShipPreviewHost(ctk.CTkFrame):
             return
         keep_shell = bool(self._mesh_ready and self._renderer is not None)
         self._scene = scene
-        self._deferred_voxels = list(voxels or [])
+        self._deferred_voxels = voxels if voxels else []
+        self._deferred_blocks = blocks if blocks else []
         self._grid_filter = None
         self._grid_entity_id = None
         self._grid_isolate_key = None
@@ -628,15 +631,20 @@ class ShipPreviewHost(ctk.CTkFrame):
             self._renderer.category_mask = 0
         want_3d = bool(self._install_valid and not self._gl_failed and scene is not None)
         if want_3d:
-            if blocks:
-                self.ship_canvas.load_structure_data(blocks, draw=False)
+            if self._deferred_blocks:
+                self.ship_canvas.load_structure_data(self._deferred_blocks, draw=False)
             else:
                 self.ship_canvas.blocks = []
+        elif self._deferred_blocks:
+            self.ship_canvas.load_structure_data(self._deferred_blocks, draw=True)
+            self._switching = False
+            self._building = False
+            self._refresh_status()
         else:
-            drawn = list(blocks or [])
-            if not drawn and self._deferred_voxels:
-                drawn = voxels_to_blocks(self._deferred_voxels)
-            self.ship_canvas.load_structure_data(drawn, draw=True)
+            if not self._deferred_voxels and scene is None:
+                self.ship_canvas.load_structure_data([], draw=True)
+            else:
+                self.ship_canvas.blocks = []
             self._switching = False
             self._building = False
             self._refresh_status()
@@ -715,6 +723,8 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._ship_name = ""
         self._isolated_count = None
         self._deferred_voxels = []
+        self._deferred_blocks = []
+        self._fallback_gen += 1
         self._clear_selection()
         self.ship_canvas.clear()
         self._apply_cancel_refine_chrome()
@@ -815,9 +825,6 @@ class ShipPreviewHost(ctk.CTkFrame):
             catalog_wait=self._catalog_wait,
         )
 
-    def _refine_is_cancelled(self) -> bool:
-        return bool(self._refine_cancelled)
-
     def _apply_cancel_refine_chrome(self) -> None:
         show = bool(self._building and self._mesh_ready and not self._refine_cancelled)
         try:
@@ -831,12 +838,46 @@ class ShipPreviewHost(ctk.CTkFrame):
 
     def _materialize_2d_fallback(self) -> None:
         if self.ship_canvas.blocks:
+            self.ship_canvas.refresh()
             return
-        if not self._deferred_voxels and self._scene is not None:
-            self._deferred_voxels = voxels_from_scene(self._scene)
-        if not self._deferred_voxels:
+        if self._deferred_blocks:
+            self.ship_canvas.load_structure_data(self._deferred_blocks, draw=True)
             return
-        self.ship_canvas.load_structure_data(voxels_to_blocks(self._deferred_voxels), draw=True)
+        if self._deferred_voxels or self._scene is not None:
+            self._queue_2d_materialize()
+
+    def _queue_2d_materialize(self) -> None:
+        self._fallback_gen += 1
+        gen = self._fallback_gen
+        voxels = self._deferred_voxels
+        scene = self._scene
+
+        def work() -> None:
+            cubes: List[VoxelBlock] = []
+            try:
+                src = voxels
+                if not src and scene is not None:
+                    src = voxels_from_scene(scene)
+                if src:
+                    cubes = voxels_to_blocks(src)
+            except Exception:
+                cubes = []
+            try:
+                self.after(0, lambda g=gen, c=cubes: self._apply_2d_materialize(g, c))
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=work, daemon=True, name="se-2d-fallback").start()
+
+    def _apply_2d_materialize(self, gen: int, cubes: List[VoxelBlock]) -> None:
+        if gen != self._fallback_gen:
+            return
+        if self.ship_canvas.blocks:
+            self.ship_canvas.refresh()
+            return
+        if cubes:
+            self._deferred_blocks = cubes
+            self.ship_canvas.load_structure_data(cubes, draw=True)
 
     def _start_build(self) -> None:
         if not self._install_valid or self._gl_failed or self._scene is None:
@@ -1413,18 +1454,6 @@ class ShipPreviewHost(ctk.CTkFrame):
             return
         if self._pending_cpu is not None:
             self.after(1, lambda: self._commit_cpu_upload(self._job.generation))
-
-    def _ensure_renderer(self) -> Optional[GLPreviewRenderer]:
-        if self._gl_failed:
-            return None
-        if self._renderer is None:
-            self._renderer = GLPreviewRenderer(init=False)
-            self._schedule_gl_init()
-            return None
-        if not self._renderer.available:
-            self._schedule_gl_init()
-            return None
-        return self._renderer
 
     def _apply_mode(self) -> None:
         want_3d = self._install_valid and not self._gl_failed and (self._mesh_ready or self._building)
