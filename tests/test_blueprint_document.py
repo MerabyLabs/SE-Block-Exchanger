@@ -44,6 +44,14 @@ def _write_ship(folder: Path, blocks: int, name: str = "Ship") -> Path:
 
 
 class DocumentSharingTests(unittest.TestCase):
+    def test_voxels_stay_lazy_until_read(self):
+        root = ET.fromstring(ROTOR_BLUEPRINT)
+        doc = BlueprintDocument.from_root(root, display_name="RotorShip")
+        self.assertIsNone(doc._voxels)
+        self.assertEqual(len(doc.voxels), 3)
+        self.assertIsNotNone(doc._voxels)
+        self.assertIs(doc.voxels, doc._voxels)
+
     def test_one_extract_feeds_scene_voxels_and_structure(self):
         root = ET.fromstring(ROTOR_BLUEPRINT)
         doc = BlueprintDocument.from_root(root, display_name="RotorShip")
@@ -82,6 +90,20 @@ class DocumentSharingTests(unittest.TestCase):
 
 
 class DocumentCacheTests(unittest.TestCase):
+    def test_cache_defaults_to_two_entries_and_evicts(self):
+        cache = BlueprintDocumentCache()
+        self.assertEqual(cache.max_entries, 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            folders = []
+            for name in ("A", "B", "C"):
+                folder = Path(tmp) / name
+                _write_ship(folder, 3, name)
+                folders.append(folder)
+                cache.get_or_load(folder)
+            self.assertIsNone(cache.get(folders[0]))
+            self.assertIsNotNone(cache.get(folders[1]))
+            self.assertIsNotNone(cache.get(folders[2]))
+
     def test_cache_hit_same_mtime(self):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp) / "A"
