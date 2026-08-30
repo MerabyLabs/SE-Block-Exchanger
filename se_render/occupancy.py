@@ -141,11 +141,14 @@ def occupied_cells(
 def build_occupancy(
     blocks: Sequence[BlockInstance],
     catalog: Optional[CubeBlockCatalog] = None,
+    cancel=None,
 ) -> OccupancyMap:
     """Occupied cells keyed by grid entity id so subgrids never cull each other."""
     occupied: OccupancyMap = {}
     defn_cache: Dict[Tuple[str, str], Optional[BlockDefinition]] = {}
-    for block in blocks:
+    for i, block in enumerate(blocks):
+        if cancel is not None and (i & 255) == 0 and cancel():
+            return {}
         key = (block.type_id, block.subtype)
         if catalog is None:
             definition = None
@@ -178,7 +181,7 @@ def occupancy_padded_volume(occupied: Set[Cell]) -> int:
     )
 
 
-def occupancy_shell_layers(occupied: Set[Cell]) -> Dict[Cell, int]:
+def occupancy_shell_layers(occupied: Set[Cell], cancel=None) -> Dict[Cell, int]:
     """
     Onion layers from the outside of the occupied set.
 
@@ -192,15 +195,17 @@ def occupancy_shell_layers(occupied: Set[Cell]) -> Dict[Cell, int]:
     if not occupied:
         return {}
     if occupancy_padded_volume(occupied) <= DENSE_VOLUME_CAP:
-        return _shell_layers_dense(occupied)
-    return _shell_layers_sparse(occupied)
+        return _shell_layers_dense(occupied, cancel=cancel)
+    return _shell_layers_sparse(occupied, cancel=cancel)
 
 
-def _shell_layers_sparse(occupied: Set[Cell]) -> Dict[Cell, int]:
+def _shell_layers_sparse(occupied: Set[Cell], cancel=None) -> Dict[Cell, int]:
     remaining = set(occupied)
     layers: Dict[Cell, int] = {}
     layer = 0
     while remaining:
+        if cancel is not None and cancel():
+            return layers
         shell = {
             cell
             for cell in remaining
@@ -220,7 +225,7 @@ def _shell_layers_sparse(occupied: Set[Cell]) -> Dict[Cell, int]:
     return layers
 
 
-def _shell_layers_dense(occupied: Set[Cell]) -> Dict[Cell, int]:
+def _shell_layers_dense(occupied: Set[Cell], cancel=None) -> Dict[Cell, int]:
     pts = np.array(list(occupied), dtype=np.int32)
     amin = pts.min(axis=0) - 1
     amax = pts.max(axis=0) + 1
@@ -231,6 +236,8 @@ def _shell_layers_dense(occupied: Set[Cell]) -> Dict[Cell, int]:
     layer_of = np.zeros(shape, dtype=np.int16)
     layer = 0
     while True:
+        if cancel is not None and cancel():
+            break
         nsum = np.zeros(shape, dtype=np.uint8)
         nsum[1:, :, :] += remaining[:-1, :, :]
         nsum[:-1, :, :] += remaining[1:, :, :]

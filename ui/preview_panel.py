@@ -27,7 +27,8 @@ from se_assets.cube_catalog import CubeBlockCatalog
 from se_assets.mesh_cache import MeshLibrary
 from se_render.scene_graph import PreviewScene
 from ui.widgets.grid_tree import GridHierarchyView
-from ui.widgets.ship_canvas import VoxelBlock
+from blueprint_document import subgrids_ui_applies
+from ui.widgets.ship_canvas import voxels_to_blocks
 from ui.widgets.ship_preview import ShipPreviewHost
 
 
@@ -93,6 +94,12 @@ class PreviewPanel(ctk.CTkFrame):
         self._pending_voxels: List[dict] = []
         self._subgrids_rendered_for = None
         self._subgrids_revision = 0
+        self._subgrids_generation = 0
+        self._subgrids_path = None
+        self._subgrids_ship_name = ""
+        self._catalog_in_flight = False
+        self._install_cleared = False
+        self._render_job = None
         self._pending_analytics = None
         self._pending_se2 = None
         self._pending_preview = None
@@ -329,8 +336,11 @@ class PreviewPanel(ctk.CTkFrame):
         self.ship_preview.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         self.ship_canvas = self.ship_preview.ship_canvas
         if self._pending_se_state is not None:
-            valid, path_text, message = self._pending_se_state
-            self.ship_preview.set_install_state(valid, path_text, message)
+            valid, path_text, message = self._pending_se_state[:3]
+            cleared = self._pending_se_state[3] if len(self._pending_se_state) > 3 else self._install_cleared
+            self.ship_preview.set_install_state(valid, path_text, message, cleared=cleared)
+        if self._catalog_in_flight:
+            self.ship_preview.set_catalog_in_flight(True)
         if self._pending_catalog is not None:
             catalog, meshes = self._pending_catalog
             self.ship_preview.set_catalog(catalog, meshes)
@@ -349,7 +359,10 @@ class PreviewPanel(ctk.CTkFrame):
             self._ensure_subgrids_widgets()
             if self._on_need_subgrids:
                 self._on_need_subgrids()
-            self._render_subgrids()
+            if self._subgrids_rendered_for != self._subgrids_revision:
+                self._render_subgrids()
+            elif self.ship_preview is not None:
+                self.ship_preview.refresh()
         elif name == "XML":
             self._ensure_xml_loaded()
         elif name == "Analytics":
@@ -363,15 +376,51 @@ class PreviewPanel(ctk.CTkFrame):
         if self.ship_preview is not None:
             self.ship_preview.filter_by_grid(grid_name, entity_id)
 
-    def set_se_preview_state(self, valid: bool, path_text: str = "", message: str = "") -> None:
-        self._pending_se_state = (valid, path_text, message)
+    def set_se_preview_state(
+        self,
+        valid: bool,
+        path_text: str = "",
+        message: str = "",
+        *,
+        cleared: bool = False,
+    ) -> None:
+        self._install_cleared = bool(cleared)
+        self._pending_se_state = (valid, path_text, message, self._install_cleared)
         if self.ship_preview is not None:
-            self.ship_preview.set_install_state(valid, path_text, message)
+            self.ship_preview.set_install_state(valid, path_text, message, cleared=cleared)
+
+    def set_catalog_in_flight(self, pending: bool) -> None:
+        self._catalog_in_flight = bool(pending)
+        if self.ship_preview is not None:
+            self.ship_preview.set_catalog_in_flight(pending)
 
     def set_se_catalog(self, catalog: Optional[CubeBlockCatalog], meshes: Optional[MeshLibrary] = None) -> None:
+        if catalog is not None:
+            self._catalog_in_flight = False
         self._pending_catalog = pending_catalog_for(catalog, meshes)
         if self.ship_preview is not None:
+            if catalog is None:
+                self.ship_preview.set_catalog_in_flight(self._catalog_in_flight)
             self.ship_preview.set_catalog(catalog, meshes)
+
+    def begin_blueprint_switch(self, path, ship_name: str = "") -> int:
+        """Cancel in-flight Subgrids/3D work for A→B. Keep last shell on screen."""
+        self._subgrids_generation += 1
+        self._subgrids_path = path
+        self._subgrids_ship_name = ship_name or ""
+        if self._render_job is not None:
+            try:
+                self.after_cancel(self._render_job)
+            except Exception:
+                pass
+            self._render_job = None
+        if self.ship_preview is not None:
+            self.ship_preview.begin_switch(ship_name)
+        return self._subgrids_generation
+
+    @property
+    def subgrids_generation(self) -> int:
+        return self._subgrids_generation
 
     def update_subgrids(
         self,
@@ -379,16 +428,50 @@ class PreviewPanel(ctk.CTkFrame):
         matrix_summaries=None,
         voxels: Optional[List[dict]] = None,
         scene: Optional[PreviewScene] = None,
+        path=None,
+        generation: Optional[int] = None,
+        ship_name: str = "",
+        defer: bool = True,
     ):
+        if generation is not None and not subgrids_ui_applies(
+            self._subgrids_generation,
+            generation,
+            self._subgrids_path,
+            path,
+        ):
+            return
+        if path is not None and self._subgrids_path is not None:
+            if str(self._subgrids_path) != str(path):
+                return
         self._pending_structure = structure
-        self._pending_voxels = list(voxels or [])
+        self._pending_voxels = voxels or []
         self._pending_scene = scene
+        if ship_name:
+            self._subgrids_ship_name = ship_name
         self._subgrids_revision += 1
         self._subgrids_rendered_for = None
+        revision = self._subgrids_revision
         if self.ship_preview is not None:
             self.ship_preview.set_declared_total(getattr(structure, "total_blocks", 0) or 0)
-        if self.current_tab() == "Subgrids":
-            self._render_subgrids()
+            if self._subgrids_ship_name:
+                self.ship_preview._ship_name = self._subgrids_ship_name
+        if self.current_tab() != "Subgrids":
+            return
+        if defer:
+            if self._render_job is not None:
+                try:
+                    self.after_cancel(self._render_job)
+                except Exception:
+                    pass
+            self._render_job = self.after(1, lambda r=revision: self._render_subgrids_if(r))
+            return
+        self._render_subgrids()
+
+    def _render_subgrids_if(self, revision: int) -> None:
+        self._render_job = None
+        if revision != self._subgrids_revision:
+            return
+        self._render_subgrids()
 
     def _subgrids_render_key(self):
         return self._subgrids_revision
@@ -397,34 +480,24 @@ class PreviewPanel(ctk.CTkFrame):
         self._ensure_subgrids_widgets()
         structure = self._pending_structure
         voxels = self._pending_voxels
+        scene = self._pending_scene
         render_key = self._subgrids_render_key()
         if self._subgrids_rendered_for == render_key:
-            # Same ship, tab just reselected — keep the map, refresh after remap.
-            if self.ship_preview is not None:
-                self.after_idle(self.ship_preview.refresh)
+            if self.ship_preview is not None and self.ship_preview._mode == "3d":
+                self.ship_preview.refresh()
             return
         self.hierarchy_view.render(structure if structure and getattr(structure, "total_grids", 0) else None)
-        if not voxels:
-            self.ship_preview.clear()
+        if scene is None and not voxels:
+            if self.ship_preview is not None and not self.ship_preview._switching:
+                self.ship_preview.clear()
             self._subgrids_rendered_for = render_key
             return
-        blocks = [
-            VoxelBlock(
-                x=int(v["x"]),
-                y=int(v["y"]),
-                z=int(v["z"]),
-                subtype=v["subtype"],
-                grid_name=v["grid_name"],
-                grid_size=v.get("grid_size", "Large"),
-                is_subgrid=bool(v.get("is_subgrid", False)),
-                color_rgb=v.get("color_rgb"),
-                grid_entity_id=str(v.get("grid_entity_id") or ""),
-            )
-            for v in voxels
-        ]
-        self.ship_preview.load_structure_data(blocks, scene=self._pending_scene)
+        want_3d = self.ship_preview.will_show_3d() and scene is not None
+        if want_3d:
+            self.ship_preview.load_scene(scene, voxels=voxels)
+        else:
+            self.ship_preview.load_structure_data(voxels_to_blocks(voxels), scene=scene)
         self._subgrids_rendered_for = render_key
-        self.after_idle(self.ship_preview.refresh)
 
     def clear_subgrids(self):
         self._pending_structure = None

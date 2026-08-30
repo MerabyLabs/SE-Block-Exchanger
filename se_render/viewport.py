@@ -310,9 +310,7 @@ class GLPreviewRenderer:
         self._aabb_min = cpu.aabb_min
         self._aabb_max = cpu.aabb_max
         self._apply_visible_bounds()
-        more = self._begin_set_uploads(cpu, defer_secondary=defer_secondary)
-        if more:
-            self.continue_cpu_upload(chunk_size)
+        self._begin_set_uploads(cpu, defer_secondary=defer_secondary)
         self.upload_generation += 1
         should_fit = refit or (not self.camera_user_moved) or prev_empty
         if should_fit:

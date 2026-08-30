@@ -396,6 +396,7 @@ def _collect_batches(
     cheap_picks: bool = True,
     keep_indices: Optional[Sequence[int]] = None,
     columns: Optional[_InstanceColumns] = None,
+    cancel=None,
 ) -> Tuple[List[CpuBatch], List[PickRecord]]:
     groups: Dict[Tuple[int, int, int], List[int]] = {}
     mesh_for_key: Dict[Tuple[int, int, int], MeshData] = {}
@@ -407,7 +408,9 @@ def _collect_batches(
     radial = _as_offset_array(offsets_radial, len(blocks))
     defn_cache: Dict[Tuple[str, str], object] = {}
 
-    for i in walk:
+    for n, i in enumerate(walk):
+        if cancel is not None and (n & 255) == 0 and cancel():
+            return [], []
         block = blocks[i]
         plan = used_plans[i]
         if plan.fully_enclosed and not explode:
@@ -627,7 +630,10 @@ def build_preview_cpu(
     stage_key = (stage or STAGE_FULL).strip().lower()
     if stage_key not in (STAGE_SHELL, STAGE_MESHES, STAGE_FULL):
         stage_key = STAGE_FULL
-    if cancel is not None and not cancel.is_current(generation):
+    def _stale() -> bool:
+        return cancel is not None and not cancel.is_current(generation)
+
+    if _stale():
         return _empty_cpu(blocks, center, radius, huge, generation, stage_key)
 
     reuse = (
@@ -646,11 +652,15 @@ def build_preview_cpu(
         offset_radial = prior.offset_radial
         dissect_modes = list(prior.dissect_modes)
     else:
-        occupied = build_occupancy(blocks, catalog) if blocks else {}
-        plans = plan_blocks(blocks, catalog, occupied=occupied)
-        if cancel is not None and not cancel.is_current(generation):
+        occupied = build_occupancy(blocks, catalog, cancel=_stale) if blocks else {}
+        if _stale():
             return _empty_cpu(blocks, center, radius, huge, generation, stage_key)
-        layer_by_grid = {gid: occupancy_shell_layers(cells) for gid, cells in occupied.items()}
+        plans = plan_blocks(blocks, catalog, occupied=occupied)
+        if _stale():
+            return _empty_cpu(blocks, center, radius, huge, generation, stage_key)
+        layer_by_grid = {
+            gid: occupancy_shell_layers(cells, cancel=_stale) for gid, cells in occupied.items()
+        }
         shell_layers = _assign_shell_layers(blocks, catalog, occupied, layer_by_grid)
         offset_peel = offset_decks = offset_radial = None
         dissect_modes = []
@@ -683,7 +693,7 @@ def build_preview_cpu(
             column_idx = [i for i, plan in enumerate(plans) if not plan.fully_enclosed]
     columns = _build_instance_columns(blocks, catalog, shell_layers, indices=column_idx)
     has_mwm = columns.has_functional_mwm or _scene_has_mwm(blocks, catalog)
-    if cancel is not None and not cancel.is_current(generation):
+    if _stale():
         return _empty_cpu(blocks, center, radius, huge, generation, stage_key)
 
     assembled, picks = _collect_batches(
@@ -691,8 +701,10 @@ def build_preview_cpu(
         offsets_peel=peel, offsets_decks=decks, offsets_radial=radial,
         shell_layers=shell_layers, plans=plans, skip_mwm=skip_mwm,
         cheap_picks=True, keep_indices=keep if keep is not None else column_idx,
-        columns=columns,
+        columns=columns, cancel=_stale,
     )
+    if _stale():
+        return _empty_cpu(blocks, center, radius, huge, generation, stage_key)
 
     exploded: List[CpuBatch] = []
     exploded_picks: List[PickRecord] = []
@@ -701,8 +713,10 @@ def build_preview_cpu(
             blocks, catalog, library, explode=True, lod=False,
             offsets_peel=peel, offsets_decks=decks, offsets_radial=radial,
             shell_layers=shell_layers, plans=plans, skip_mwm=False,
-            cheap_picks=True, keep_indices=None, columns=columns,
+            cheap_picks=True, keep_indices=None, columns=columns, cancel=_stale,
         )
+        if _stale():
+            return _empty_cpu(blocks, center, radius, huge, generation, stage_key)
     elif reuse and prior is not None and prior.exploded:
         exploded = prior.exploded
         exploded_picks = [rec for rec in prior.picks]

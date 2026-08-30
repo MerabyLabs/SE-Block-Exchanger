@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 
 INTERACTIVE_MAX_EDGE = 1440
@@ -39,6 +39,8 @@ MWM_REFINE_CHUNK = 32
 
 # First GPU upload: this many CpuBatches per Tk idle slice.
 UPLOAD_BATCH_CHUNK = 8
+# Opening slice stays one batch so the first after() cannot hitch Tk.
+FIRST_UPLOAD_CHUNK = 1
 
 
 def format_preview_count_caption(
@@ -59,6 +61,107 @@ def format_preview_count_caption(
     if total_n > shown_n:
         return f"{shown_n:,} of {total_n:,} blocks  ·  3D preview"
     return f"{shown_n:,} blocks  ·  3D preview"
+
+
+def should_defer_catalog_box_build(catalog, catalog_in_flight: bool) -> bool:
+    """Do not assemble throwaway boxes while the official catalog is loading."""
+    return catalog is None and bool(catalog_in_flight)
+
+
+def fallback_banner_text(
+    *,
+    cleared: bool,
+    install_valid: bool,
+    path_text: str = "",
+    message: str = "",
+) -> str:
+    """2D-fallback banner: File→Clear is distinct from a missing install."""
+    if install_valid:
+        shown = path_text or "Space Engineers install"
+        return f"Using official models from {shown}"
+    if cleared:
+        return (
+            "Space Engineers path cleared. Locate the game folder for the 3D preview, "
+            "or use the 2D map."
+        )
+    return message or (
+        "Space Engineers was not found. Locate the game folder for the 3D preview, "
+        "or use the 2D map."
+    )
+
+
+def staged_3d_caption(
+    *,
+    switching: bool = False,
+    catalog_wait: bool = False,
+    building: bool = False,
+    mesh_ready: bool = False,
+    stage: str = "",
+    shown: int = 0,
+    total: int = 0,
+    uploading: bool = False,
+    uploaded: int = 0,
+    isolated_name: Optional[str] = None,
+    isolated_count: Optional[int] = None,
+    refining: bool = False,
+    ship_name: str = "",
+) -> str:
+    """Honest Subgrids toolbar: Indexed / Shell k of N / models / interior."""
+    stage_key = (stage or "").strip().lower()
+    total_n = max(0, int(total))
+    shown_n = max(0, int(shown))
+    uploaded_n = max(0, int(uploaded))
+    if catalog_wait:
+        return "Loading 3D…  ·  indexing game files"
+    if switching and not mesh_ready:
+        extra = f"  ·  {ship_name}" if ship_name else ""
+        return f"Loading 3D…{extra}"
+    if building and not mesh_ready:
+        if stage_key == "shell":
+            n = uploaded_n if uploading and uploaded_n else shown_n
+            if total_n and n:
+                return f"Loading 3D…  ·  shell {n:,} of {total_n:,}"
+            return "Loading 3D…  ·  indexing hull"
+        if not stage_key:
+            return "Loading 3D…  ·  Indexed"
+        return "Loading 3D…"
+    parts: list = []
+    if isolated_name:
+        n = isolated_count if isolated_count is not None else shown_n
+        parts.append(f"{isolated_name}  ·  {n:,} blocks")
+    elif stage_key == "shell":
+        n = uploaded_n if uploading and uploaded_n else shown_n
+        if total_n:
+            parts.append(f"Shell {n:,} of {total_n:,}")
+        else:
+            parts.append("Shell")
+    elif stage_key == "meshes":
+        if total_n:
+            parts.append(f"Models {shown_n:,} of {total_n:,}")
+        else:
+            parts.append("Models")
+    elif stage_key in {"full", "interior"}:
+        if refining:
+            parts.append(f"Interior {shown_n:,} of {total_n:,}" if total_n else "Interior")
+        else:
+            parts.append(
+                format_preview_count_caption(
+                    shown_n or total_n,
+                    total_n or shown_n,
+                    uploading=uploading,
+                )
+            )
+    else:
+        parts.append(
+            format_preview_count_caption(
+                shown_n or total_n,
+                total_n or shown_n,
+                uploading=uploading,
+            )
+        )
+    if refining:
+        parts.append("refining")
+    return "  ·  ".join(p for p in parts if p)
 
 
 @dataclass(frozen=True)

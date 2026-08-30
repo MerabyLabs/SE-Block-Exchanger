@@ -360,7 +360,12 @@ class TacticalCommandCenter(ctk.CTk):
         if status is None:
             return
         path_text = str(status.path) if status.path else ""
-        self.preview_panel.set_se_preview_state(status.valid, path_text, status.reason)
+        self.preview_panel.set_se_preview_state(
+            status.valid,
+            path_text,
+            status.reason,
+            cleared=self.settings.space_engineers_cleared,
+        )
         if status.valid and status.path is not None and not self.settings.space_engineers_cleared:
             if str(status.path) != self.settings.space_engineers_install:
                 self.settings.space_engineers_install = str(status.path)
@@ -369,6 +374,7 @@ class TacticalCommandCenter(ctk.CTk):
 
     def _load_se_catalog_async(self, install) -> None:
         generation = self._catalog_token.begin()
+        self.preview_panel.set_catalog_in_flight(True)
 
         def task():
             try:
@@ -386,6 +392,7 @@ class TacticalCommandCenter(ctk.CTk):
                         cleared=self.settings.space_engineers_cleared,
                     ):
                         return
+                    self.preview_panel.set_catalog_in_flight(False)
                     self.toasts.toast(f"Block catalog failed: {message}", level="warning")
 
                 self._ui(_fail)
@@ -403,6 +410,7 @@ class TacticalCommandCenter(ctk.CTk):
             return
         self._se_catalog = catalog
         self._se_meshes = meshes
+        self.preview_panel.set_catalog_in_flight(False)
         self.preview_panel.set_se_catalog(catalog, meshes)
         if catalog:
             self.footer.set_status(f"Loaded {len(catalog):,} CubeBlocks definitions")
@@ -453,6 +461,7 @@ class TacticalCommandCenter(ctk.CTk):
         self.settings_store.save(self.settings)
         self._se_install_status = resolve_install("", allow_detect=False)
         self._apply_se_install_state()
+        self.preview_panel.set_catalog_in_flight(False)
         self.preview_panel.set_se_catalog(None)
         self.toasts.toast("Cleared the Space Engineers path. Using the 2D map.", level="info")
 
@@ -676,19 +685,22 @@ class TacticalCommandCenter(ctk.CTk):
 
     def on_blueprint_select(self, bp: BlueprintInfo):
         self._inspect_token.cancel()
+        if self._preview_after_id is not None:
+            self.after_cancel(self._preview_after_id)
+            self._preview_after_id = None
         self.selected_blueprint = bp
         self.settings_store.add_recent_blueprint(self.settings, bp.display_name)
         self.blueprint_panel.set_recent_blueprints(self.settings.recent_blueprints)
 
         self.control_panel.update_details(bp)
         self.preview_panel.update_intel(bp, self.conversion_mode)
-        if self._document is None or self._document.path.parent != bp.path:
-            self._document = None
-            self.preview_panel.clear_subgrids()
+        self.preview_panel.begin_blueprint_switch(bp.path, bp.display_name)
+        cached = self._documents.get(bp.path)
+        self._document = cached
         self._apply_instant_inspect(bp)
         self.footer.set_status(f"Selected: {bp.display_name}")
         if self.preview_panel.current_tab() == "Subgrids":
-            self._inspect_blueprint_async()
+            self._ensure_subgrids_document()
 
     def _get_selected_blueprint_file(self) -> Optional[str]:
         if not self.selected_blueprint:
@@ -797,18 +809,26 @@ class TacticalCommandCenter(ctk.CTk):
         if cached is not None:
             self._document = cached
             try:
-                self.preview_panel.update_subgrids(cached.structure, voxels=cached.voxels, scene=cached.scene)
+                self.preview_panel.update_subgrids(
+                    cached.structure,
+                    voxels=cached.voxels,
+                    scene=cached.scene,
+                    path=cached.path.parent,
+                    generation=self.preview_panel.subgrids_generation,
+                    ship_name=cached.display_name,
+                )
             except Exception as exc:
                 self.toasts.toast(f"Map view failed: {exc}", level="warning")
             return
-        self._inspect_blueprint_async()
+        self._inspect_blueprint_async(immediate=True)
 
-    def _inspect_blueprint_async(self):
+    def _inspect_blueprint_async(self, immediate: bool = False):
         if not self.selected_blueprint or self._closing:
             return
         if self._preview_after_id is not None:
             self.after_cancel(self._preview_after_id)
-        self._preview_after_id = self.after(90, self._run_inspect_now)
+        delay = 16 if immediate or self.preview_panel.current_tab() == "Subgrids" else 90
+        self._preview_after_id = self.after(delay, self._run_inspect_now)
 
     def _run_inspect_now(self):
         self._preview_after_id = None
@@ -839,7 +859,14 @@ class TacticalCommandCenter(ctk.CTk):
             return
         self._document = doc
         try:
-            self.preview_panel.update_subgrids(doc.structure, voxels=doc.voxels, scene=doc.scene)
+            self.preview_panel.update_subgrids(
+                doc.structure,
+                voxels=doc.voxels,
+                scene=doc.scene,
+                path=doc.path.parent,
+                generation=self.preview_panel.subgrids_generation,
+                ship_name=doc.display_name,
+            )
         except Exception as exc:
             self.toasts.toast(f"Map view failed: {exc}", level="warning")
 

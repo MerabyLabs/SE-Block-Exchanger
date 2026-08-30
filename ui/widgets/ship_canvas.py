@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import customtkinter as ctk
 import numpy as np
@@ -120,6 +120,24 @@ def rasterize_projected_cells(
     return Image.fromarray(arr, "RGB")
 
 
+def voxels_to_blocks(voxels: Iterable[dict]) -> List["VoxelBlock"]:
+    """Build 2D map cubes. Call only when the 2D map will actually draw."""
+    return [
+        VoxelBlock(
+            x=int(v["x"]),
+            y=int(v["y"]),
+            z=int(v["z"]),
+            subtype=v["subtype"],
+            grid_name=v["grid_name"],
+            grid_size=v.get("grid_size", "Large"),
+            is_subgrid=bool(v.get("is_subgrid", False)),
+            color_rgb=v.get("color_rgb"),
+            grid_entity_id=str(v.get("grid_entity_id") or ""),
+        )
+        for v in voxels
+    ]
+
+
 @dataclass
 class VoxelBlock:
     x: int
@@ -137,13 +155,16 @@ class ShipCanvas(ctk.CTkFrame):
     """Top / side / front map of CubeGrid voxels."""
 
     PROJECTIONS = ("Top", "Side", "Front")
+    _session_projection = "Top"
 
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=TacticalTheme.BG_DARK, corner_radius=8, **kwargs)
         self.blocks: List[VoxelBlock] = []
         self.selected_grid_filter: Optional[str] = None
         self.selected_grid_entity_id: Optional[str] = None
-        self.projection_mode = "Top"
+        self.projection_mode = str(self._session_projection or "Top")
+        if self.projection_mode not in self.PROJECTIONS:
+            self.projection_mode = "Top"
         self.min_coords = (0, 0, 0)
         self.max_coords = (0, 0, 0)
         self.scale = 16.0
@@ -167,7 +188,7 @@ class ShipCanvas(ctk.CTkFrame):
             text_color=TacticalTheme.TEXT_GRAY,
         ).pack(side="left", padx=(10, 6))
 
-        self.view_var = ctk.StringVar(value="Top")
+        self.view_var = ctk.StringVar(value=self.projection_mode)
         ctk.CTkOptionMenu(
             toolbar,
             values=list(self.PROJECTIONS),
@@ -493,4 +514,5 @@ class ShipCanvas(ctk.CTkFrame):
 
     def _on_projection_changed(self, choice: str) -> None:
         self.projection_mode = choice
+        ShipCanvas._session_projection = choice
         self.fit_to_view()

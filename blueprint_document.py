@@ -120,6 +120,27 @@ def inspect_result_applies(
     return Path(selected_path) == Path(result_path)
 
 
+def subgrids_ui_applies(
+    current_generation: int,
+    result_generation: int,
+    selected_path: Optional[Path],
+    result_path: Optional[Path],
+) -> bool:
+    """Drop ship-A Subgrids/3D UI after B or C is selected."""
+    if int(current_generation) != int(result_generation):
+        return False
+    if selected_path is None or result_path is None:
+        return False
+    return Path(selected_path) == Path(result_path)
+
+
+def build_ready_applies(job, generation: int, *, install_valid: bool = True) -> bool:
+    """Drop a stale 3D build/upload callback after a blueprint switch."""
+    if not install_valid:
+        return False
+    return bool(job.is_current(generation))
+
+
 def blueprint_file(path: Path) -> Path:
     path = Path(path)
     if path.is_dir():
@@ -154,9 +175,17 @@ class BlueprintDocument:
         *,
         display_name: str,
         stamp: Optional[FileStamp] = None,
+        token: Optional[JobToken] = None,
+        generation: int = 0,
     ) -> "BlueprintDocument":
-        scene = extract_scene_from_root(root)
+        if token is not None:
+            token.raise_if_stale(generation)
+        scene = extract_scene_from_root(root, token=token, generation=generation)
+        if token is not None:
+            token.raise_if_stale(generation)
         structure = SubgridHierarchyParser.from_scene(scene)
+        if token is not None:
+            token.raise_if_stale(generation)
         voxels = voxels_from_scene(scene)
         subtype_counts: Dict[str, int] = Counter()
         thruster_forwards: Dict[str, int] = Counter()
@@ -197,12 +226,28 @@ class BlueprintDocument:
         )
 
     @classmethod
-    def load(cls, path: Path, display_name: Optional[str] = None) -> "BlueprintDocument":
+    def load(
+        cls,
+        path: Path,
+        display_name: Optional[str] = None,
+        token: Optional[JobToken] = None,
+        generation: int = 0,
+    ) -> "BlueprintDocument":
         bp_file = blueprint_file(path)
+        if token is not None:
+            token.raise_if_stale(generation)
         stamp = FileStamp.from_path(bp_file)
         tree = safe_xml.parse(bp_file)
+        if token is not None:
+            token.raise_if_stale(generation)
         name = display_name or bp_file.parent.name
-        return cls.from_root(tree.getroot(), display_name=name, stamp=stamp)
+        return cls.from_root(
+            tree.getroot(),
+            display_name=name,
+            stamp=stamp,
+            token=token,
+            generation=generation,
+        )
 
 
 class BlueprintDocumentCache:
@@ -256,7 +301,7 @@ class BlueprintDocumentCache:
             token.raise_if_stale(generation)
         if cancel is not None and cancel():
             raise CancelledError()
-        doc = BlueprintDocument.load(path)
+        doc = BlueprintDocument.load(path, token=token, generation=generation)
         if token is not None:
             token.raise_if_stale(generation)
         if cancel is not None and cancel():

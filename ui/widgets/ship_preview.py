@@ -10,7 +10,7 @@ import tkinter as tk
 import customtkinter as ctk
 from PIL import Image, ImageTk
 
-from blueprint_document import save_as_result_applies
+from blueprint_document import build_ready_applies, save_as_result_applies
 from blueprint_edit import (
     GridEditSession,
     nudge_block_instance,
@@ -41,16 +41,20 @@ from se_render.preview_build import (
     refine_mwm_cpu,
 )
 from se_render.preview_style import (
+    FIRST_UPLOAD_CHUNK,
     INSPECT_CATEGORIES,
     MWM_REFINE_CHUNK,
     PROGRESSIVE_BLOCK_THRESHOLD,
     UPLOAD_BATCH_CHUNK,
+    fallback_banner_text,
     render_target_size,
+    should_defer_catalog_box_build,
+    staged_3d_caption,
 )
 from se_render.scene_graph import PreviewScene
-from se_render.viewport import GLPreviewRenderer, scene_bounds_caption
+from se_render.viewport import GLPreviewRenderer
 from ui.theme import TacticalTheme
-from ui.widgets.ship_canvas import ShipCanvas, VoxelBlock
+from ui.widgets.ship_canvas import ShipCanvas, VoxelBlock, voxels_to_blocks
 
 _CATEGORY_LABELS = {
     "armor": "Armor",
@@ -140,6 +144,16 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._idle_job = None
         self._save_generation = 0
         self._save_in_flight = False
+        self._switching = False
+        self._catalog_in_flight = False
+        self._catalog_wait = False
+        self._refine_cancelled = False
+        self._install_cleared = False
+        self._ship_name = ""
+        self._isolated_count: Optional[int] = None
+        self._deferred_voxels: List[dict] = []
+        self._pending_cpu: Optional[PreviewCpuScene] = None
+        self._pending_refine = False
 
         self._banner = ctk.CTkFrame(self, fg_color=TacticalTheme.BG_GLASS, corner_radius=8)
         self._banner.pack(fill="x", padx=8, pady=(8, 0))
@@ -187,6 +201,16 @@ class ShipPreviewHost(ctk.CTkFrame):
             text_color=TacticalTheme.CYAN_PRIMARY,
         )
         self._gl_status.pack(side="left", padx=8)
+        self._cancel_refine_btn = ctk.CTkButton(
+            toolbar,
+            text="Cancel refine",
+            width=104,
+            height=30,
+            font=TacticalTheme.FONT_SMALL,
+            fg_color=TacticalTheme.BG_DARK,
+            text_color=TacticalTheme.TEXT_WHITE,
+            command=self.cancel_refine,
+        )
 
         self._focus_btn = ctk.CTkButton(
             toolbar,
@@ -447,14 +471,24 @@ class ShipPreviewHost(ctk.CTkFrame):
     def set_declared_total(self, total: int) -> None:
         self._declared_total = max(0, int(total))
 
-    def set_install_state(self, valid: bool, path_text: str = "", message: str = "") -> None:
+    def set_install_state(
+        self,
+        valid: bool,
+        path_text: str = "",
+        message: str = "",
+        *,
+        cleared: bool = False,
+    ) -> None:
         self._install_valid = bool(valid)
+        self._install_cleared = bool(cleared)
+        banner = fallback_banner_text(
+            cleared=self._install_cleared,
+            install_valid=self._install_valid,
+            path_text=path_text,
+            message=message,
+        )
         if valid:
-            shown = path_text or "Space Engineers install"
-            self._banner_label.configure(
-                text=f"Using official models from {shown}",
-                text_color=TacticalTheme.TEXT_CYAN,
-            )
+            self._banner_label.configure(text=banner, text_color=TacticalTheme.TEXT_CYAN)
             self._locate_btn.configure(text="Change folder…")
             if self._scene is not None and not self._mesh_ready:
                 self._start_build()
@@ -464,15 +498,15 @@ class ShipPreviewHost(ctk.CTkFrame):
             if self._renderer is not None:
                 self._renderer.clear_scene()
             self._set_dissect_enabled(False)
-            self._banner_label.configure(
-                text=message or "Space Engineers was not found. Locate the game folder for the 3D preview, or use the 2D map.",
-                text_color=TacticalTheme.TEXT_GRAY,
-            )
+            self._banner_label.configure(text=banner, text_color=TacticalTheme.TEXT_GRAY)
             self._locate_btn.configure(text="Locate Space Engineers…")
         self._apply_mode()
 
     def set_catalog(self, catalog: Optional[CubeBlockCatalog], meshes: Optional[MeshLibrary] = None) -> None:
         self._catalog = catalog
+        if catalog is not None:
+            self._catalog_in_flight = False
+            self._catalog_wait = False
         if meshes is not None:
             self._meshes = meshes
         elif catalog is not None and catalog.install is not None:
@@ -480,32 +514,87 @@ class ShipPreviewHost(ctk.CTkFrame):
         if self._scene is not None and self._install_valid:
             self._start_build()
 
-    def load_structure_data(self, blocks: List[VoxelBlock], scene: Optional[PreviewScene] = None) -> None:
-        self._scene = scene
+    def set_catalog_in_flight(self, pending: bool) -> None:
+        self._catalog_in_flight = bool(pending)
+        if pending:
+            return
+        if self._catalog_wait and self._scene is not None and self._install_valid:
+            self._catalog_wait = False
+            self._start_build()
+
+    def will_show_3d(self) -> bool:
+        return bool(self._install_valid and not self._gl_failed)
+
+    def begin_switch(self, ship_name: str = "") -> None:
+        """Cancel in-flight 3D work but keep the last usable shell on screen."""
+        self._cancel_build()
+        self._switching = True
+        self._building = True
+        self._catalog_wait = False
+        self._refine_cancelled = False
+        self._ship_name = ship_name or ""
+        self._cpu_stage = ""
         self._grid_filter = None
         self._grid_entity_id = None
         self._grid_isolate_key = None
-        self._mesh_ready = False
-        self._building = False
+        self._isolated_count = None
+        self._refresh_status()
+        self._apply_cancel_refine_chrome()
+
+    def load_structure_data(self, blocks: List[VoxelBlock], scene: Optional[PreviewScene] = None) -> None:
+        self.load_scene(scene, blocks=blocks, voxels=None)
+
+    def load_scene(
+        self,
+        scene: Optional[PreviewScene],
+        *,
+        blocks: Optional[List[VoxelBlock]] = None,
+        voxels: Optional[List[dict]] = None,
+    ) -> None:
+        keep_shell = bool(self._mesh_ready and self._renderer is not None)
+        self._scene = scene
+        self._deferred_voxels = list(voxels or [])
+        self._grid_filter = None
+        self._grid_entity_id = None
+        self._grid_isolate_key = None
+        self._isolated_count = None
         self._cpu_stage = ""
         self._simplified = False
         self._shown_count = 0
-        self._cpu_scene = None
         self._dissect_preparing = False
+        self._refine_cancelled = False
         self._edits = GridEditSession(source_path=self._source_path)
         self._hide_armor = False
         self._hide_layers = 0
         self._hidden_categories.clear()
         self._clear_selection()
+        if not keep_shell:
+            self._mesh_ready = False
+            self._cpu_scene = None
         if self._renderer is not None:
             self._renderer.camera_user_moved = False
             self._renderer.hide_armor = False
             self._renderer.hide_layers = 0
             self._renderer.category_mask = 0
-        want_3d = bool(self._install_valid and scene is not None)
-        self.ship_canvas.load_structure_data(blocks, draw=not want_3d)
+        want_3d = bool(self._install_valid and not self._gl_failed and scene is not None)
+        if want_3d:
+            if blocks:
+                self.ship_canvas.load_structure_data(blocks, draw=False)
+            else:
+                self.ship_canvas.blocks = []
+        else:
+            drawn = list(blocks or [])
+            if not drawn and self._deferred_voxels:
+                drawn = voxels_to_blocks(self._deferred_voxels)
+            self.ship_canvas.load_structure_data(drawn, draw=True)
         self._apply_mode()
         if want_3d:
+            if should_defer_catalog_box_build(self._catalog, self._catalog_in_flight):
+                self._catalog_wait = True
+                self._building = True
+                self._switching = True
+                self._refresh_status()
+                return
             self._start_build()
 
     def filter_by_grid(
@@ -526,11 +615,23 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._grid_filter = grid_name
         self._grid_entity_id = grid_entity_id
         self._grid_isolate_key = key
+        if key and self._scene is not None:
+            if grid_entity_id:
+                self._isolated_count = sum(
+                    1 for b in self._scene.blocks if b.grid_entity_id == grid_entity_id
+                )
+            else:
+                self._isolated_count = sum(
+                    1 for b in self._scene.blocks if b.grid_name == grid_name
+                )
+        else:
+            self._isolated_count = None
         self.ship_canvas.filter_by_grid(grid_name, grid_entity_id)
         if self._mode == "2d" or not self._mesh_ready or self._renderer is None:
             return
         if already:
             self.fit_to_view()
+            self._refresh_status()
             return
         self._sync_user_hidden()
         self._renderer.refit_to_visible()
@@ -550,8 +651,15 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._shown_count = 0
         self._cpu_scene = None
         self._dissect_preparing = False
+        self._switching = False
+        self._catalog_wait = False
+        self._refine_cancelled = False
+        self._ship_name = ""
+        self._isolated_count = None
+        self._deferred_voxels = []
         self._clear_selection()
         self.ship_canvas.clear()
+        self._apply_cancel_refine_chrome()
         self._hide_armor = False
         self._hide_layers = 0
         self._hidden_categories.clear()
@@ -599,18 +707,52 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._job.cancel()
         self._cancel_chunk_job()
 
+    def cancel_refine(self) -> None:
+        """Keep the current shell; drop leftover MWM / interior work."""
+        if not self._mesh_ready:
+            return
+        self._refine_cancelled = True
+        self._dissect_preparing = False
+        self._building = False
+        self._refresh_status()
+        self._apply_cancel_refine_chrome()
+
+    def _apply_cancel_refine_chrome(self) -> None:
+        show = bool(self._building and self._mesh_ready and not self._refine_cancelled)
+        try:
+            if show:
+                if not self._cancel_refine_btn.winfo_ismapped():
+                    self._cancel_refine_btn.pack(side="left", padx=6)
+            else:
+                self._cancel_refine_btn.pack_forget()
+        except Exception:
+            pass
+
+    def _materialize_2d_fallback(self) -> None:
+        if self.ship_canvas.blocks or not self._deferred_voxels:
+            return
+        self.ship_canvas.load_structure_data(voxels_to_blocks(self._deferred_voxels), draw=True)
+
     def _start_build(self) -> None:
         if not self._install_valid or self._gl_failed or self._scene is None:
             return
+        if should_defer_catalog_box_build(self._catalog, self._catalog_in_flight):
+            self._catalog_wait = True
+            self._building = True
+            self._refresh_status()
+            self._apply_mode()
+            return
+        self._catalog_wait = False
+        self._refine_cancelled = False
         gen = self._job.begin()
         self._building = True
-        self._mesh_ready = False
+        if not (self._mesh_ready and self._renderer is not None):
+            self._mesh_ready = False
         self._cpu_stage = ""
         n = len(self._scene.blocks)
         progressive = n > PROGRESSIVE_BLOCK_THRESHOLD
-        self._gl_status.configure(
-            text=f"Building 3D preview…  ({n:,} blocks)" if n else "Building 3D preview…"
-        )
+        self._refresh_status()
+        self._apply_cancel_refine_chrome()
         self._apply_mode()
         scene = self._scene
         catalog = self._catalog
@@ -638,7 +780,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         threading.Thread(target=task, daemon=True).start()
 
     def _on_build_failed(self, generation: int, message: str) -> None:
-        if not self._job.is_current(generation):
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
             return
         self._building = False
         self._mesh_ready = False
@@ -650,15 +792,31 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._apply_mode()
 
     def _on_build_ready(self, generation: int, cpu: PreviewCpuScene, refine: bool = False) -> None:
-        if not self._job.is_current(generation) or not self._install_valid:
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
             return
         renderer = self._ensure_renderer()
         if renderer is None:
             self._building = False
             self._apply_mode()
+            self._materialize_2d_fallback()
             return
+        self._pending_cpu = cpu
+        self._pending_refine = bool(refine)
+        self._cpu_stage = cpu.stage
+        self._shown_count = int(cpu.shown_count or 0)
+        self._refresh_status()
+        self.after(1, lambda: self._commit_cpu_upload(generation))
+
+    def _commit_cpu_upload(self, generation: int) -> None:
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
+            return
+        cpu = getattr(self, "_pending_cpu", None)
+        if cpu is None:
+            return
+        refine = bool(getattr(self, "_pending_refine", False))
         if not self._upload_cpu(cpu):
             return
+        self._switching = False
         self._mesh_ready = True
         self._cpu_scene = cpu
         self._cpu_stage = cpu.stage
@@ -668,19 +826,22 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._apply_dissect_chrome()
         self._sync_user_hidden()
         self._apply_mode()
-        more = bool(refine)
-        if refine and cpu.has_functional_mwm:
+        more = bool(refine) and not self._refine_cancelled
+        if more and cpu.has_functional_mwm:
             self.after(16, lambda: self._start_mwm_refine(generation))
-        elif refine:
+        elif more:
             self.after(16, lambda: self._start_interior_fill(generation))
         elif cpu.huge and cpu.stage == STAGE_FULL and cpu.exploded:
             self.after(16, lambda: self._finish_secondary_upload(generation))
         self._building = more
         self._refresh_status()
+        self._apply_cancel_refine_chrome()
         self._schedule_redraw(interactive=False)
 
     def _start_refine(self, generation: int, stage: str) -> None:
-        if not self._job.is_current(generation) or not self._install_valid:
+        if self._refine_cancelled:
+            return
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
             return
         if self._scene is None:
             return
@@ -704,7 +865,12 @@ class ShipPreviewHost(ctk.CTkFrame):
         threading.Thread(target=task, daemon=True).start()
 
     def _start_mwm_refine(self, generation: int, remaining=None) -> None:
-        if not self._job.is_current(generation) or not self._install_valid or self._scene is None:
+        if self._refine_cancelled:
+            self._building = False
+            self._refresh_status()
+            self._apply_cancel_refine_chrome()
+            return
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._scene is None:
             return
         catalog = self._catalog
         library = self._meshes
@@ -739,7 +905,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         threading.Thread(target=task, daemon=True).start()
 
     def _on_mwm_chunk(self, generation: int, cpu: PreviewCpuScene, leftover) -> None:
-        if not self._job.is_current(generation) or not self._install_valid:
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
             return
         if self._renderer is None or not self._mesh_ready:
             return
@@ -753,14 +919,27 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._refresh_status()
         self._schedule_redraw(interactive=False)
         if leftover:
-            self._building = True
+            self._building = not self._refine_cancelled
+            if self._refine_cancelled:
+                self._refresh_status()
+                self._apply_cancel_refine_chrome()
+                return
             self.after(16, lambda: self._start_mwm_refine(generation, leftover))
         else:
-            self._building = True
+            self._building = not self._refine_cancelled
+            if self._refine_cancelled:
+                self._refresh_status()
+                self._apply_cancel_refine_chrome()
+                return
             self.after(16, lambda: self._start_interior_fill(generation))
 
     def _start_interior_fill(self, generation: int) -> None:
-        if not self._job.is_current(generation) or self._cpu_scene is None:
+        if self._refine_cancelled:
+            self._building = False
+            self._refresh_status()
+            self._apply_cancel_refine_chrome()
+            return
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._cpu_scene is None:
             return
         cpu = self._cpu_scene
         if cpu.exploded:
@@ -775,6 +954,7 @@ class ShipPreviewHost(ctk.CTkFrame):
                     pass
                 self._building = False
                 self._refresh_status()
+                self._apply_cancel_refine_chrome()
             return
         catalog = self._catalog
         library = self._meshes
@@ -791,7 +971,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         threading.Thread(target=task, daemon=True).start()
 
     def _on_interior_filled(self, generation: int) -> None:
-        if not self._job.is_current(generation) or self._cpu_scene is None:
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._cpu_scene is None:
             return
         cpu = self._cpu_scene
         if self._renderer is not None and cpu.exploded:
@@ -805,9 +985,10 @@ class ShipPreviewHost(ctk.CTkFrame):
         else:
             self._building = False
             self._refresh_status()
+            self._apply_cancel_refine_chrome()
 
     def _start_dissect_prepare(self, generation: int, mode: Optional[str] = None) -> None:
-        if not self._job.is_current(generation) or self._cpu_scene is None:
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._cpu_scene is None:
             return
         if self._dissect_preparing:
             return
@@ -832,7 +1013,7 @@ class ShipPreviewHost(ctk.CTkFrame):
 
     def _on_dissect_ready(self, generation: int, mode: str) -> None:
         self._dissect_preparing = False
-        if not self._job.is_current(generation) or self._renderer is None or self._cpu_scene is None:
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._renderer is None or self._cpu_scene is None:
             return
         cpu = self._cpu_scene
         try:
@@ -852,19 +1033,21 @@ class ShipPreviewHost(ctk.CTkFrame):
             pass
         self._building = False
         self._refresh_status()
+        self._apply_cancel_refine_chrome()
         if self._explode > 1e-4:
             self._schedule_redraw(interactive=False)
 
     def _on_refine_failed(self, generation: int, message: str) -> None:
-        if not self._job.is_current(generation):
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
             return
         self._building = False
         self._dissect_preparing = False
         self._toast(f"3D refine failed: {message}", "warning")
         self._refresh_status()
+        self._apply_cancel_refine_chrome()
 
     def _on_refine_ready(self, generation: int, cpu: PreviewCpuScene) -> None:
-        if not self._job.is_current(generation) or not self._install_valid:
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
             return
         if self._renderer is None or not self._mesh_ready:
             return
@@ -900,7 +1083,7 @@ class ShipPreviewHost(ctk.CTkFrame):
             if patch:
                 self._cancel_chunk_job()
                 renderer.patch_assembled(cpu)
-            elif chunked and len(cpu.assembled) > UPLOAD_BATCH_CHUNK:
+            elif chunked and len(cpu.assembled) > FIRST_UPLOAD_CHUNK:
                 more = renderer.begin_cpu_upload(
                     cpu,
                     grid_filter=self._grid_filter,
@@ -910,7 +1093,9 @@ class ShipPreviewHost(ctk.CTkFrame):
                 )
                 if more:
                     gen = self._job.generation
-                    self._upload_chunk_job = self.after_idle(lambda: self._continue_gl_upload(gen))
+                    self._upload_chunk_job = self.after(
+                        1, lambda: self._continue_gl_upload(gen, first=True)
+                    )
             else:
                 renderer.upload_cpu_scene(
                     cpu,
@@ -936,22 +1121,25 @@ class ShipPreviewHost(ctk.CTkFrame):
                 self._apply_mode()
             return False
 
-    def _continue_gl_upload(self, generation: int) -> None:
+    def _continue_gl_upload(self, generation: int, first: bool = False) -> None:
         self._upload_chunk_job = None
-        if not self._job.is_current(generation) or self._renderer is None:
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
+            return
+        if self._renderer is None:
             return
         try:
-            more = self._renderer.continue_cpu_upload()
+            chunk = FIRST_UPLOAD_CHUNK if first else UPLOAD_BATCH_CHUNK
+            more = self._renderer.continue_cpu_upload(chunk)
         except Exception:
             return
         self._sync_user_hidden()
         self._refresh_status()
         self._schedule_redraw(interactive=False)
         if more:
-            self._upload_chunk_job = self.after_idle(lambda: self._continue_gl_upload(generation))
+            self._upload_chunk_job = self.after(1, lambda: self._continue_gl_upload(generation))
 
     def _finish_secondary_upload(self, generation: int) -> None:
-        if not self._job.is_current(generation) or not self._install_valid:
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
             return
         if self._renderer is None or not self._mesh_ready:
             return
@@ -992,32 +1180,35 @@ class ShipPreviewHost(ctk.CTkFrame):
             self.ship_canvas.pack(fill="both", expand=True)
             if self.ship_canvas.blocks:
                 self.ship_canvas.refresh()
+            else:
+                self._materialize_2d_fallback()
 
     def _refresh_status(self) -> None:
-        if self._scene is None:
+        if self._scene is None and not self._switching and not self._catalog_wait:
             self._gl_status.configure(text="No ship loaded")
             return
         uploading = self._renderer is not None and self._renderer.upload_pending()
         uploaded = self._renderer.uploaded_instance_count() if self._renderer is not None else 0
-        if uploading:
-            shown = uploaded
-        elif self._simplified:
-            shown = self._shown_count
-        else:
-            shown = None
-        text = scene_bounds_caption(
-            self._scene,
-            self._grid_filter,
-            self._declared_total,
-            shown=shown,
-            simplified=self._simplified,
-            grid_entity_id=self._grid_entity_id,
+        shown = uploaded if uploading else self._shown_count
+        total = self._declared_total or (len(self._scene.blocks) if self._scene is not None else 0)
+        isolated_name = self._grid_filter if self._grid_isolate_key else None
+        text = staged_3d_caption(
+            switching=self._switching,
+            catalog_wait=self._catalog_wait,
+            building=self._building,
+            mesh_ready=self._mesh_ready,
+            stage=self._cpu_stage,
+            shown=shown or total,
+            total=total,
             uploading=uploading,
+            uploaded=uploaded,
+            isolated_name=isolated_name,
+            isolated_count=self._isolated_count,
+            refining=bool(self._building and self._mesh_ready and not self._refine_cancelled),
+            ship_name=self._ship_name,
         )
-        if self._building and not self._mesh_ready:
-            text = "Building 3D preview…"
-        elif self._building:
-            text += "  ·  refining"
+        if isolated_name and self._mesh_ready and not self._building:
+            text = f"{isolated_name}  ·  {self._isolated_count or 0:,} blocks"
         if self._explode > 1e-4:
             mode = _MODE_LABELS.get(self._dissect_mode, "Peel")
             text += f"  ·  {mode} {int(round(self._explode * 100))}%"

@@ -99,7 +99,13 @@ class PreviewScene:
         )
 
 
-def extract_scene_from_root(root: ET.Element) -> PreviewScene:
+def extract_scene_from_root(
+    root: ET.Element,
+    token=None,
+    generation: int = 0,
+) -> PreviewScene:
+    if token is not None:
+        token.raise_if_stale(generation)
     grids = _iter_cube_grids(root)
     if not grids:
         fake = _single_grid_from_root(root)
@@ -107,7 +113,7 @@ def extract_scene_from_root(root: ET.Element) -> PreviewScene:
     if not grids:
         return PreviewScene()
 
-    parsed = [_parse_grid(grid, idx) for idx, grid in enumerate(grids)]
+    parsed = [_parse_grid(grid, idx, token=token, generation=generation) for idx, grid in enumerate(grids)]
     parsed = [g for g in parsed if g is not None]
     if not parsed:
         return PreviewScene()
@@ -197,13 +203,15 @@ def _single_grid_from_root(root: ET.Element) -> Optional[ET.Element]:
     return root
 
 
-def _parse_grid(grid: ET.Element, idx: int) -> Optional[dict]:
+def _parse_grid(grid: ET.Element, idx: int, token=None, generation: int = 0) -> Optional[dict]:
     name = _grid_label(grid, f"Grid {idx + 1}")
     entity_id = _text(grid, "EntityId") or f"grid_{idx}"
     grid_size = _text(grid, "GridSizeEnum") or "Large"
     pose, has_pose = _grid_pose(grid)
     blocks = []
     for b_idx, block in enumerate(safe_xml.iter_blocks_in_grid(grid)):
+        if token is not None and (b_idx & 255) == 0:
+            token.raise_if_stale(generation)
         blocks.append(_parse_block(block, b_idx))
     if not blocks and idx > 0:
         return None
