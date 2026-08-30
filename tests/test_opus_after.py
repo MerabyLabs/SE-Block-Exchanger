@@ -334,8 +334,14 @@ class BuildReadyStatusTests(unittest.TestCase):
         host._sync_user_hidden = lambda: None
         host._apply_mode = lambda: None
         host._schedule_redraw = lambda **_k: None
-        host.after = lambda *_a, **_k: None
+        queued = []
+        host.after = lambda _ms, fn=None, **_k: queued.append(fn)
         host._building = True
+        host._refine_cancelled = False
+        host._switching = False
+        host._pending_cpu = None
+        host._pending_refine = False
+        host._apply_cancel_refine_chrome = lambda: None
         seen = []
 
         def _status() -> None:
@@ -351,7 +357,9 @@ class BuildReadyStatusTests(unittest.TestCase):
             exploded=False,
         )
         host._on_build_ready(1, cpu, refine=False)
-        self.assertEqual(seen, [False])
+        self.assertTrue(queued)
+        queued[0]()
+        self.assertIn(False, seen)
         self.assertFalse(host._building)
 
 
