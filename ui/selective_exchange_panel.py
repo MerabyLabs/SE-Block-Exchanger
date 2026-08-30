@@ -14,7 +14,7 @@ from blueprint_scanner import BlueprintInfo
 from mappings import build_registry
 
 
-TABLE_ROW_CHUNK = 12
+TABLE_ROW_CHUNK = 4
 
 
 def table_build_progress(done: int, total: int) -> str:

@@ -273,6 +273,7 @@ def _delete_matching_blocks(root: ET.Element, identities: Sequence[Identity]) ->
 def collapse_min_only_moves(
     root: ET.Element,
     moves: Dict[Identity, Tuple[int, int, int]],
+    index: Optional[dict] = None,
 ) -> Dict[Identity, Tuple[int, int, int]]:
     """
     Sequential Min-only nudges record a new key at each dest. If that key
@@ -281,7 +282,8 @@ def collapse_min_only_moves(
     if not moves:
         return {}
     collapsed = dict(moves)
-    index = _index_cube_blocks(root)
+    if index is None:
+        index = _index_cube_blocks(root)
     changed = True
     while changed:
         changed = False
@@ -310,11 +312,13 @@ def retarget_min_only_deletes(
     root: ET.Element,
     deleted: Sequence[Identity],
     moves: Dict[Identity, Tuple[int, int, int]],
+    index: Optional[dict] = None,
 ) -> List[Identity]:
     """Move-then-delete without EntityId uses the dest Min; map it back to the source."""
     if not deleted:
         return []
-    index = _index_cube_blocks(root)
+    if index is None:
+        index = _index_cube_blocks(root)
     out: List[Identity] = []
     for ident in deleted:
         gid, mn, eid = ident
@@ -345,12 +349,14 @@ def apply_edits_to_tree(
     """Remove deleted CubeBlocks and rewrite Min for moves. Returns (deleted, moved)."""
     root = tree.getroot()
     raw_moves = dict(moves)
-    collapsed_moves = collapse_min_only_moves(root, raw_moves)
-    deleted_list = retarget_min_only_deletes(root, list(deleted), collapsed_moves)
+    index = _index_cube_blocks(root)
+    collapsed_moves = collapse_min_only_moves(root, raw_moves, index=index)
+    deleted_list = retarget_min_only_deletes(root, list(deleted), collapsed_moves, index=index)
     deleted_set = set(deleted_list)
     removed = _delete_matching_blocks(root, deleted_list)
     # Rebuild after deletes so moves never touch detached nodes or stale keys.
-    index = _index_cube_blocks(root)
+    if removed:
+        index = _index_cube_blocks(root)
     moved = 0
     for ident, nxt in collapsed_moves.items():
         if ident in deleted_set:

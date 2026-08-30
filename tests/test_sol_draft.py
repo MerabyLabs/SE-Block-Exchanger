@@ -4,6 +4,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from blueprint_analytics import BlueprintAnalyticsEngine, first_free_min
 from blueprint_document import (
     JobToken,
     install_detection_applies,
@@ -240,8 +241,13 @@ class SelectiveTableChunkTests(unittest.TestCase):
 
 
 class ApplyFixOriginTests(unittest.TestCase):
-    def test_control_fix_inserts_at_origin_even_when_occupied(self):
-        from blueprint_analytics import BlueprintAnalyticsEngine
+    def test_prefers_origin_when_empty(self):
+        self.assertEqual(first_free_min({(1, 0, 0), (2, 0, 0)}), (0, 0, 0))
+
+    def test_occupied_origin_uses_first_empty_neighbor(self):
+        self.assertEqual(first_free_min({(0, 0, 0), (5, 0, 0)}), (1, 0, 0))
+
+    def test_control_fix_skips_occupied_origin(self):
         import tempfile
 
         xml = NAMELESS_TWO
@@ -251,17 +257,26 @@ class ApplyFixOriginTests(unittest.TestCase):
             engine = BlueprintAnalyticsEngine()
             self.assertTrue(engine.apply_fix(path, "add_control_block"))
             root = ET.parse(path).getroot()
-            mins = [
-                (
-                    int(float(block.find("Min").attrib.get("x", 0))),
-                    int(float(block.find("Min").attrib.get("y", 0))),
-                    int(float(block.find("Min").attrib.get("z", 0))),
+            blocks = list(root.findall(".//CubeBlocks/*"))
+            mins = []
+            cockpit_min = None
+            for block in blocks:
+                min_elem = block.find("Min")
+                if min_elem is None:
+                    continue
+                mn = (
+                    int(float(min_elem.attrib.get("x", 0))),
+                    int(float(min_elem.attrib.get("y", 0))),
+                    int(float(min_elem.attrib.get("z", 0))),
                 )
-                for block in root.findall(".//CubeBlocks/*")
-                if block.find("Min") is not None
-            ]
-            self.assertIn((0, 0, 0), mins)
-            self.assertGreaterEqual(len(root.findall(".//CubeBlocks/*")), 3)
+                mins.append(mn)
+                subtype = (block.findtext("SubtypeName") or "").strip()
+                if "Cockpit" in subtype:
+                    cockpit_min = mn
+            self.assertEqual(len(blocks), 3)
+            self.assertEqual(len(set(mins)), 3)
+            self.assertEqual(cockpit_min, (1, 0, 0))
+            self.assertNotEqual(cockpit_min, (0, 0, 0))
 
 
 def _hex_rgb(color: str):

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import customtkinter as ctk
-from PIL import Image, ImageDraw, ImageTk
+import numpy as np
+from PIL import Image, ImageTk
 
 from ui.theme import TacticalTheme
 
@@ -43,6 +44,21 @@ def _hex_to_rgb(color: str) -> Tuple[int, int, int]:
     return int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
 
 
+def _clip_fill(
+    arr: np.ndarray,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    color: Tuple[int, int, int],
+) -> None:
+    h, w = arr.shape[0], arr.shape[1]
+    xa, xb = max(0, min(x0, x1)), min(w, max(x0, x1) + 1)
+    ya, yb = max(0, min(y0, y1)), min(h, max(y0, y1) + 1)
+    if xa < xb and ya < yb:
+        arr[ya:yb, xa:xb] = color
+
+
 def rasterize_projected_cells(
     cells: Dict[Tuple[int, int], Tuple[str, str]],
     *,
@@ -57,10 +73,12 @@ def rasterize_projected_cells(
     draw_grid: bool,
 ) -> Image.Image:
     """One bitmap for the 2D map — same colors/legend as per-cell rectangles."""
-    image = Image.new("RGB", (max(1, int(width)), max(1, int(height))), MAP_BG_RGB)
+    w = max(1, int(width))
+    h = max(1, int(height))
+    arr = np.empty((h, w, 3), dtype=np.uint8)
+    arr[:] = MAP_BG_RGB
     if not cells:
-        return image
-    draw = ImageDraw.Draw(image)
+        return Image.fromarray(arr, "RGB")
     cell = max(1.0, float(step))
 
     def project(gx: int, gy: int) -> Tuple[float, float]:
@@ -77,22 +95,29 @@ def rasterize_projected_cells(
     if draw_grid and (max_gx - min_gx) <= 80 and (max_gy - min_gy) <= 80:
         for gx in range(min_gx, max_gx + 2):
             x0, y0 = project(gx, min_gy)
-            x1, y1 = project(gx, max_gy + 1)
-            draw.line([(x0, y0), (x1, y1)], fill=MAP_GRID_RGB, width=1)
+            _x1, y1 = project(gx, max_gy + 1)
+            _clip_fill(arr, int(round(x0)), int(round(y0)), int(round(x0)), int(round(y1)), MAP_GRID_RGB)
         for gy in range(min_gy, max_gy + 2):
             x0, y0 = project(min_gx, gy)
-            x1, y1 = project(max_gx + 1, gy)
-            draw.line([(x0, y0), (x1, y1)], fill=MAP_GRID_RGB, width=1)
+            x1, _y1 = project(max_gx + 1, gy)
+            _clip_fill(arr, int(round(x0)), int(round(y0)), int(round(x1)), int(round(y0)), MAP_GRID_RGB)
 
-    inset = 1 if cell >= 8 else 0
+    inset = cell >= 8
+    size = max(1, int(round(cell)))
     for (gx, gy), (fill, outline) in cells.items():
         px, py = project(gx, gy)
-        x1 = px + cell - 1
-        y1 = py + cell - 1
-        draw.rectangle([px, py, x1, y1], fill=_hex_to_rgb(fill))
+        x0 = int(round(px))
+        y0 = int(round(py))
+        x1 = x0 + size - 1
+        y1 = y0 + size - 1
+        _clip_fill(arr, x0, y0, x1, y1, _hex_to_rgb(fill))
         if inset and outline:
-            draw.rectangle([px, py, x1, y1], outline=_hex_to_rgb(outline))
-    return image
+            rgb = _hex_to_rgb(outline)
+            _clip_fill(arr, x0, y0, x1, y0, rgb)
+            _clip_fill(arr, x0, y1, x1, y1, rgb)
+            _clip_fill(arr, x0, y0, x0, y1, rgb)
+            _clip_fill(arr, x1, y0, x1, y1, rgb)
+    return Image.fromarray(arr, "RGB")
 
 
 @dataclass

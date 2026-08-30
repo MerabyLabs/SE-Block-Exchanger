@@ -7,10 +7,10 @@ from __future__ import annotations
 import csv
 import json
 import xml.etree.ElementTree as ET
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Set
+from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 import safe_xml
 from resource_paths import resource_path
@@ -201,6 +201,57 @@ class BlockCostDatabase:
                 },
             }
         return None
+
+
+_NEIGHBOR_DELTAS = (
+    (1, 0, 0),
+    (-1, 0, 0),
+    (0, 1, 0),
+    (0, -1, 0),
+    (0, 0, 1),
+    (0, 0, -1),
+)
+
+
+def occupied_mins_in_cube_blocks(cube_blocks: ET.Element) -> Set[Tuple[int, int, int]]:
+    """Min cells already used by cubes in this CubeBlocks list."""
+    occupied: Set[Tuple[int, int, int]] = set()
+    for block in cube_blocks:
+        min_elem = block.find("Min")
+        if min_elem is None:
+            min_elem = block.find("{*}Min")
+        if min_elem is None:
+            occupied.add((0, 0, 0))
+            continue
+        occupied.add(
+            (
+                int(float(min_elem.attrib.get("x", 0))),
+                int(float(min_elem.attrib.get("y", 0))),
+                int(float(min_elem.attrib.get("z", 0))),
+            )
+        )
+    return occupied
+
+
+def first_free_min(occupied: Iterable[Tuple[int, int, int]]) -> Tuple[int, int, int]:
+    """Prefer origin; otherwise the first empty neighbor of the occupied blob."""
+    taken = {(int(x), int(y), int(z)) for x, y, z in occupied}
+    origin = (0, 0, 0)
+    if origin not in taken:
+        return origin
+    seen = {origin}
+    queue = deque([origin])
+    while queue:
+        x, y, z = queue.popleft()
+        for dx, dy, dz in _NEIGHBOR_DELTAS:
+            nxt = (x + dx, y + dy, z + dz)
+            if nxt in seen:
+                continue
+            if nxt not in taken:
+                return nxt
+            seen.add(nxt)
+            queue.append(nxt)
+    return (1, 0, 0)
 
 
 class BlueprintAnalyticsEngine:
@@ -472,11 +523,13 @@ class BlueprintAnalyticsEngine:
         else:
             return False
 
+        free = first_free_min(occupied_mins_in_cube_blocks(cube_blocks))
         new_block = ET.SubElement(cube_blocks, "MyObjectBuilder_CubeBlock")
         new_block.set("{http://www.w3.org/2001/XMLSchema-instance}type", block_type)
         ET.SubElement(new_block, "SubtypeName").text = subtype
-        # Origin is valid SE XML even if another cube already sits at 0,0,0.
-        ET.SubElement(new_block, "Min").attrib.update({"x": "0", "y": "0", "z": "0"})
+        ET.SubElement(new_block, "Min").attrib.update(
+            {"x": str(free[0]), "y": str(free[1]), "z": str(free[2])}
+        )
         ET.SubElement(new_block, "BlockOrientation").attrib.update(
             {"Forward": "Forward", "Up": "Up"}
         )
