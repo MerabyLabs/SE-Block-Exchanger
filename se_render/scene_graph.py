@@ -49,7 +49,7 @@ class BlockInstance:
     forward: str
     up: str
     hsv: Tuple[float, float, float]
-    color_rgb: Tuple[float, float, float]
+    color_rgb: Optional[Tuple[float, float, float]]
     skin: str
     world_matrix: List[List[float]]
     local_min: Tuple[int, int, int]
@@ -244,7 +244,7 @@ def _parse_block(block: ET.Element, index: int) -> dict:
     else:
         mn = (index % 5, index // 25, (index // 5) % 5)
 
-    subtype = _kid_text(kids, "SubtypeName") or _kid_text(kids, "SubtypeId") or "Block"
+    subtype = _kid_text(kids, "SubtypeName") or _kid_text(kids, "SubtypeId") or ""
     type_id = _type_id(block)
     orient = kids.get("BlockOrientation")
     forward = "Forward"
@@ -254,8 +254,12 @@ def _parse_block(block: ET.Element, index: int) -> dict:
         up = orient.attrib.get("Up") or _text(orient, "Up") or "Up"
 
     hsv_elem = kids.get("ColorMaskHSV")
-    hsv = parse_xyz_attrib(hsv_elem, 0.0) if hsv_elem is not None else (0.0, 0.0, 0.0)
-    color = _color_rgb(hsv)
+    if hsv_elem is not None:
+        hsv = parse_xyz_attrib(hsv_elem, 0.0)
+        color = _color_rgb(hsv)
+    else:
+        hsv = (0.0, 0.0, 0.0)
+        color = None
     skin = _kid_text(kids, "SkinSubtypeId") or "None"
     entity_id = _kid_text(kids, "EntityId") or ""
     xsi_type = block.attrib.get(f"{XSI}type", "") or block.attrib.get("xsi:type", "")

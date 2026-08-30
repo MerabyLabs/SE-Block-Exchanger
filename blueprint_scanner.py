@@ -249,7 +249,8 @@ class BlueprintScanner:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             files = {key: record.to_payload() for key, record in self._meta.items()}
-            path.write_text(json.dumps({"version": 1, "files": files}, separators=(",", ":")), encoding="utf-8")
+            payload = json.dumps({"version": 1, "files": files}, separators=(",", ":"))
+            safe_xml.atomic_write_text(path, payload)
         except OSError:
             return
 

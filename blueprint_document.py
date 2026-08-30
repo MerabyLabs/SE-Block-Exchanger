@@ -132,12 +132,13 @@ class BlueprintDocument:
         light_ids = ArmorBlockReplacer.LIGHT_TO_HEAVY
         heavy_ids = ArmorBlockReplacer.HEAVY_TO_LIGHT
         for block in scene.blocks:
-            subtype_counts[block.subtype] += 1
+            if block.subtype:
+                subtype_counts[block.subtype] += 1
             if block.subtype in light_ids:
                 light += 1
             if block.subtype in heavy_ids:
                 heavy += 1
-            if "thrust" in block.subtype.lower() and block.forward:
+            if block.subtype and "thrust" in block.subtype.lower() and block.forward:
                 thruster_forwards[block.forward] += 1
         grid_size = "Unknown"
         if scene.grids:

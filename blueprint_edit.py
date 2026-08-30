@@ -159,8 +159,9 @@ def _matches(ident: Identity, grid_eid: str, block: ET.Element) -> bool:
     if gid and gid != str(grid_eid or ""):
         return False
     block_eid = _entity_id(block)
-    if eid and block_eid:
-        return eid == block_eid
+    if eid:
+        # A present EntityId never falls back to Min — that deletes the wrong block.
+        return bool(block_eid) and eid == block_eid
     return mn == _min_from_element(block)
 
 
@@ -215,6 +216,26 @@ def _lookup_indexed_block(ident: Identity, index: dict) -> Optional[Tuple[ET.Ele
     return None
 
 
+def _delete_matching_blocks(root: ET.Element, identities: Sequence[Identity]) -> int:
+    """Remove every live CubeBlock that matches a delete identity."""
+    if not identities:
+        return 0
+    idents = list(identities)
+    removed = 0
+    for grid in _iter_cube_grids(root):
+        grid_eid = _text(grid, "EntityId") or ""
+        parent = _cube_blocks_parent(grid)
+        for block in list(_blocks_in_grid(grid)):
+            if not any(_matches(ident, grid_eid, block) for ident in idents):
+                continue
+            try:
+                parent.remove(block)
+            except ValueError:
+                continue
+            removed += 1
+    return removed
+
+
 def apply_edits_to_tree(
     tree: ET.ElementTree,
     deleted: Iterable[Identity],
@@ -225,18 +246,9 @@ def apply_edits_to_tree(
     root = tree.getroot()
     deleted_list = list(deleted)
     deleted_set = set(deleted_list)
+    removed = _delete_matching_blocks(root, deleted_list)
+    # Rebuild after deletes so moves never touch detached nodes or stale keys.
     index = _index_cube_blocks(root)
-    removed = 0
-    for ident in deleted_list:
-        hit = _lookup_indexed_block(ident, index)
-        if hit is None:
-            continue
-        parent, block = hit
-        try:
-            parent.remove(block)
-        except ValueError:
-            continue
-        removed += 1
     moved = 0
     for ident, nxt in moves.items():
         if ident in deleted_set:
@@ -258,14 +270,35 @@ def apply_edits_to_tree(
     return removed, moved
 
 
+def _direct_child(parent: ET.Element, tag: str) -> Optional[ET.Element]:
+    for child in parent:
+        if safe_xml.local_tag(child.tag) == tag:
+            return child
+    return None
+
+
+def _ship_blueprint_elem(root: ET.Element) -> Optional[ET.Element]:
+    found = root.find(".//ShipBlueprint")
+    if found is None:
+        found = root.find(".//{*}ShipBlueprint")
+    return found
+
+
 def _rename_blueprint(root: ET.Element, name: str) -> None:
-    for tag in ("DisplayName", "CustomName"):
-        for node in list(root.findall(f".//{tag}")) + list(root.findall(f".//{{*}}{tag}")):
-            if node is not None:
-                node.text = name
-    for sub in list(root.findall(".//Id/SubtypeId")) + list(root.findall(".//{*}Id/{*}SubtypeId")):
-        if sub is not None:
-            sub.text = name
+    """Rename only the blueprint-level DisplayName and ShipBlueprint/Id/SubtypeId."""
+    ship = _ship_blueprint_elem(root)
+    scope = ship if ship is not None else root
+    display = _direct_child(scope, "DisplayName")
+    if display is not None:
+        display.text = name
+    ident = _direct_child(scope, "Id")
+    if ident is None:
+        return
+    if "Subtype" in ident.attrib:
+        ident.set("Subtype", name)
+    subtype = _direct_child(ident, "SubtypeId")
+    if subtype is not None:
+        subtype.text = name
 
 
 def save_blueprint_as(
@@ -335,6 +368,9 @@ __all__ = [
     "Identity",
     "apply_edits_to_tree",
     "copy_blueprint_folder",
+    "_index_cube_blocks",
+    "_lookup_indexed_block",
+    "_rename_blueprint",
     "nudge_block_instance",
     "resolve_blueprint_dir",
     "save_blueprint_as",

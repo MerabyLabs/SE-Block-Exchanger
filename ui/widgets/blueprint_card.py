@@ -102,11 +102,11 @@ class BlueprintCard(ctk.CTkFrame):
 
     def _on_click(self, event):
         if self._on_select:
-            self._on_select(self.index, multi=False)
+            self._on_select(self, multi=False)
 
     def _on_ctrl_click(self, event):
         if self._on_select:
-            self._on_select(self.index, multi=True)
+            self._on_select(self, multi=True)
         return "break"
 
     def _on_enter(self, event):

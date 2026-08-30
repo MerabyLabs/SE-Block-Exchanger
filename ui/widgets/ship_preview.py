@@ -667,18 +667,16 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._apply_dissect_chrome()
         self._sync_user_hidden()
         self._apply_mode()
-        self._refresh_status()
-        self._schedule_redraw(interactive=False)
-        more = False
+        more = bool(refine)
         if refine and cpu.has_functional_mwm:
-            more = True
             self.after(16, lambda: self._start_mwm_refine(generation))
         elif refine:
-            more = True
             self.after(16, lambda: self._start_interior_fill(generation))
         elif cpu.huge and cpu.stage == STAGE_FULL and cpu.exploded:
             self.after(16, lambda: self._finish_secondary_upload(generation))
         self._building = more
+        self._refresh_status()
+        self._schedule_redraw(interactive=False)
 
     def _start_refine(self, generation: int, stage: str) -> None:
         if not self._job.is_current(generation) or not self._install_valid:
@@ -1531,10 +1529,13 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._hidden_categories.clear()
         self._hide_armor = False
         self._isolated = False
+        if self._edits is not None:
+            self._edits.hidden.clear()
         if self._renderer is not None:
             self._renderer.hidden_subtypes = set()
             self._renderer.hide_armor = False
             self._renderer.isolate_id = -1.0
+            self._renderer.hidden_ids = set()
             self._sync_user_hidden()
         try:
             self._layer_slider.set(0)

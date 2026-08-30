@@ -40,6 +40,7 @@ from se_render.occupancy import (
     relax_culling,
     should_relax_culling,
 )
+from se_render.hsv import hsv_offset_to_rgb
 from se_render.orientation import cell_size_meters, mul_mat4, translation_mat4
 from se_render.preview_style import (
     EXTREME_BLOCK_THRESHOLD,
@@ -356,6 +357,8 @@ def _build_instance_columns(
         else:
             models[i] = _flatten_model(_instance_model(block, size))
         rgb = block.color_rgb
+        if rgb is None:
+            rgb = hsv_offset_to_rgb(0.0, 0.0, 0.0)
         tkey = (rgb[0], rgb[1], rgb[2], style.is_armor, style.tint_mix, style.category)
         tinted = tint_map.get(tkey)
         if tinted is None:

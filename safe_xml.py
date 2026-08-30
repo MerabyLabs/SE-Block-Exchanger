@@ -33,6 +33,31 @@ except ImportError:  # pragma: no cover - exercised only when defusedxml absent
     HARDENED = False
 
 
+def _atomic_temp_path(target: Path) -> Path:
+    return target.with_name(f"{target.name}.tmp_{os.getpid()}_{secrets.token_hex(8)}")
+
+
+def atomic_write_text(
+    file_path: Union[Path, str],
+    text: str,
+    encoding: str = "utf-8",
+) -> None:
+    """Atomically replace a text file via a sibling temp path."""
+    target = Path(file_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = _atomic_temp_path(target)
+    try:
+        temp_file.write_text(text, encoding=encoding)
+        temp_file.replace(target)
+    except Exception:
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+            except OSError:
+                pass
+        raise
+
+
 def safe_write(
     tree: ET.ElementTree[ET.Element],
     file_path: Union[Path, str],
@@ -42,9 +67,7 @@ def safe_write(
     """Atomically write an ElementTree using a sibling temp file and replace()."""
     target = Path(file_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = target.with_name(
-        f"{target.name}.tmp_{os.getpid()}_{secrets.token_hex(8)}"
-    )
+    temp_file = _atomic_temp_path(target)
     try:
         tree.write(temp_file, encoding=encoding, xml_declaration=xml_declaration)
         temp_file.replace(target)
@@ -146,6 +169,7 @@ def iter_blocks_in_grid(grid: ET.Element) -> List[ET.Element]:
 
 __all__ = [
     "parse",
+    "atomic_write_text",
     "safe_write",
     "get_subtype",
     "get_text",

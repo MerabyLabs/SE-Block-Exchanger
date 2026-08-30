@@ -320,10 +320,21 @@ class TacticalCommandCenter(ctk.CTk):
         """First layout/paint happens before Steam-library install detection."""
         if self._closing:
             return
-        self._se_install_status = resolve_install(
-            self.settings.space_engineers_install,
-            allow_detect=not self.settings.space_engineers_cleared,
-        )
+        saved = self.settings.space_engineers_install
+        allow_detect = not self.settings.space_engineers_cleared
+
+        def task() -> None:
+            status = resolve_install(saved, allow_detect=allow_detect)
+            self._ui(lambda: self._on_install_resolved(status))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_install_resolved(self, status) -> None:
+        if self._closing:
+            return
+        if self.settings.space_engineers_cleared:
+            status = resolve_install("", allow_detect=False)
+        self._se_install_status = status
         self._apply_se_install_state()
 
     def _apply_se_install_state(self) -> None:
@@ -348,7 +359,18 @@ class TacticalCommandCenter(ctk.CTk):
                 meshes = MeshLibrary(install)
                 self._ui(lambda: self._on_se_catalog_ready(catalog, meshes, generation))
             except Exception as exc:
-                self._ui(lambda msg=str(exc): self.toasts.toast(f"Block catalog failed: {msg}", level="warning"))
+                message = str(exc)
+
+                def _fail() -> None:
+                    if not catalog_completion_allowed(
+                        self._catalog_token,
+                        generation,
+                        cleared=self.settings.space_engineers_cleared,
+                    ):
+                        return
+                    self.toasts.toast(f"Block catalog failed: {message}", level="warning")
+
+                self._ui(_fail)
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -566,8 +588,7 @@ class TacticalCommandCenter(ctk.CTk):
                 )
                 if not self._scan_token.is_current(generation):
                     return
-                self.blueprints = blueprints
-                self._ui(self._on_blueprints_loaded)
+                self._ui(lambda bps=blueprints, gen=generation: self._on_blueprints_loaded(bps, gen))
             except FileNotFoundError:
                 if self._scan_token.is_current(generation):
                     self._ui(self._on_scan_not_found)
@@ -579,7 +600,11 @@ class TacticalCommandCenter(ctk.CTk):
 
         threading.Thread(target=load_task, daemon=True).start()
 
-    def _on_blueprints_loaded(self):
+    def _on_blueprints_loaded(self, blueprints=None, generation=None):
+        if generation is not None and not self._scan_token.is_current(generation):
+            return
+        if blueprints is not None:
+            self.blueprints = blueprints
         count = len(self.blueprints)
         self.header.set_blueprint_count(count)
         self.footer.set_status(f"{count} blueprint{'s' if count != 1 else ''} loaded")
@@ -725,6 +750,7 @@ class TacticalCommandCenter(ctk.CTk):
             grid_size=bp.grid_size,
             thruster_forwards=getattr(bp, "thruster_forwards", None),
             thruster_count=getattr(bp, "thruster_count", None),
+            block_count=bp.block_count,
         )
         comparison = self.analytics_engine.compare_conversion_cost_from_result(
             analytics,
@@ -1454,18 +1480,38 @@ class TacticalCommandCenter(ctk.CTk):
 
     def _refresh_after_inplace_edit(self, bp: BlueprintInfo) -> None:
         """Re-read the edited bp.sbc so Analytics / Convert / XML / Subgrids match disk."""
-        self._documents.invalidate(bp.path)
+        path = bp.path
+        display = bp.display_name
+        self._documents.invalidate(path)
         self._document = None
-        refreshed = self.scanner.refresh_path(bp.path)
+        self.preview_panel.invalidate_xml(path / "bp.sbc")
+        generation = self._inspect_token.begin()
+
+        def work() -> None:
+            try:
+                refreshed = self.scanner.refresh_path(path)
+            except Exception as exc:
+                message = str(exc)
+                self._ui(lambda: self.toasts.toast(f"Reload after fix failed: {message}", level="warning"))
+                return
+            self._ui(lambda: self._on_inplace_refreshed(path, display, refreshed, generation))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_inplace_refreshed(self, path, display, refreshed, generation) -> None:
+        if self._closing:
+            return
+        selected = self.selected_blueprint.path if self.selected_blueprint else None
+        if not inspect_result_applies(self._inspect_token, generation, selected, path):
+            return
         if refreshed is not None:
             self.selected_blueprint = refreshed
             remapped = self.scanner.remap_cached()
             self.blueprints = remapped
             self.blueprint_panel.set_blueprints(remapped)
-            self.blueprint_panel.select_blueprint_by_name(refreshed.display_name, notify=False)
+            self.blueprint_panel.select_blueprint_by_name(refreshed.display_name or display, notify=False)
             self.control_panel.update_details(refreshed)
             self.preview_panel.update_intel(refreshed, self.conversion_mode)
-        self.preview_panel.invalidate_xml(bp.path / "bp.sbc")
         if self.selected_blueprint:
             self._apply_instant_inspect(self.selected_blueprint)
         if self.preview_panel.current_tab() == "Subgrids":

@@ -220,8 +220,18 @@ class BlueprintAnalyticsEngine:
         grid_size = self._detect_grid_size(root)
         subtype_counts: Dict[str, int] = Counter()
         thruster_forwards: Dict[str, int] = Counter()
-        blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
+        raw_count = 0
+        grids = safe_xml.iter_cube_grids(root)
+        if grids:
+            blocks = []
+            for grid in grids:
+                blocks.extend(safe_xml.iter_blocks_in_grid(grid))
+        else:
+            blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock") or root.findall(
+                ".//MyObjectBuilder_CubeBlock"
+            )
         for block in blocks:
+            raw_count += 1
             subtype = self._get_block_subtype(block)
             if not subtype:
                 continue
@@ -237,6 +247,7 @@ class BlueprintAnalyticsEngine:
             blueprint_name=blueprint_name,
             grid_size=grid_size,
             thruster_forwards=thruster_forwards,
+            block_count=raw_count,
         )
 
     def analyze_counts(
@@ -247,6 +258,7 @@ class BlueprintAnalyticsEngine:
         grid_size: str = "Unknown",
         thruster_forwards: Optional[Mapping[str, int]] = None,
         thruster_count: Optional[int] = None,
+        block_count: Optional[int] = None,
     ) -> BlueprintAnalyticsResult:
         component_totals: Dict[str, int] = defaultdict(int)
         category_totals: Dict[str, int] = defaultdict(int)
@@ -282,9 +294,11 @@ class BlueprintAnalyticsEngine:
             thruster_count=thruster_count,
         )
 
+        named_total = sum(counted.values())
+        total_blocks = named_total if block_count is None else max(int(block_count), named_total)
         return BlueprintAnalyticsResult(
             blueprint_name=blueprint_name,
-            block_count=sum(counted.values()),
+            block_count=total_blocks,
             block_counts=dict(sorted(counted.items())),
             category_counts=dict(sorted(category_totals.items())),
             unknown_subtypes=sorted(unknown_subtypes),

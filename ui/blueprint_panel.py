@@ -1,7 +1,7 @@
 """Left panel with searchable blueprint card list."""
 
 import customtkinter as ctk
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Sequence
 from ui.theme import TacticalTheme
 from ui.widgets.blueprint_card import BlueprintCard
 
@@ -11,6 +11,39 @@ def highlight_cards_by_visible_index(cards, selected_indices) -> None:
     selected = set(selected_indices)
     for card in cards:
         card.set_selected(getattr(card, "index", -1) in selected)
+
+
+def blueprint_matches_search(bp, search: str) -> bool:
+    query = (search or "").lower()
+    if not query:
+        return True
+    return query in (bp.name or "").lower() or query in (bp.display_name or "").lower()
+
+
+def search_pack_order(cards, blueprints, search: str) -> List:
+    """Matching cards in original list order — pack() without before= scrambles this."""
+    ordered = []
+    for card, bp in zip(cards, blueprints):
+        if blueprint_matches_search(bp, search):
+            ordered.append(card)
+    return ordered
+
+
+def blueprint_for_card(blueprints: Sequence, card):
+    """Resolve the ship from the card path, never from a remapped visible index."""
+    path = getattr(getattr(card, "bp_info", None), "path", None)
+    if path is not None:
+        for bp in blueprints:
+            if bp.path == path:
+                return bp
+    return getattr(card, "bp_info", None)
+
+
+def visible_index_for_path(blueprints: Sequence, path) -> int:
+    for index, bp in enumerate(blueprints):
+        if bp.path == path:
+            return index
+    return -1
 
 
 class BlueprintPanel(ctk.CTkFrame):
@@ -168,8 +201,22 @@ class BlueprintPanel(ctk.CTkFrame):
             card.pack(fill="x", padx=4, pady=3)
             self._cards.append(card)
 
-    def _handle_card_select(self, index: int, multi: bool = False):
+    def _handle_card_select(self, card_or_index, multi: bool = False):
         """Handle card selection, supporting multi-select with Ctrl."""
+        visible = self._get_visible_blueprints()
+        if hasattr(card_or_index, "bp_info"):
+            bp = blueprint_for_card(self._blueprints, card_or_index)
+            if bp is None:
+                return
+            index = visible_index_for_path(visible, bp.path)
+            if index < 0:
+                return
+        else:
+            index = int(card_or_index)
+            if index < 0 or index >= len(visible):
+                return
+            bp = visible[index]
+
         if multi:
             if index in self._selected_indices:
                 self._selected_indices.discard(index)
@@ -180,38 +227,28 @@ class BlueprintPanel(ctk.CTkFrame):
 
         highlight_cards_by_visible_index(self._cards, self._selected_indices)
 
-        visible = self._get_visible_blueprints()
-        if index < len(visible) and self._on_select:
-            self._on_select(visible[index])
+        if self._on_select:
+            self._on_select(bp)
 
     def _on_search(self):
         """Filter cards based on search text without destroying widgets."""
         if not self._cards:
             self._rebuild_cards(self._blueprints)
             return
-        search = self.search_var.get().lower()
-        visible = 0
+        search = self.search_var.get()
         self._selected_indices.clear()
-        for i, card in enumerate(self._cards):
-            bp = self._blueprints[i]
-            match = (not search) or search in bp.name.lower() or search in bp.display_name.lower()
-            if match:
-                card.index = visible
-                card.pack(fill="x", padx=4, pady=3)
-                visible += 1
-            else:
-                card.index = -1
-                card.pack_forget()
+        for card in self._cards:
+            card.pack_forget()
+            card.index = -1
+        packed = search_pack_order(self._cards, self._blueprints, search)
+        for visible, card in enumerate(packed):
+            card.index = visible
+            card.pack(fill="x", padx=4, pady=3)
 
     def _get_visible_blueprints(self):
         """Return the currently visible (possibly filtered) blueprints."""
-        search = self.search_var.get().lower()
-        if not search:
-            return self._blueprints
-        return [
-            bp for bp in self._blueprints
-            if search in bp.name.lower() or search in bp.display_name.lower()
-        ]
+        search = self.search_var.get()
+        return [bp for bp in self._blueprints if blueprint_matches_search(bp, search)]
 
     def get_selected_blueprints(self):
         """Return list of currently selected blueprint infos."""
