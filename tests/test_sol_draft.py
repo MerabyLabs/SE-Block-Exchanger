@@ -26,7 +26,9 @@ from ui.selective_exchange_panel import (
 from ui.theme import TacticalTheme
 from ui.widgets.ship_canvas import (
     VoxelBlock,
+    build_map_frame,
     collect_projected_cells,
+    map_status_caption,
     rasterize_projected_cells,
     render_map_bitmap,
 )
@@ -252,6 +254,44 @@ class RasterizeMapTests(unittest.TestCase):
             grid_entity_id="missing",
         )
         self.assertIsNone(isolated)
+
+    def test_build_map_frame_precomputes_bounds_caption_and_fit(self):
+        blocks = [
+            VoxelBlock(0, 0, 0, "LargeBlockArmorBlock", "Hull", False),
+            VoxelBlock(9, 2, 4, "LargeBlockArmorBlock", "Hull", False),
+            VoxelBlock(1, 0, 0, "LargeBlockArmorBlock", "Turret", False, grid_entity_id="t1"),
+        ]
+        frame = build_map_frame(
+            blocks,
+            projection="Top",
+            width=200,
+            height=160,
+            scale=16,
+            pan_x=0,
+            pan_y=0,
+            fit=True,
+        )
+        self.assertEqual(frame.count, 3)
+        self.assertEqual(frame.min_c, (0, 0, 0))
+        self.assertEqual(frame.max_c, (9, 2, 4))
+        self.assertTrue(frame.fitted)
+        self.assertEqual(frame.caption, map_status_caption(3, (0, 0, 0), (9, 2, 4)))
+        self.assertIn("3 blocks", frame.caption)
+        self.assertIsNotNone(frame.image)
+        turret = build_map_frame(
+            blocks,
+            projection="Top",
+            width=64,
+            height=64,
+            scale=8,
+            pan_x=0,
+            pan_y=0,
+            grid_filter="Turret",
+            grid_entity_id="t1",
+        )
+        self.assertEqual(turret.count, 1)
+        self.assertIn("Turret", turret.caption)
+        self.assertIn("1", turret.caption)
 
 
 class SelectiveTableChunkTests(unittest.TestCase):

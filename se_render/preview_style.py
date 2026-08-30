@@ -37,8 +37,6 @@ PREVIEW_INSTANCE_CAP = 20000
 EXTREME_BLOCK_THRESHOLD = 50000
 MWM_REFINE_CHUNK = 32
 
-# First GPU upload: this many CpuBatches per Tk idle slice.
-UPLOAD_BATCH_CHUNK = 8
 # Further slices yield if they exceed this wall time or payload.
 GL_UPLOAD_TIME_BUDGET_S = 0.008
 GL_UPLOAD_BYTE_BUDGET = 2_000_000

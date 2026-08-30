@@ -12,7 +12,6 @@ from se_render.preview_build import (
     should_alias_lod_sets,
     split_upload_chunks,
 )
-from se_render.preview_style import UPLOAD_BATCH_CHUNK
 from se_render.scene_graph import PreviewScene, voxels_from_scene
 from se_render.topology import topology_mesh
 from tests.test_preview_render import _block, _catalog_with, _def
@@ -33,7 +32,6 @@ class LodAliasAndChunkTests(unittest.TestCase):
         cpu = build_preview_cpu(PreviewScene(blocks=blocks, total_blocks=3), catalog)
         chunks = split_upload_chunks(cpu.assembled, 1)
         self.assertEqual(sum(len(chunk) for chunk in chunks), len(cpu.assembled))
-        self.assertGreaterEqual(UPLOAD_BATCH_CHUNK, 1)
 
 
 class MwmRefinePatchTests(unittest.TestCase):

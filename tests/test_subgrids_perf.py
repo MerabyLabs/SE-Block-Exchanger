@@ -1001,15 +1001,23 @@ class SkipVoxelsWhen3dTests(unittest.TestCase):
         for method in (
             canvas.load_structure_data,
             canvas.fit_to_view,
+            canvas.filter_by_grid,
             canvas.redraw,
             canvas._request_map_bitmap,
         ):
             body = inspect.getsource(method)
             self.assertNotIn("collect_projected_cells", body)
             self.assertNotIn("rasterize_projected_cells", body)
-        self.assertIn("render_map_bitmap", inspect.getsource(canvas._request_map_bitmap))
-        self.assertIn("threading.Thread", inspect.getsource(canvas._request_map_bitmap))
+            self.assertNotIn("bounds_for(", body)
+            self.assertNotIn("bounds_for_blocks", body)
+            self.assertNotIn("_visible_blocks", body)
+            self.assertNotIn("_update_status_caption", body)
+        request_src = inspect.getsource(canvas._request_map_bitmap)
+        self.assertIn("build_map_frame", request_src)
+        self.assertIn("threading.Thread", request_src)
+        self.assertIn("except Exception", request_src)
         self.assertIn("_request_map_bitmap", inspect.getsource(canvas.fit_to_view))
+        self.assertNotIn("self.bounds_for", inspect.getsource(canvas.load_structure_data))
         load_src = inspect.getsource(ShipPreviewHost.load_scene)
         self.assertIn("self._switching = False", load_src)
         materialize = inspect.getsource(ShipPreviewHost._materialize_2d_fallback)
@@ -1129,6 +1137,7 @@ class DeadOrphanRemovalTests(unittest.TestCase):
 
         self.assertFalse(hasattr(preview_panel, "subgrids_voxels_for_ui"))
         self.assertFalse(hasattr(preview_style, "FIRST_UPLOAD_CHUNK"))
+        self.assertFalse(hasattr(preview_style, "UPLOAD_BATCH_CHUNK"))
         viewport = inspect.getsource(GLPreviewRenderer)
         self.assertNotIn("def _upload_secondary", viewport)
         self.assertNotIn("def _patch_named", viewport)
