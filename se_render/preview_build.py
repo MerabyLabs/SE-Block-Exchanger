@@ -169,6 +169,7 @@ class PreviewCpuScene:
     offset_radial: Optional[np.ndarray] = None
     has_functional_mwm: bool = False
     keep_indices: Optional[List[int]] = None
+    mwm_patched_keys: Set[str] = field(default_factory=set)
 
 
 def cpu_cache_key(path, mtime_ns, catalog_gen, stage: str) -> Tuple[str, int, int, str]:
@@ -278,6 +279,7 @@ def copy_cpu_for_dissect(cpu: PreviewCpuScene) -> PreviewCpuScene:
         offset_decks=None if cpu.offset_decks is None else np.array(cpu.offset_decks, copy=True),
         offset_radial=None if cpu.offset_radial is None else np.array(cpu.offset_radial, copy=True),
         keep_indices=list(cpu.keep_indices) if cpu.keep_indices is not None else None,
+        mwm_patched_keys=set(getattr(cpu, "mwm_patched_keys", ()) or ()),
     )
 
 
@@ -863,6 +865,7 @@ def build_preview_cpu(
         offset_radial=offset_radial,
         has_functional_mwm=has_mwm,
         keep_indices=list(keep) if keep is not None else None,
+        mwm_patched_keys=set(getattr(prior, "mwm_patched_keys", ()) or ()) if prior is not None else set(),
     )
 
 
@@ -979,6 +982,7 @@ def pending_mwm_patches(
     catalog: Optional[CubeBlockCatalog],
     library: MeshLibrary,
     patched_keys: Optional[Set[str]] = None,
+    cancel=None,
 ) -> List[MwmPatchWork]:
     """MWM work for this ship. Cached mesh ≠ instances already patched."""
     seen = set()
@@ -986,7 +990,9 @@ def pending_mwm_patches(
     patched = set(patched_keys or ())
     if catalog is None:
         return out
-    for block in blocks:
+    for i, block in enumerate(blocks):
+        if cancel is not None and (i & 255) == 0 and cancel():
+            return out
         definition = catalog.get(block.type_id, block.subtype)
         if not _needs_mwm(definition):
             continue
@@ -1237,6 +1243,10 @@ def refine_mwm_cpu(
         cpu.picks = new_picks
     cpu.has_functional_mwm = True
     cpu.shown_count = instance_count(cpu.assembled)
+    cpu.stage = STAGE_MESHES
+    patched = set(getattr(cpu, "mwm_patched_keys", ()) or ())
+    patched.update(keys)
+    cpu.mwm_patched_keys = patched
     return cpu
 
 

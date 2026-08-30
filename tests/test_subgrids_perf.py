@@ -3,6 +3,8 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 
@@ -20,6 +22,7 @@ from se_render.dissection import DISSECT_DECKS, DISSECT_PEEL, DISSECT_RADIAL, ra
 from se_render.occupancy import build_occupancy
 from se_render.preview_build import (
     STAGE_FULL,
+    STAGE_MESHES,
     STAGE_SHELL,
     BuildGeneration,
     CpuBatch,
@@ -37,6 +40,7 @@ from se_render.preview_build import (
     _build_instance_columns,
 )
 from se_render.preview_style import (
+    dissect_prepare_should_spawn,
     fallback_banner_text,
     gl_upload_should_yield,
     mwm_progress_caption,
@@ -636,6 +640,277 @@ class TabRevisitNoopTests(unittest.TestCase):
         self.assertIn("subgrids_same_ship_is_noop", src)
         start = inspect.getsource(ShipPreviewHost._start_build)
         self.assertIn("source_blocks is self._scene.blocks", start)
+
+
+class SliderSupersedeTests(unittest.TestCase):
+    def test_offsets_keep_slider_on_uniforms(self):
+        self.assertFalse(
+            dissect_prepare_should_spawn(
+                have_offsets=True,
+                have_exploded=True,
+                preparing=False,
+                preparing_mode=None,
+                wanted_mode=DISSECT_PEEL,
+            )
+        )
+        self.assertFalse(
+            dissect_prepare_should_spawn(
+                have_offsets=False,
+                have_exploded=False,
+                preparing=True,
+                preparing_mode=DISSECT_PEEL,
+                wanted_mode=DISSECT_PEEL,
+            )
+        )
+        self.assertTrue(
+            dissect_prepare_should_spawn(
+                have_offsets=False,
+                have_exploded=False,
+                preparing=True,
+                preparing_mode=DISSECT_PEEL,
+                wanted_mode=DISSECT_RADIAL,
+            )
+        )
+
+    def _bare_host(self, cpu):
+        host = ShipPreviewHost.__new__(ShipPreviewHost)
+        host._job = BuildGeneration()
+        host._dissect_job = BuildGeneration()
+        host._dissect_preparing = False
+        host._dissect_wanted = None
+        host._cpu_scene = cpu
+        host._mesh_ready = True
+        host._dissect_mode = DISSECT_PEEL
+        host._install_valid = True
+        host._refine_cancelled = False
+        host._catalog = None
+        host._meshes = None
+        host._renderer = None
+        host._explode = 0.0
+        host._apply_dissect_chrome = lambda: None
+        host._refresh_status = lambda: None
+        host._schedule_redraw = lambda **_k: None
+        host._arm_idle_redraw = lambda: None
+        host._queue_secondary_upload = lambda *_a, **_k: None
+        host.after = lambda *_a, **_k: None
+        return host
+
+    def test_slider_motions_keep_one_live_worker(self):
+        cpu = PreviewCpuScene()
+        host = self._bare_host(cpu)
+        started = []
+
+        class FakeThread:
+            def __init__(self, target=None, daemon=None, **_k):
+                self.target = target
+
+            def start(self):
+                started.append(self)
+
+        with mock.patch("ui.widgets.ship_preview.threading.Thread", FakeThread):
+            for i in range(12):
+                host._set_explode(0.08 + i * 0.04)
+        self.assertEqual(len(started), 1)
+        self.assertEqual(host._dissect_job.generation, 1)
+        self.assertEqual(host._dissect_wanted, DISSECT_PEEL)
+        host._dissect_mode = DISSECT_RADIAL
+        with mock.patch("ui.widgets.ship_preview.threading.Thread", FakeThread):
+            host._ensure_dissect_ready()
+        self.assertEqual(len(started), 2)
+        self.assertEqual(host._dissect_job.generation, 2)
+        self.assertEqual(host._dissect_wanted, DISSECT_RADIAL)
+        cpu.dissect_modes = [DISSECT_PEEL]
+        cpu.exploded = [object()]
+        host._dissect_mode = DISSECT_PEEL
+        host._dissect_preparing = False
+        host._dissect_wanted = None
+        with mock.patch("ui.widgets.ship_preview.threading.Thread", FakeThread):
+            for _ in range(8):
+                host._set_explode(0.4)
+        self.assertEqual(len(started), 2)
+
+
+class SwitchNudgeGenerationTests(unittest.TestCase):
+    def test_begin_switch_plus_nudge_does_not_bump_incoming_build(self):
+        host = ShipPreviewHost.__new__(ShipPreviewHost)
+        host._job = BuildGeneration()
+        host._dissect_job = BuildGeneration()
+        host._upload_chunk_job = None
+        host._renderer = None
+        host._switching = False
+        host._mesh_ready = True
+        host._catalog_wait = False
+        host._install_valid = True
+        host._building = False
+        host._pending_swap = False
+        host._refine_cancelled = False
+        host._ship_name = "A"
+        host._cpu_stage = STAGE_FULL
+        host._grid_filter = None
+        host._grid_entity_id = None
+        host._grid_isolate_key = None
+        host._isolated_count = None
+        host._scene = PreviewScene(blocks=[_cube((0, 0, 0))], total_blocks=1)
+        rec = host._scene.blocks[0]
+        host._selected_rec = SimpleNamespace(
+            instance_id=0,
+            grid_name=rec.grid_name,
+            entity_id=rec.entity_id,
+            local_min=rec.local_min,
+        )
+        from blueprint_edit import GridEditSession
+
+        host._edits = GridEditSession()
+        host._set_dissect_enabled = lambda _v: None
+        host._refresh_status = lambda: None
+        host._apply_cancel_refine_chrome = lambda: None
+        host._sync_user_hidden = lambda: None
+        host._schedule_redraw = lambda **_k: None
+        host._cpu_cache = PreviewCpuCache()
+        host._source_path = None
+        host._job.begin()
+        host.begin_switch("B")
+        incoming = host._job.begin()
+        host._nudge_selected((1, 0, 0))
+        self.assertEqual(host._job.generation, incoming)
+        self.assertTrue(host._job.is_current(incoming))
+        self.assertTrue(build_ready_applies(host._job, incoming, install_valid=True))
+        before = host._job.generation
+        host._rebuild_after_edit()
+        self.assertEqual(host._job.generation, before)
+
+
+class CachedMwmRevisitTests(unittest.TestCase):
+    def test_refine_advances_stage_and_a_b_a_skips_pending(self):
+        defn = BlockDefinition(
+            type_id="MyObjectBuilder_Thrust",
+            subtype_id="LargeBlockSmallThrust",
+            cube_size="Large",
+            block_topology="TriangleMesh",
+            cube_topology="",
+            size_x=1,
+            size_y=1,
+            size_z=1,
+            model_path="Models/Cubes/large/thrust.mwm",
+            model_offset=(0.0, 0.0, 0.0),
+        )
+        catalog = CubeBlockCatalog()
+        catalog.definitions[defn.key] = defn
+        catalog.by_subtype[defn.subtype_id] = defn
+        library = MeshLibrary()
+        blocks = [_block((0, 0, 0), subtype=defn.subtype_id, type_id=defn.type_id)]
+        scene = PreviewScene(blocks=blocks, main_grid_name="Hull", total_blocks=1)
+        cpu = build_preview_cpu(scene, catalog, library, stage=STAGE_SHELL)
+        self.assertEqual(cpu.stage, STAGE_SHELL)
+        patched = refine_mwm_cpu(cpu, catalog, library, [defn])
+        self.assertEqual(patched.stage, STAGE_MESHES)
+        self.assertIn(defn.key, patched.mwm_patched_keys)
+        patched.stage = STAGE_FULL
+        cache = PreviewCpuCache()
+        cache.put(cpu_cache_key("A", 10, 1, STAGE_FULL), patched)
+        cache.put(cpu_cache_key("B", 10, 1, STAGE_FULL), PreviewCpuScene(stage=STAGE_FULL))
+        again = cache.get_best("A", 10, 1)
+        self.assertIs(again, patched)
+        self.assertEqual(again.stage, STAGE_FULL)
+        self.assertEqual(
+            pending_mwm_patches(blocks, catalog, library, patched_keys=again.mwm_patched_keys),
+            [],
+        )
+
+    def test_cached_full_stage_does_not_request_mwm_refine(self):
+        host = ShipPreviewHost.__new__(ShipPreviewHost)
+        host._install_valid = True
+        host._gl_failed = False
+        host._scene = SimpleNamespace(blocks=[object()] * 3000)
+        host._catalog = object()
+        host._catalog_in_flight = False
+        host._catalog_failed = False
+        host._mesh_ready = False
+        host._cpu_scene = None
+        host._switching = False
+        host._job = BuildGeneration()
+        host._cpu_cache = PreviewCpuCache()
+        host._catalog_gen = 0
+        host._source_stamp = lambda: ("/A", 10)
+        host._mwm_patched_keys = set()
+        host._mwm_done = 0
+        host._mwm_total = 0
+        host._cpu_stage = ""
+        host._refine_cancelled = False
+        host._catalog_wait = False
+        host._refresh_status = lambda: None
+        host._apply_cancel_refine_chrome = lambda: None
+        host._apply_mode = lambda: None
+        cpu = PreviewCpuScene(stage=STAGE_FULL, mwm_patched_keys={"thrust"})
+        host._cpu_cache.put(cpu_cache_key("/A", 10, 0, STAGE_FULL), cpu)
+        seen = []
+        host._on_build_ready = lambda gen, cached, refine=False: seen.append((gen, cached, refine))
+        queued = []
+        host.after = lambda _ms, fn=None, **_k: queued.append(fn) or 1
+        host._start_build()
+        self.assertEqual(host._mwm_patched_keys, {"thrust"})
+        self.assertTrue(queued)
+        queued[0]()
+        self.assertEqual(len(seen), 1)
+        self.assertIs(seen[0][1], cpu)
+        self.assertFalse(seen[0][2])
+        start = inspect.getsource(ShipPreviewHost._start_build)
+        self.assertIn("_adopt_cached_cpu_meta", start)
+        remember = inspect.getsource(ShipPreviewHost._remember_cpu)
+        self.assertIn("mwm_patched_keys", remember)
+        mwm = inspect.getsource(ShipPreviewHost._start_mwm_refine)
+        self.assertGreater(mwm.find("pending_mwm_patches"), mwm.find("def task"))
+
+    def test_pending_mwm_honors_cancel(self):
+        catalog = _catalog_with(_def("CubeBlock", "LargeBlockArmorBlock", "Box"))
+        blocks = [_block((i, 0, 0), entity=str(i)) for i in range(300)]
+        calls = {"n": 0}
+
+        def cancel():
+            calls["n"] += 1
+            return True
+
+        self.assertEqual(
+            pending_mwm_patches(blocks, catalog, MeshLibrary(), cancel=cancel),
+            [],
+        )
+        self.assertGreaterEqual(calls["n"], 1)
+
+
+class VisibleBoundsSkipTests(unittest.TestCase):
+    def test_apply_visible_bounds_skips_when_filter_unchanged(self):
+        renderer = GLPreviewRenderer.__new__(GLPreviewRenderer)
+        renderer._cpu = PreviewCpuScene(
+            picks=[],
+            aabb_min=(-1.0, -1.0, -1.0),
+            aabb_max=(1.0, 1.0, 1.0),
+        )
+        renderer._grid_filter = None
+        renderer._grid_entity_id = None
+        renderer._bounds_key = None
+        calls = {"n": 0}
+
+        def counting():
+            calls["n"] += 1
+            return []
+
+        renderer._visible_picks = counting
+        renderer._apply_visible_bounds()
+        renderer._apply_visible_bounds()
+        self.assertEqual(calls["n"], 1)
+        renderer._grid_filter = "Turret"
+        renderer._apply_visible_bounds()
+        self.assertEqual(calls["n"], 2)
+        filt = inspect.getsource(GLPreviewRenderer.set_grid_filter)
+        self.assertIn("isolate_grid_instances", filt)
+        self.assertNotIn("_upload_named", filt)
+        upload = inspect.getsource(GLPreviewRenderer.upload_cpu_scene)
+        self.assertIn("drain", upload)
+        edit = inspect.getsource(ShipPreviewHost._on_edit_rebuild)
+        self.assertIn("_upload_cpu", edit)
+        self.assertNotIn("upload_cpu_scene", edit)
+        rebuild = inspect.getsource(ShipPreviewHost._rebuild_after_edit)
+        self.assertIn("_edits_live", rebuild)
 
 
 if __name__ == "__main__":

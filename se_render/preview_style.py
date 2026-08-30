@@ -103,6 +103,22 @@ def stale_shell_blocks_edits(
     return bool(switching or catalog_wait or not mesh_ready)
 
 
+def dissect_prepare_should_spawn(
+    *,
+    have_offsets: bool,
+    have_exploded: bool,
+    preparing: bool,
+    preparing_mode: Optional[str],
+    wanted_mode: str,
+) -> bool:
+    """Slider stays uniforms+blit when offsets exist. One live worker; newest mode wins."""
+    if have_offsets and have_exploded:
+        return False
+    if preparing and (preparing_mode or "") == (wanted_mode or ""):
+        return False
+    return True
+
+
 def should_defer_catalog_box_build(
     catalog,
     catalog_in_flight: bool,

@@ -162,6 +162,9 @@ class GLPreviewRenderer:
         self.category_mask = 0
         self.hidden_ids: set = set()
         self.hidden_subtypes: set = set()
+        self._bounds_key = None
+        self._isolate_hidden_key = None
+        self._isolate_hidden_cache: set = set()
         self.pull = 0.35
         self._view_f32 = np.zeros(16, dtype=np.float32)
         self._proj_f32 = np.zeros(16, dtype=np.float32)
@@ -258,11 +261,11 @@ class GLPreviewRenderer:
         meshes: Optional[MeshLibrary] = None,
         grid_filter: Optional[str] = None,
     ) -> None:
-        """Synchronous path for tests. Product UI uses upload_cpu_scene instead."""
+        """Synchronous path for tests. Product UI uses begin_cpu_upload + after(1)."""
         if not self.available:
             return
         cpu = build_preview_cpu(scene, catalog, meshes or MeshLibrary())
-        self.upload_cpu_scene(cpu)
+        self.upload_cpu_scene(cpu, drain=True)
         self.set_grid_filter(grid_filter)
 
     def upload_cpu_scene(
@@ -272,18 +275,24 @@ class GLPreviewRenderer:
         grid_filter: Optional[str] = None,
         defer_secondary: bool = False,
         refit: bool = True,
-    ) -> None:
+        drain: bool = False,
+    ) -> bool:
+        """Begin GPU upload. One time/byte-budgeted turn unless drain=True (tests)."""
         if not self.available:
-            return
+            return False
         more = self.begin_cpu_upload(
             cpu,
             grid_filter=grid_filter,
             defer_secondary=defer_secondary,
             refit=refit,
         )
-        if more:
+        if not more:
+            return False
+        if drain:
             while self.continue_cpu_upload(1, time_budget_s=10**9, byte_budget=10**18):
                 pass
+            return False
+        return self.continue_cpu_upload(1)
 
     def _adopt_cpu(self, cpu: PreviewCpuScene, *, refit: bool) -> None:
         prev_empty = self._cpu is None or self.block_count == 0 or self._radius <= 1.0
@@ -293,6 +302,8 @@ class GLPreviewRenderer:
         self._radius = cpu.radius
         self._aabb_min = cpu.aabb_min
         self._aabb_max = cpu.aabb_max
+        self._bounds_key = None
+        self._isolate_hidden_key = None
         self._apply_visible_bounds()
         should_fit = refit or (not self.camera_user_moved) or prev_empty
         if should_fit:
@@ -574,40 +585,19 @@ class GLPreviewRenderer:
         grid_name: Optional[str] = None,
         grid_entity_id: Optional[str] = None,
     ) -> None:
-        """Rebind instance buffers only — isolate must not remesh."""
+        """Isolate via inspect.z — must not remesh or re-upload on Tk."""
         name = grid_name or None
         eid = grid_entity_id or None
         if (
             name == self._grid_filter
             and eid == self._grid_entity_id
             and self._cpu is not None
-            and not self._secondary_pending
         ):
             self.refit_to_visible()
             return
-        self._grid_filter = name
-        self._grid_entity_id = eid
-        if self._cpu is None or not self.available:
-            return
-        cpu = self._cpu
-        self._apply_visible_bounds()
-        self._break_set_aliases()
-        assembled = filter_batches(cpu.assembled, self._grid_filter, self._grid_entity_id)
-        self._upload_named("assembled", assembled)
-        if should_alias_lod_sets(cpu.assembled, cpu.assembled_lod) or not cpu.huge:
-            self._sets["assembled_lod"] = self._sets["assembled"]
-        else:
-            self._upload_named(
-                "assembled_lod",
-                filter_batches(cpu.assembled_lod, self._grid_filter, self._grid_entity_id),
-            )
-        if self._secondary_pending:
-            self._sets["exploded"] = []
-            self._sets["exploded_lod"] = []
-        else:
-            self._upload_secondary()
-        self.upload_generation += 1
-        self.camera.frame(self._center, self._radius, keep_orientation=True)
+        self.isolate_grid_instances(eid, name)
+        if self._cpu is not None:
+            self.camera.frame(self._center, self._radius, keep_orientation=True)
 
     def isolate_grid_instances(
         self,
@@ -618,17 +608,30 @@ class GLPreviewRenderer:
         """Hide other grids via inspect.z — no remesh / re-upload."""
         self._grid_entity_id = grid_entity_id or None
         self._grid_filter = grid_name or None
-        hidden = set(extra_hidden or ())
-        if self._cpu is not None and (self._grid_entity_id or self._grid_filter):
-            for rec in self._cpu.picks:
-                if self._grid_entity_id:
-                    if rec.grid_entity_id != self._grid_entity_id:
-                        hidden.add(rec.instance_id)
-                elif rec.grid_name != self._grid_filter:
-                    hidden.add(rec.instance_id)
-        self.hidden_ids = hidden
-        self._write_inspect_hidden()
+        hidden = set(extra_hidden or ()) | self._cached_isolate_grid_hidden()
+        if hidden != self.hidden_ids:
+            self.hidden_ids = hidden
+            self._write_inspect_hidden()
         self._apply_visible_bounds()
+
+    def _cached_isolate_grid_hidden(self) -> set:
+        if self._cpu is None or not (self._grid_entity_id or self._grid_filter):
+            self._isolate_hidden_key = None
+            self._isolate_hidden_cache = set()
+            return set()
+        key = (id(self._cpu), self._grid_entity_id, self._grid_filter)
+        if key == getattr(self, "_isolate_hidden_key", None):
+            return set(self._isolate_hidden_cache)
+        hidden = set()
+        for rec in self._cpu.picks:
+            if self._grid_entity_id:
+                if rec.grid_entity_id != self._grid_entity_id:
+                    hidden.add(rec.instance_id)
+            elif rec.grid_name != self._grid_filter:
+                hidden.add(rec.instance_id)
+        self._isolate_hidden_key = key
+        self._isolate_hidden_cache = hidden
+        return set(hidden)
 
     def _visible_picks(self) -> List[PickRecord]:
         if self._cpu is None:
@@ -640,9 +643,18 @@ class GLPreviewRenderer:
             return [rec for rec in recs if rec.grid_name == self._grid_filter]
         return list(recs)
 
-    def _apply_visible_bounds(self) -> None:
+    def _visible_bounds_key(self):
+        if self._cpu is None:
+            return None
+        return (id(self._cpu), self._grid_entity_id, self._grid_filter)
+
+    def _apply_visible_bounds(self, *, force: bool = False) -> None:
         """AABB / origin from visible picks so clip and GPU share one center."""
         if self._cpu is None:
+            self._bounds_key = None
+            return
+        key = self._visible_bounds_key()
+        if not force and key == getattr(self, "_bounds_key", None):
             return
         recs = self._visible_picks()
         if recs:
@@ -661,6 +673,7 @@ class GLPreviewRenderer:
             self._aabb_max = self._cpu.aabb_max
         self._center, self._radius = aabb_center_radius(self._aabb_min, self._aabb_max)
         self._render_origin = self._center
+        self._bounds_key = key
 
     def refit_to_visible(self) -> None:
         """Frame the camera on the isolated grid, or the full ship."""

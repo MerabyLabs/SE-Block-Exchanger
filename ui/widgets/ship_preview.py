@@ -48,6 +48,7 @@ from se_render.preview_style import (
     INSPECT_CATEGORIES,
     MWM_REFINE_CHUNK,
     PROGRESSIVE_BLOCK_THRESHOLD,
+    dissect_prepare_should_spawn,
     fallback_banner_text,
     render_target_size,
     should_defer_catalog_box_build,
@@ -131,6 +132,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._shown_count = 0
         self._cpu_scene: Optional[PreviewCpuScene] = None
         self._dissect_preparing = False
+        self._dissect_wanted: Optional[str] = None
         self._wheel_grabbed = False
         self._wheel_grab_warned = False
         self._job = BuildGeneration()
@@ -593,6 +595,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._simplified = False
         self._shown_count = 0
         self._dissect_preparing = False
+        self._dissect_wanted = None
         self._refine_cancelled = False
         self._mwm_patched_keys = set()
         self._mwm_mesh_cached = True
@@ -762,10 +765,20 @@ class ShipPreviewHost(ctk.CTkFrame):
         path, mtime_ns = self._source_stamp()
         if not path or cpu is None:
             return
+        cpu.mwm_patched_keys = set(self._mwm_patched_keys)
+        if not cpu.stage:
+            cpu.stage = self._cpu_stage or STAGE_FULL
         self._cpu_cache.put(
             cpu_cache_key(path, mtime_ns, self._catalog_gen, cpu.stage or STAGE_FULL),
             cpu,
         )
+
+    def _adopt_cached_cpu_meta(self, cpu: PreviewCpuScene) -> None:
+        keys = set(getattr(cpu, "mwm_patched_keys", ()) or ())
+        self._mwm_patched_keys = keys
+        self._mwm_done = len(keys)
+        if cpu.stage:
+            self._cpu_stage = cpu.stage
 
     def cancel_refine(self) -> None:
         """Keep the current shell; drop leftover MWM / interior work."""
@@ -773,6 +786,7 @@ class ShipPreviewHost(ctk.CTkFrame):
             return
         self._refine_cancelled = True
         self._dissect_preparing = False
+        self._dissect_wanted = None
         self._building = False
         self._dissect_job.cancel()
         self._cancel_chunk_job()
@@ -840,6 +854,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         path, mtime_ns = self._source_stamp()
         cached = self._cpu_cache.get_best(path, mtime_ns, self._catalog_gen)
         if cached is not None:
+            self._adopt_cached_cpu_meta(cached)
             refine = progressive and cached.stage != STAGE_FULL
             self.after(1, lambda: self._on_build_ready(gen, cached, refine=refine))
             self._refresh_status()
@@ -904,6 +919,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._switching = False
         self._mesh_ready = True
         self._cpu_scene = cpu
+        self._adopt_cached_cpu_meta(cpu)
         self._remember_cpu(cpu)
         self._cpu_stage = cpu.stage
         self._simplified = bool(cpu.simplified)
@@ -991,32 +1007,36 @@ class ShipPreviewHost(ctk.CTkFrame):
             return
         if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._scene is None:
             return
-        catalog = self._catalog
-        library = self._meshes
-        pending = remaining
-        if pending is None:
-            pending = pending_mwm_patches(
-                self._scene.blocks, catalog, library, patched_keys=self._mwm_patched_keys
-            )
-            self._mwm_total = len(pending)
-            self._mwm_done = 0
-        if not pending:
+        if remaining is not None and not remaining:
             self.after(16, lambda: self._start_interior_fill(generation))
             return
-        chunk = pending[:MWM_REFINE_CHUNK]
-        leftover = pending[MWM_REFINE_CHUNK:]
-        self._mwm_mesh_cached = all(item.mesh_cached for item in chunk)
-        self._cpu_stage = STAGE_MESHES
-        self._refresh_status()
+        catalog = self._catalog
+        library = self._meshes
         scene = self._scene
         prior = self._cpu_scene
-        defs = [item.definition for item in chunk]
+        patched_keys = set(self._mwm_patched_keys)
+        self._cpu_stage = STAGE_MESHES
+        self._refresh_status()
 
         def task() -> None:
             try:
                 def _stop() -> bool:
                     return self._refine_cancelled or not self._job.is_current(generation)
 
+                pending = remaining
+                if pending is None:
+                    pending = pending_mwm_patches(
+                        scene.blocks, catalog, library, patched_keys=patched_keys, cancel=_stop
+                    )
+                if _stop():
+                    return
+                if not pending:
+                    self.after(0, lambda: self._start_interior_fill(generation))
+                    return
+                chunk = pending[:MWM_REFINE_CHUNK]
+                leftover = pending[MWM_REFINE_CHUNK:]
+                total = len(pending) if remaining is None else None
+                defs = [item.definition for item in chunk]
                 for definition in defs:
                     if _stop():
                         return
@@ -1036,11 +1056,11 @@ class ShipPreviewHost(ctk.CTkFrame):
                 message = str(exc)
                 self.after(0, lambda: self._on_refine_failed(generation, message))
                 return
-            self.after(0, lambda: self._on_mwm_chunk(generation, cpu, leftover, chunk))
+            self.after(0, lambda: self._on_mwm_chunk(generation, cpu, leftover, chunk, total=total))
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _on_mwm_chunk(self, generation: int, cpu: PreviewCpuScene, leftover, chunk=()) -> None:
+    def _on_mwm_chunk(self, generation: int, cpu: PreviewCpuScene, leftover, chunk=(), total=None) -> None:
         if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
             return
         if self._renderer is None or not self._mesh_ready:
@@ -1049,11 +1069,17 @@ class ShipPreviewHost(ctk.CTkFrame):
             self._building = False
             return
         self._cpu_scene = cpu
-        self._remember_cpu(cpu)
+        if total is not None:
+            self._mwm_total = int(total)
+        if chunk:
+            self._mwm_mesh_cached = all(item.mesh_cached for item in chunk)
         for item in chunk:
             key = getattr(item.definition, "key", None)
             if key:
                 self._mwm_patched_keys.add(key)
+        cpu.stage = STAGE_MESHES
+        cpu.mwm_patched_keys = set(self._mwm_patched_keys)
+        self._remember_cpu(cpu)
         self._mwm_done = len(self._mwm_patched_keys)
         self._cpu_stage = STAGE_MESHES
         self._simplified = bool(cpu.simplified)
@@ -1146,8 +1172,20 @@ class ShipPreviewHost(ctk.CTkFrame):
         if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._cpu_scene is None:
             return
         wanted = mode or self._dissect_mode
+        cpu = self._cpu_scene
+        have_offsets = wanted in (cpu.dissect_modes or ())
+        have_exploded = bool(cpu.exploded)
+        if not dissect_prepare_should_spawn(
+            have_offsets=have_offsets,
+            have_exploded=have_exploded,
+            preparing=self._dissect_preparing,
+            preparing_mode=self._dissect_wanted,
+            wanted_mode=wanted,
+        ):
+            return
         dissect_gen = self._dissect_job.begin()
         self._dissect_preparing = True
+        self._dissect_wanted = wanted
         live = self._cpu_scene
         catalog = self._catalog
         library = self._meshes
@@ -1174,6 +1212,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         if not self._dissect_job.is_current(dissect_gen):
             return
         self._dissect_preparing = False
+        self._dissect_wanted = None
         if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._renderer is None:
             return
         self._cpu_scene = cpu
@@ -1204,6 +1243,7 @@ class ShipPreviewHost(ctk.CTkFrame):
             return
         self._building = False
         self._dissect_preparing = False
+        self._dissect_wanted = None
         self._toast(f"3D refine failed: {message}", "warning")
         self._refresh_status()
         self._apply_cancel_refine_chrome()
@@ -1568,6 +1608,14 @@ class ShipPreviewHost(ctk.CTkFrame):
                 self._renderer._secondary_pending or not (self._renderer._sets.get("exploded") or [])
             ):
                 self._queue_secondary_upload(self._job.generation)
+            return
+        if not dissect_prepare_should_spawn(
+            have_offsets=have_offsets,
+            have_exploded=have_exploded,
+            preparing=self._dissect_preparing,
+            preparing_mode=self._dissect_wanted,
+            wanted_mode=mode,
+        ):
             return
         self._start_dissect_prepare(self._job.generation, mode)
 
@@ -2000,10 +2048,13 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._rebuild_after_edit()
 
     def _rebuild_after_edit(self, keep_id=None) -> None:
-        if self._scene is None or not self._install_valid:
+        if self._scene is None or not self._install_valid or not self._edits_live():
             self._sync_user_hidden()
             self._schedule_redraw(interactive=False)
             return
+        path, _mtime_ns = self._source_stamp()
+        if path:
+            self._cpu_cache.invalidate(path)
         gen = self._job.begin()
         scene = self._scene
         catalog = self._catalog
@@ -2032,6 +2083,8 @@ class ShipPreviewHost(ctk.CTkFrame):
             self._toast("3D rebuild failed.", "warning")
             return
         self._cpu_scene = cpu
+        cpu.stage = cpu.stage or STAGE_FULL
+        self._remember_cpu(cpu)
         self._sync_user_hidden()
         if keep_id is not None:
             for rec in cpu.picks:
