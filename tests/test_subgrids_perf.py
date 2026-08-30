@@ -29,16 +29,25 @@ from se_render.preview_build import (
     build_preview_cpu,
     copy_cpu_for_dissect,
     cpu_cache_key,
+    ensure_exploded_batches,
     pending_mwm_definitions,
     pending_mwm_patches,
+    refine_mwm_cpu,
     split_batches_for_upload,
+    _build_instance_columns,
 )
 from se_render.preview_style import (
     fallback_banner_text,
+    gl_upload_should_yield,
     mwm_progress_caption,
     should_defer_catalog_box_build,
+    stale_shell_blocks_edits,
     staged_3d_caption,
 )
+from se_render.occupancy import plan_blocks
+from se_assets.mwm_loader import load_mwm
+from se_render.viewport import GLPreviewRenderer
+from ui.preview_panel import subgrids_same_ship_is_noop
 from se_render.scene_graph import PreviewScene, extract_scene_from_root
 from tests.test_preview_render import _block, _catalog_with, _cube, _def
 from tests.test_scene_graph import ROTOR_BLUEPRINT
@@ -219,8 +228,10 @@ class HonestCaptionTests(unittest.TestCase):
 
     def test_no_throwaway_box_build_while_catalog_in_flight(self):
         self.assertTrue(should_defer_catalog_box_build(None, True))
-        self.assertFalse(should_defer_catalog_box_build(None, False))
+        self.assertTrue(should_defer_catalog_box_build(None, False))
+        self.assertFalse(should_defer_catalog_box_build(None, False, catalog_failed=True))
         self.assertFalse(should_defer_catalog_box_build(object(), True))
+        self.assertFalse(should_defer_catalog_box_build(object(), False, catalog_failed=True))
 
 
 class NoBindAllTests(unittest.TestCase):
@@ -450,6 +461,181 @@ class SessionPrefAndPrewarmTests(unittest.TestCase):
         self.assertIn("after_idle(self.preview_panel.prewarm_subgrids)", app)
         self.assertIn("subgrids_projection", app)
         self.assertIn("subgrids_dissect_mode", app)
+
+
+class GlTurnBudgetTests(unittest.TestCase):
+    def test_yield_helper_requires_first_slice_then_time_or_bytes(self):
+        self.assertFalse(gl_upload_should_yield(False, 1.0, 9_000_000))
+        self.assertTrue(gl_upload_should_yield(True, 0.02, 0, time_budget_s=0.008))
+        self.assertTrue(gl_upload_should_yield(True, 0.0, 2_000_000, byte_budget=2_000_000))
+        self.assertFalse(gl_upload_should_yield(True, 0.001, 100, time_budget_s=0.008, byte_budget=2_000_000))
+
+    def test_continue_uploads_one_batch_then_yields_on_zero_budget(self):
+        renderer = GLPreviewRenderer.__new__(GLPreviewRenderer)
+        renderer.available = True
+        renderer._incoming_cpu = None
+        renderer._incoming_refit = True
+        renderer._pending_patch_release = {}
+        renderer._sets = {"assembled": [], "exploded": [], "assembled_lod": [], "exploded_lod": []}
+        renderer._alias_assembled_lod = False
+        renderer._alias_exploded_lod = False
+        renderer._secondary_pending = False
+        renderer.upload_generation = 0
+        calls = []
+
+        def fake_upload(name, batches, append=False):
+            calls.append((name, len(batches), append))
+
+        renderer._upload_named = fake_upload
+        renderer._finish_lod_aliases = lambda: None
+        renderer._chunk_queue = [("assembled", [_cpu_batch(2), _cpu_batch(2), _cpu_batch(2)], 0)]
+        more = renderer.continue_cpu_upload(8, time_budget_s=0.0, byte_budget=1)
+        self.assertTrue(more)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], 1)
+        self.assertEqual(len(renderer._chunk_queue[0][1]) - renderer._chunk_queue[0][2], 2)
+
+    def test_patch_and_secondary_queue_instead_of_sync_upload(self):
+        renderer = GLPreviewRenderer.__new__(GLPreviewRenderer)
+        renderer.available = True
+        renderer._cpu = None
+        renderer._incoming_cpu = None
+        renderer._pending_patch_release = {}
+        renderer._chunk_queue = []
+        renderer._grid_filter = None
+        renderer._grid_entity_id = None
+        renderer._secondary_pending = False
+        renderer._sets = {"assembled": [], "exploded": [], "assembled_lod": [], "exploded_lod": []}
+        renderer.upload_generation = 0
+        renderer._break_set_aliases = lambda: None
+        renderer._write_inspect_hidden = lambda: None
+        cpu = PreviewCpuScene(
+            assembled=[_cpu_batch(4)],
+            exploded=[_cpu_batch(4)],
+            assembled_lod=[],
+            exploded_lod=[],
+            huge=True,
+        )
+        renderer.patch_assembled(cpu)
+        self.assertTrue(any(str(item[0]).startswith("patch:") for item in renderer._chunk_queue))
+        renderer._chunk_queue = []
+        renderer._cpu = cpu
+        queued = renderer.upload_secondary_sets()
+        self.assertTrue(queued)
+        self.assertTrue(any(item[0] == "exploded" for item in renderer._chunk_queue))
+
+    def test_constructor_does_not_init_gl(self):
+        src = inspect.getsource(GLPreviewRenderer.__init__)
+        self.assertIn("if init:", src)
+        self.assertIn("try_init", src)
+        apply = inspect.getsource(ShipPreviewHost._apply_mode)
+        start = inspect.getsource(ShipPreviewHost._start_build)
+        switch = inspect.getsource(ShipPreviewHost.begin_switch)
+        load = inspect.getsource(ShipPreviewHost.load_scene)
+        select = inspect.getsource(__import__("ui.app", fromlist=["TacticalCommandCenter"]).TacticalCommandCenter.on_blueprint_select)
+        for body in (apply, start, switch, load, select):
+            self.assertNotIn("try_init", body)
+            self.assertNotIn("GLPreviewRenderer()", body)
+            self.assertNotIn("GLPreviewRenderer(init=True)", body)
+
+
+class StaleShellEditTests(unittest.TestCase):
+    def test_switching_blocks_edits_and_save_as_uses_selected_path(self):
+        self.assertTrue(stale_shell_blocks_edits(switching=True, mesh_ready=True))
+        self.assertTrue(stale_shell_blocks_edits(switching=False, mesh_ready=False))
+        self.assertTrue(stale_shell_blocks_edits(switching=False, mesh_ready=True, catalog_wait=True))
+        self.assertFalse(stale_shell_blocks_edits(switching=False, mesh_ready=True))
+        pick = inspect.getsource(ShipPreviewHost._pick_at)
+        nudge = inspect.getsource(ShipPreviewHost._nudge_selected)
+        save = inspect.getsource(ShipPreviewHost._save_as_new)
+        switch = inspect.getsource(ShipPreviewHost.begin_switch)
+        self.assertIn("_edits_live", pick)
+        self.assertIn("_edits_live", nudge)
+        self.assertIn("_edits_live", save)
+        self.assertIn("_source_path", save)
+        self.assertIn("_set_dissect_enabled(False)", switch)
+
+
+class DeferredExplodedTests(unittest.TestCase):
+    def test_full_stage_does_not_build_exploded_until_asked(self):
+        catalog = _catalog_with(_def("CubeBlock", "LargeBlockArmorBlock", "Box"))
+        blocks = [_cube((x, 0, 0), str(x)) for x in range(3)]
+        cpu = build_preview_cpu(
+            PreviewScene(blocks=blocks, main_grid_name="Hull", total_blocks=3),
+            catalog,
+            stage=STAGE_FULL,
+        )
+        self.assertFalse(cpu.exploded)
+        ensure_exploded_batches(cpu, catalog)
+        self.assertTrue(cpu.exploded)
+        self.assertEqual(sum(int(b.models.shape[0]) for b in cpu.exploded), 3)
+        interior = inspect.getsource(ShipPreviewHost._start_interior_fill)
+        self.assertIn("_explode <= 1e-4", interior)
+
+
+class CooperativeCancelTests(unittest.TestCase):
+    def test_plan_columns_refine_exploded_and_mwm_honor_cancel(self):
+        catalog = _catalog_with(_def("CubeBlock", "LargeBlockArmorBlock", "Box"))
+        blocks = [_block((i, 0, 0), entity=str(i)) for i in range(300)]
+        calls = {"n": 0}
+
+        def cancel():
+            calls["n"] += 1
+            return calls["n"] > 1
+
+        self.assertEqual(plan_blocks(blocks, catalog, cancel=cancel), [])
+        calls["n"] = 0
+        cols = _build_instance_columns(blocks, catalog, [0] * len(blocks), cancel=cancel)
+        self.assertEqual(int(cols.models.shape[0]), 300)
+        self.assertGreater(calls["n"], 1)
+        scene = PreviewScene(blocks=blocks[:8], total_blocks=8)
+        cpu = build_preview_cpu(scene, catalog, stage=STAGE_SHELL)
+        stopped = {"n": 0}
+
+        def stop():
+            stopped["n"] += 1
+            return True
+
+        same = refine_mwm_cpu(cpu, catalog, MeshLibrary(), [object()], cancel=stop)
+        self.assertIs(same, cpu)
+        exploded_before = list(cpu.exploded)
+        ensure_exploded_batches(cpu, catalog, cancel=stop)
+        self.assertEqual(cpu.exploded, exploded_before)
+        self.assertIsNone(load_mwm(Path("/no/such/file.mwm"), cancel=lambda: True))
+
+
+class TabRevisitNoopTests(unittest.TestCase):
+    def test_same_ship_payload_is_noop(self):
+        scene = object()
+        structure = object()
+        self.assertTrue(
+            subgrids_same_ship_is_noop(
+                path="/ships/A",
+                current_path="/ships/A",
+                scene=scene,
+                pending_scene=scene,
+                structure=structure,
+                pending_structure=structure,
+                rendered_for=3,
+                revision=3,
+            )
+        )
+        self.assertFalse(
+            subgrids_same_ship_is_noop(
+                path="/ships/B",
+                current_path="/ships/A",
+                scene=scene,
+                pending_scene=scene,
+                structure=structure,
+                pending_structure=structure,
+                rendered_for=3,
+                revision=3,
+            )
+        )
+        src = inspect.getsource(__import__("ui.preview_panel", fromlist=["PreviewPanel"]).PreviewPanel.update_subgrids)
+        self.assertIn("subgrids_same_ship_is_noop", src)
+        start = inspect.getsource(ShipPreviewHost._start_build)
+        self.assertIn("source_blocks is self._scene.blocks", start)
 
 
 if __name__ == "__main__":

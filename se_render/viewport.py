@@ -24,6 +24,7 @@ from se_render.preview_build import (
     PickRecord,
     PreviewCpuScene,
     build_preview_cpu,
+    cpu_batch_upload_bytes,
     filter_batches,
     should_alias_lod_sets,
     split_batches_for_upload,
@@ -35,6 +36,7 @@ from se_render.preview_style import (
     UPLOAD_BATCH_CHUNK,
     active_preview_set,
     format_preview_count_caption,
+    gl_upload_should_yield,
     render_target_size,
 )
 from se_render.scene_graph import PreviewScene
@@ -118,7 +120,7 @@ def _ray_aabb(
 class GLPreviewRenderer:
     """Off-screen ModernGL renderer. Safe to construct; check .available."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, init: bool = False) -> None:
         self.available = False
         self.error = ""
         self._ctx = None
@@ -138,6 +140,9 @@ class GLPreviewRenderer:
             "exploded_lod": [],
         }
         self._cpu: Optional[PreviewCpuScene] = None
+        self._incoming_cpu: Optional[PreviewCpuScene] = None
+        self._incoming_refit = True
+        self._pending_patch_release: Dict[str, List[dict]] = {}
         self._grid_filter: Optional[str] = None
         self._grid_entity_id: Optional[str] = None
         self._chunk_queue: List[tuple] = []
@@ -161,7 +166,8 @@ class GLPreviewRenderer:
         self._view_f32 = np.zeros(16, dtype=np.float32)
         self._proj_f32 = np.zeros(16, dtype=np.float32)
         self.camera_user_moved = False
-        self.try_init()
+        if init:
+            self.try_init()
 
     def try_init(self) -> bool:
         if self.available and self._ctx is not None:
@@ -269,9 +275,18 @@ class GLPreviewRenderer:
     ) -> None:
         if not self.available:
             return
+        more = self.begin_cpu_upload(
+            cpu,
+            grid_filter=grid_filter,
+            defer_secondary=defer_secondary,
+            refit=refit,
+        )
+        if more:
+            while self.continue_cpu_upload(1, time_budget_s=10**9, byte_budget=10**18):
+                pass
+
+    def _adopt_cpu(self, cpu: PreviewCpuScene, *, refit: bool) -> None:
         prev_empty = self._cpu is None or self.block_count == 0 or self._radius <= 1.0
-        if grid_filter is not None:
-            self._grid_filter = grid_filter or None
         self._cpu = cpu
         self.block_count = cpu.block_count
         self._center = cpu.center
@@ -279,11 +294,6 @@ class GLPreviewRenderer:
         self._aabb_min = cpu.aabb_min
         self._aabb_max = cpu.aabb_max
         self._apply_visible_bounds()
-        more = self._begin_set_uploads(cpu, defer_secondary=defer_secondary)
-        if more:
-            while self.continue_cpu_upload(10**9):
-                pass
-        self.upload_generation += 1
         should_fit = refit or (not self.camera_user_moved) or prev_empty
         if should_fit:
             self.camera.frame(self._center, self._radius, keep_orientation=True)
@@ -300,53 +310,75 @@ class GLPreviewRenderer:
         refit: bool = True,
         chunk_size: int = UPLOAD_BATCH_CHUNK,
     ) -> bool:
-        """Upload metadata + first assembled slice. Returns True if more batches remain."""
+        """Queue GPU work. Keep the last shell until the first new slice swaps in."""
         if not self.available:
             return False
-        prev_empty = self._cpu is None or self.block_count == 0 or self._radius <= 1.0
         if grid_filter is not None:
             self._grid_filter = grid_filter or None
         if grid_entity_id is not None:
             self._grid_entity_id = grid_entity_id or None
-        self._cpu = cpu
-        self.block_count = cpu.block_count
-        self._center = cpu.center
-        self._radius = cpu.radius
-        self._aabb_min = cpu.aabb_min
-        self._aabb_max = cpu.aabb_max
-        self._apply_visible_bounds()
+        has_shell = bool(self._sets.get("assembled"))
+        self._incoming_cpu = cpu
+        self._incoming_refit = refit
+        if not has_shell:
+            self._adopt_cpu(cpu, refit=refit)
+            self._incoming_cpu = None
         self._begin_set_uploads(cpu, defer_secondary=defer_secondary)
         self.upload_generation += 1
-        should_fit = refit or (not self.camera_user_moved) or prev_empty
-        if should_fit:
-            self.camera.frame(self._center, self._radius, keep_orientation=True)
-            if refit:
-                self.camera_user_moved = False
         return bool(self._chunk_queue)
 
     def continue_cpu_upload(
         self,
-        chunk_size: int = UPLOAD_BATCH_CHUNK,
+        chunk_size: int = 1,
         time_budget_s: Optional[float] = None,
+        byte_budget: Optional[int] = None,
     ) -> bool:
-        """Upload slices until the time budget. True if more remain."""
+        """Upload one CpuBatch at a time until the time/byte budget. True if more remain."""
         if not self.available or not self._chunk_queue:
             self._finish_lod_aliases()
             return False
-        size = max(1, int(chunk_size))
         budget = GL_UPLOAD_TIME_BUDGET_S if time_budget_s is None else float(time_budget_s)
+        bytes_cap = GL_UPLOAD_BYTE_BUDGET if byte_budget is None else int(byte_budget)
         t0 = time.perf_counter()
         uploaded = False
+        used_bytes = 0
+        max_slices = max(1, int(chunk_size))
+        slices = 0
         while self._chunk_queue:
-            if uploaded and (time.perf_counter() - t0) >= budget:
+            if gl_upload_should_yield(uploaded, time.perf_counter() - t0, used_bytes, budget, bytes_cap):
+                return True
+            if uploaded and slices >= max_slices:
                 return True
             name, batches, offset = self._chunk_queue[0]
-            nxt = offset + size
-            slice_batches = batches[offset:nxt]
-            self._upload_named(name, slice_batches, append=offset > 0)
+            if offset >= len(batches):
+                self._chunk_queue.pop(0)
+                if str(name).startswith("patch:"):
+                    self._finish_patch_release(str(name).split(":", 1)[1])
+                continue
+            batch = batches[offset]
+            if str(name).startswith("patch:"):
+                self._patch_one(str(name).split(":", 1)[1], batch)
+            else:
+                first_assembled = (
+                    name == "assembled"
+                    and offset == 0
+                    and bool(self._sets.get("assembled"))
+                    and self._incoming_cpu is not None
+                )
+                self._upload_named(name, [batch], append=offset > 0)
+                if first_assembled or (
+                    name == "assembled" and offset == 0 and self._incoming_cpu is not None
+                ):
+                    self._adopt_cpu(self._incoming_cpu, refit=self._incoming_refit)
+                    self._incoming_cpu = None
+            used_bytes += cpu_batch_upload_bytes(batch)
             uploaded = True
+            slices += 1
+            nxt = offset + 1
             if nxt >= len(batches):
                 self._chunk_queue.pop(0)
+                if str(name).startswith("patch:"):
+                    self._finish_patch_release(str(name).split(":", 1)[1])
             else:
                 self._chunk_queue[0] = (name, batches, nxt)
         self._finish_lod_aliases()
@@ -355,6 +387,9 @@ class GLPreviewRenderer:
 
     def cancel_chunked_upload(self) -> None:
         self._chunk_queue = []
+        pending = getattr(self, "_pending_patch_release", None)
+        if pending is not None:
+            pending.clear()
 
     def upload_pending(self) -> bool:
         return bool(self._chunk_queue)
@@ -419,7 +454,7 @@ class GLPreviewRenderer:
             self._sets["exploded_lod"] = self._sets.get("exploded") or []
 
     def patch_assembled(self, cpu: PreviewCpuScene) -> None:
-        """Patch assembled after an MWM refine. Cancel leftover shell chunks; reuse unchanged GPU batches."""
+        """Queue MWM patch uploads. Unchanged GPU batches stay; new ones follow the turn budget."""
         self.cancel_chunked_upload()
         if not self.available:
             self._cpu = cpu
@@ -427,28 +462,63 @@ class GLPreviewRenderer:
         self._cpu = cpu
         self.block_count = cpu.block_count
         self._break_set_aliases()
-        assembled = filter_batches(cpu.assembled, self._grid_filter, self._grid_entity_id)
-        self._patch_named("assembled", assembled)
+        assembled = split_batches_for_upload(
+            filter_batches(cpu.assembled, self._grid_filter, self._grid_entity_id),
+            max_instances=GL_UPLOAD_INSTANCE_BUDGET,
+            max_bytes=GL_UPLOAD_BYTE_BUDGET,
+        )
+        self._queue_patch_named("assembled", assembled)
         if should_alias_lod_sets(cpu.assembled, cpu.assembled_lod) or not cpu.huge:
             self._sets["assembled_lod"] = self._sets["assembled"]
         else:
-            self._patch_named(
+            self._queue_patch_named(
                 "assembled_lod",
-                filter_batches(cpu.assembled_lod, self._grid_filter, self._grid_entity_id),
+                split_batches_for_upload(
+                    filter_batches(cpu.assembled_lod, self._grid_filter, self._grid_entity_id),
+                    max_instances=GL_UPLOAD_INSTANCE_BUDGET,
+                    max_bytes=GL_UPLOAD_BYTE_BUDGET,
+                ),
             )
         if cpu.exploded and not self._secondary_pending:
-            self._patch_named("exploded", filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id))
+            self._queue_patch_named(
+                "exploded",
+                split_batches_for_upload(
+                    filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id),
+                    max_instances=GL_UPLOAD_INSTANCE_BUDGET,
+                    max_bytes=GL_UPLOAD_BYTE_BUDGET,
+                ),
+            )
             if should_alias_lod_sets(cpu.exploded, cpu.exploded_lod) or not cpu.huge:
                 self._sets["exploded_lod"] = self._sets["exploded"]
         self.upload_generation += 1
         self._write_inspect_hidden()
 
-    def upload_secondary_sets(self) -> None:
-        """Exploded / LOD-exploded buffers. Safe to call after the first blit."""
+    def upload_secondary_sets(self) -> bool:
+        """Queue exploded buffers. Product UI drains them with continue_cpu_upload."""
         if not self.available or self._cpu is None:
-            return
-        self._upload_secondary()
-        self.upload_generation += 1
+            return False
+        cpu = self._cpu
+        if self._sets.get("exploded_lod") is self._sets.get("exploded"):
+            self._sets["exploded_lod"] = []
+        exploded = split_batches_for_upload(
+            filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id),
+            max_instances=GL_UPLOAD_INSTANCE_BUDGET,
+            max_bytes=GL_UPLOAD_BYTE_BUDGET,
+        )
+        if exploded:
+            self._chunk_queue.append(("exploded", exploded, 0))
+        if should_alias_lod_sets(cpu.exploded, cpu.exploded_lod) or not cpu.huge:
+            self._alias_exploded_lod = True
+        else:
+            lod = split_batches_for_upload(
+                filter_batches(cpu.exploded_lod, self._grid_filter, self._grid_entity_id),
+                max_instances=GL_UPLOAD_INSTANCE_BUDGET,
+                max_bytes=GL_UPLOAD_BYTE_BUDGET,
+            )
+            if lod:
+                self._chunk_queue.append(("exploded_lod", lod, 0))
+        self._secondary_pending = False
+        return bool(self._chunk_queue)
 
     def write_dissect_offsets(self, mode: str, offsets: np.ndarray) -> None:
         """Rewrite one explode channel. Does not remesh or clone instances."""
@@ -608,6 +678,53 @@ class GLPreviewRenderer:
         self._release_batches(batches)
         self._sets[name] = []
 
+    def _queue_patch_named(self, name: str, batches: Sequence[CpuBatch]) -> None:
+        """Keep matching GPU batches on screen; queue only the uploads."""
+        if not hasattr(self, "_pending_patch_release") or self._pending_patch_release is None:
+            self._pending_patch_release = {}
+        old = list(self._sets.get(name) or [])
+        actions, release = plan_batch_delta(old, batches)
+        pending = [batches[idx] for action, idx in actions if action == "upload"]
+        self._pending_patch_release[name] = [old[i] for i in release]
+        if pending:
+            self._chunk_queue.append((f"patch:{name}", pending, 0))
+        else:
+            self._finish_patch_release(name)
+
+    def _patch_one(self, name: str, batch: CpuBatch) -> None:
+        gpu_new = self._gpu_batches_from_cpu([batch])
+        new_ids = {int(round(float(i))) for i in batch.instance_ids}
+        old = list(self._sets.get(name) or [])
+        kept: List[dict] = []
+        drop: List[dict] = []
+        for existing in old:
+            ids = existing.get("instance_ids")
+            overlap = False
+            if ids is not None:
+                for iid in ids:
+                    if int(round(float(iid))) in new_ids:
+                        overlap = True
+                        break
+            if overlap:
+                drop.append(existing)
+            else:
+                kept.append(existing)
+        if drop:
+            self._release_batches(drop)
+            leftover = self._pending_patch_release.get(name) or []
+            drop_set = set(id(item) for item in drop)
+            self._pending_patch_release[name] = [item for item in leftover if id(item) not in drop_set]
+        self._sets[name] = kept + gpu_new
+
+    def _finish_patch_release(self, name: str) -> None:
+        drop = self._pending_patch_release.pop(name, [])
+        if not drop:
+            return
+        drop_set = set(id(item) for item in drop)
+        remaining = [batch for batch in (self._sets.get(name) or []) if id(batch) not in drop_set]
+        self._release_batches(drop)
+        self._sets[name] = remaining
+
     def _patch_named(self, name: str, batches: Sequence[CpuBatch]) -> None:
         """Reuse GPU batches whose instance set + mesh size still match."""
         old = list(self._sets.get(name) or [])
@@ -690,13 +807,17 @@ class GLPreviewRenderer:
         return uploaded
 
     def _upload_named(self, name: str, batches: Sequence[CpuBatch], *, append: bool = False) -> None:
+        new_gpu = self._gpu_batches_from_cpu(batches)
         if append:
             uploaded = self._sets.get(name) or []
-            uploaded.extend(self._gpu_batches_from_cpu(batches))
-        else:
-            self._detach_and_release(name)
-            uploaded = self._gpu_batches_from_cpu(batches)
-        self._sets[name] = uploaded
+            uploaded.extend(new_gpu)
+            self._sets[name] = uploaded
+            return
+        old = self._sets.get(name) or []
+        shared = [key for key, value in self._sets.items() if key != name and value is old]
+        self._sets[name] = new_gpu
+        if not shared:
+            self._release_batches(old)
 
     def _active_batches(self, interactive: bool) -> List[dict]:
         huge = bool(self._cpu and self._cpu.huge)

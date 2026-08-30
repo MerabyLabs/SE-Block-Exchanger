@@ -415,7 +415,7 @@ class TacticalCommandCenter(ctk.CTk):
                         cleared=self.settings.space_engineers_cleared,
                     ):
                         return
-                    self.preview_panel.set_catalog_in_flight(False)
+                    self.preview_panel.set_catalog_in_flight(False, failed=True)
                     self.toasts.toast(f"Block catalog failed: {message}", level="warning")
 
                 self._ui(_fail)

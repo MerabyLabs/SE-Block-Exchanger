@@ -140,14 +140,18 @@ def _resolve_ref(from_file: Path, relative: str) -> Optional[Path]:
     return None
 
 
-def load_mwm(path: Path, *, quality: str = "high", _depth: int = 0) -> Optional[MwmMesh]:
+def load_mwm(path: Path, *, quality: str = "high", _depth: int = 0, cancel=None) -> Optional[MwmMesh]:
     """
     Load a Keen MWM. `quality` is "high" (mid official LOD / embedded)
     or "low" (last official LOD) for interactive preview.
     """
+    if cancel is not None and cancel():
+        return None
     try:
         data = Path(path).read_bytes()
     except OSError:
+        return None
+    if cancel is not None and cancel():
         return None
     if len(data) < 16:
         return None
@@ -159,7 +163,9 @@ def load_mwm(path: Path, *, quality: str = "high", _depth: int = 0) -> Optional[
 
     if "Vertices" in index and "MeshParts" in index:
         try:
-            positions = _load_vertices(buf, index["Vertices"])
+            positions = _load_vertices(buf, index["Vertices"], cancel=cancel)
+            if cancel is not None and cancel():
+                return None
             uvs = _load_uvs(buf, index.get("TexCoords0"))
             indices, materials = _load_parts(buf, index.get("MeshParts"), version)
         except (struct.error, ValueError, IndexError):
@@ -202,6 +208,8 @@ def load_mwm(path: Path, *, quality: str = "high", _depth: int = 0) -> Optional[
             candidates.append(geo)
     source = Path(path)
     for rel in candidates:
+        if cancel is not None and cancel():
+            return None
         resolved = _resolve_ref(source, rel)
         if resolved is None:
             continue
@@ -209,19 +217,21 @@ def load_mwm(path: Path, *, quality: str = "high", _depth: int = 0) -> Optional[
             mid = resolved.with_name(resolved.stem[:-1] + "2" + resolved.suffix)
             if mid.is_file():
                 resolved = mid
-        loaded = load_mwm(resolved, quality="high", _depth=_depth + 1)
+        loaded = load_mwm(resolved, quality="high", _depth=_depth + 1, cancel=cancel)
         if loaded is not None:
             return loaded
     return None
 
 
-def _load_vertices(buf: memoryview, loc: int) -> List[Tuple[float, float, float]]:
+def _load_vertices(buf: memoryview, loc: int, cancel=None) -> List[Tuple[float, float, float]]:
     _section, offset = _read_string(buf, loc)
     count, offset = _read_u32(buf, offset)
     if count > 2_000_000:
         raise ValueError("implausible vertex count")
     out: List[Tuple[float, float, float]] = []
-    for _ in range(count):
+    for i in range(count):
+        if cancel is not None and (i & 4095) == 0 and cancel():
+            return []
         x, offset = _read_hfloat(buf, offset)
         y, offset = _read_hfloat(buf, offset)
         z, offset = _read_hfloat(buf, offset)

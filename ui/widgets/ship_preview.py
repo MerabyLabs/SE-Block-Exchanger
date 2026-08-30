@@ -45,14 +45,13 @@ from se_render.preview_build import (
     refine_mwm_cpu,
 )
 from se_render.preview_style import (
-    FIRST_UPLOAD_CHUNK,
     INSPECT_CATEGORIES,
     MWM_REFINE_CHUNK,
     PROGRESSIVE_BLOCK_THRESHOLD,
-    UPLOAD_BATCH_CHUNK,
     fallback_banner_text,
     render_target_size,
     should_defer_catalog_box_build,
+    stale_shell_blocks_edits,
     staged_3d_caption,
 )
 from se_render.scene_graph import PreviewScene
@@ -158,8 +157,11 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._save_in_flight = False
         self._switching = False
         self._catalog_in_flight = False
+        self._catalog_failed = False
         self._catalog_wait = False
         self._refine_cancelled = False
+        self._gl_init_job = None
+        self._pending_swap = False
         self._install_cleared = False
         self._ship_name = ""
         self._isolated_count: Optional[int] = None
@@ -520,6 +522,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._catalog = catalog
         if catalog is not None:
             self._catalog_in_flight = False
+            self._catalog_failed = False
             self._catalog_wait = False
         if meshes is not None:
             self._meshes = meshes
@@ -528,13 +531,17 @@ class ShipPreviewHost(ctk.CTkFrame):
         if self._scene is not None and self._install_valid:
             self._start_build()
 
-    def set_catalog_in_flight(self, pending: bool) -> None:
+    def set_catalog_in_flight(self, pending: bool, *, failed: bool = False) -> None:
         self._catalog_in_flight = bool(pending)
         if pending:
+            self._catalog_failed = False
             return
+        if failed:
+            self._catalog_failed = True
         if self._catalog_wait and self._scene is not None and self._install_valid:
-            self._catalog_wait = False
-            self._start_build()
+            if self._catalog is not None or self._catalog_failed:
+                self._catalog_wait = False
+                self._start_build()
 
     def will_show_3d(self) -> bool:
         return bool(self._install_valid and not self._gl_failed)
@@ -544,6 +551,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._cancel_build()
         self._switching = True
         self._building = True
+        self._pending_swap = False
         self._catalog_wait = False
         self._refine_cancelled = False
         self._ship_name = ship_name or ""
@@ -552,6 +560,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._grid_entity_id = None
         self._grid_isolate_key = None
         self._isolated_count = None
+        self._set_dissect_enabled(False)
         self._refresh_status()
         self._apply_cancel_refine_chrome()
 
@@ -565,6 +574,14 @@ class ShipPreviewHost(ctk.CTkFrame):
         blocks: Optional[List[VoxelBlock]] = None,
         voxels: Optional[List[dict]] = None,
     ) -> None:
+        if (
+            scene is not None
+            and scene is self._scene
+            and self._mesh_ready
+            and not self._switching
+            and self._cpu_scene is not None
+        ):
+            return
         keep_shell = bool(self._mesh_ready and self._renderer is not None)
         self._scene = scene
         self._deferred_voxels = list(voxels or [])
@@ -607,10 +624,15 @@ class ShipPreviewHost(ctk.CTkFrame):
             self.ship_canvas.load_structure_data(drawn, draw=True)
         self._apply_mode()
         if want_3d:
-            if should_defer_catalog_box_build(self._catalog, self._catalog_in_flight):
+            if should_defer_catalog_box_build(
+                self._catalog,
+                self._catalog_in_flight,
+                catalog_failed=self._catalog_failed,
+            ):
                 self._catalog_wait = True
                 self._building = True
                 self._switching = True
+                self._set_dissect_enabled(False)
                 self._refresh_status()
                 return
             self._start_build()
@@ -752,8 +774,20 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._refine_cancelled = True
         self._dissect_preparing = False
         self._building = False
+        self._dissect_job.cancel()
+        self._cancel_chunk_job()
         self._refresh_status()
         self._apply_cancel_refine_chrome()
+
+    def _edits_live(self) -> bool:
+        return not stale_shell_blocks_edits(
+            switching=self._switching,
+            mesh_ready=self._mesh_ready,
+            catalog_wait=self._catalog_wait,
+        )
+
+    def _refine_is_cancelled(self) -> bool:
+        return bool(self._refine_cancelled)
 
     def _apply_cancel_refine_chrome(self) -> None:
         show = bool(self._building and self._mesh_ready and not self._refine_cancelled)
@@ -774,11 +808,25 @@ class ShipPreviewHost(ctk.CTkFrame):
     def _start_build(self) -> None:
         if not self._install_valid or self._gl_failed or self._scene is None:
             return
-        if should_defer_catalog_box_build(self._catalog, self._catalog_in_flight):
+        if should_defer_catalog_box_build(
+            self._catalog,
+            self._catalog_in_flight,
+            catalog_failed=self._catalog_failed,
+        ):
             self._catalog_wait = True
             self._building = True
             self._refresh_status()
             self._apply_mode()
+            return
+        if (
+            self._mesh_ready
+            and self._cpu_scene is not None
+            and self._scene is not None
+            and not self._switching
+            and self._cpu_scene.source_blocks is self._scene.blocks
+        ):
+            self._building = False
+            self._refresh_status()
             return
         self._catalog_wait = False
         self._refine_cancelled = False
@@ -841,28 +889,18 @@ class ShipPreviewHost(ctk.CTkFrame):
     def _on_build_ready(self, generation: int, cpu: PreviewCpuScene, refine: bool = False) -> None:
         if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
             return
-        renderer = self._ensure_renderer()
-        if renderer is None:
-            self._building = False
-            self._apply_mode()
-            self._materialize_2d_fallback()
-            return
         self._pending_cpu = cpu
         self._pending_refine = bool(refine)
         self._cpu_stage = cpu.stage
         self._shown_count = int(cpu.shown_count or 0)
         self._refresh_status()
+        if self._renderer is None or not self._renderer.available:
+            self._schedule_gl_init()
+            return
         self.after(1, lambda: self._commit_cpu_upload(generation))
 
-    def _commit_cpu_upload(self, generation: int) -> None:
-        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
-            return
-        cpu = getattr(self, "_pending_cpu", None)
-        if cpu is None:
-            return
-        refine = bool(getattr(self, "_pending_refine", False))
-        if not self._upload_cpu(cpu):
-            return
+    def _complete_swap(self, generation: int, cpu: PreviewCpuScene, refine: bool) -> None:
+        self._pending_swap = False
         self._switching = False
         self._mesh_ready = True
         self._cpu_scene = cpu
@@ -879,12 +917,45 @@ class ShipPreviewHost(ctk.CTkFrame):
             self.after(16, lambda: self._start_mwm_refine(generation))
         elif more:
             self.after(16, lambda: self._start_interior_fill(generation))
-        elif cpu.huge and cpu.stage == STAGE_FULL and cpu.exploded:
-            self.after(16, lambda: self._finish_secondary_upload(generation))
         self._building = more
         self._refresh_status()
         self._apply_cancel_refine_chrome()
         self._schedule_redraw(interactive=False)
+
+    def _shell_swapped_in(self) -> bool:
+        renderer = self._renderer
+        if renderer is None or not renderer.available:
+            return False
+        if getattr(renderer, "_incoming_cpu", None) is not None:
+            return False
+        return bool(renderer._sets.get("assembled"))
+
+    def _commit_cpu_upload(self, generation: int) -> None:
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
+            return
+        cpu = getattr(self, "_pending_cpu", None)
+        if cpu is None:
+            return
+        refine = bool(getattr(self, "_pending_refine", False))
+        renderer = self._renderer
+        if renderer is None or not renderer.available:
+            if self._gl_failed:
+                self._building = False
+                self._apply_mode()
+                self._materialize_2d_fallback()
+            else:
+                self._schedule_gl_init()
+            return
+        if not self._upload_cpu(cpu):
+            return
+        if renderer.upload_pending() or getattr(renderer, "_incoming_cpu", None) is not None:
+            self._pending_swap = True
+            if renderer.upload_pending() and self._upload_chunk_job is None:
+                self._upload_chunk_job = self.after(
+                    1, lambda: self._continue_gl_upload(generation)
+                )
+            return
+        self._complete_swap(generation, cpu, refine)
 
     def _start_refine(self, generation: int, stage: str) -> None:
         if self._refine_cancelled:
@@ -943,15 +1014,24 @@ class ShipPreviewHost(ctk.CTkFrame):
 
         def task() -> None:
             try:
+                def _stop() -> bool:
+                    return self._refine_cancelled or not self._job.is_current(generation)
+
                 for definition in defs:
-                    library.mesh_for(definition, skip_mwm=False)
+                    if _stop():
+                        return
+                    library.mesh_for(definition, skip_mwm=False, cancel=_stop)
+                if _stop():
+                    return
                 if prior is None:
                     cpu = build_preview_cpu(
                         scene, catalog, library, generation=generation, stage=STAGE_MESHES,
                         cancel=self._job, prior=prior,
                     )
                 else:
-                    cpu = refine_mwm_cpu(copy_cpu_for_dissect(prior), catalog, library, defs)
+                    cpu = refine_mwm_cpu(
+                        copy_cpu_for_dissect(prior), catalog, library, defs, cancel=_stop,
+                    )
             except Exception as exc:
                 message = str(exc)
                 self.after(0, lambda: self._on_refine_failed(generation, message))
@@ -1004,17 +1084,21 @@ class ShipPreviewHost(ctk.CTkFrame):
             return
         if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._cpu_scene is None:
             return
+        if self._explode <= 1e-4 and self._hide_layers <= 0:
+            cpu = self._cpu_scene
+            cpu.stage = STAGE_FULL
+            self._cpu_stage = STAGE_FULL
+            self._remember_cpu(cpu)
+            self._building = False
+            self._refresh_status()
+            self._apply_cancel_refine_chrome()
+            return
         cpu = self._cpu_scene
         if cpu.exploded:
             if self._explode > 1e-4:
                 self._start_dissect_prepare(generation)
             else:
-                try:
-                    if self._renderer is not None:
-                        self._renderer._cpu = cpu
-                        self._renderer.upload_secondary_sets()
-                except Exception:
-                    pass
+                self._queue_secondary_upload(generation)
                 self._building = False
                 self._refresh_status()
                 self._apply_cancel_refine_chrome()
@@ -1024,8 +1108,11 @@ class ShipPreviewHost(ctk.CTkFrame):
 
         def task() -> None:
             try:
+                def _stop() -> bool:
+                    return self._refine_cancelled or not self._job.is_current(generation)
+
                 working = copy_cpu_for_dissect(cpu)
-                ensure_exploded_batches(working, catalog, library)
+                ensure_exploded_batches(working, catalog, library, cancel=_stop)
             except Exception as exc:
                 message = str(exc)
                 self.after(0, lambda: self._on_refine_failed(generation, message))
@@ -1042,12 +1129,8 @@ class ShipPreviewHost(ctk.CTkFrame):
         if cpu is None:
             return
         self._cpu_scene = cpu
-        if self._renderer is not None and cpu.exploded:
-            try:
-                self._renderer._cpu = cpu
-                self._renderer.upload_secondary_sets()
-            except Exception:
-                pass
+        if self._renderer is not None and cpu.exploded and (self._explode > 1e-4 or self._hide_layers > 0):
+            self._queue_secondary_upload(generation)
         cpu.stage = STAGE_FULL
         self._cpu_stage = STAGE_FULL
         self._mwm_total = 0
@@ -1071,8 +1154,13 @@ class ShipPreviewHost(ctk.CTkFrame):
 
         def task() -> None:
             try:
+                def _stop() -> bool:
+                    return self._refine_cancelled or not self._dissect_job.is_current(dissect_gen)
+
                 working = copy_cpu_for_dissect(live)
-                ensure_exploded_batches(working, catalog, library)
+                ensure_exploded_batches(working, catalog, library, cancel=_stop)
+                if _stop():
+                    return
                 apply_dissect_mode(working, wanted, catalog)
             except Exception as exc:
                 message = str(exc)
@@ -1093,7 +1181,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         try:
             self._renderer._cpu = cpu
             if cpu.exploded:
-                self._renderer.upload_secondary_sets()
+                self._queue_secondary_upload(generation)
             offsets = None
             if mode == DISSECT_DECKS:
                 offsets = cpu.offset_decks
@@ -1146,37 +1234,33 @@ class ShipPreviewHost(ctk.CTkFrame):
         chunked: bool = True,
         patch: bool = False,
     ) -> bool:
-        renderer = self._ensure_renderer()
-        if renderer is None:
-            self._gl_status.configure(text=last_gl_error() or "OpenGL preview is unavailable.")
-            self._gl_failed = True
-            self._building = False
-            self._apply_mode()
-            return False
+        renderer = self._renderer
+        if renderer is None or not renderer.available:
+            if self._gl_failed:
+                self._gl_status.configure(text=last_gl_error() or "OpenGL preview is unavailable.")
+                self._building = False
+                self._apply_mode()
+                return False
+            self._schedule_gl_init()
+            return True
         try:
             if patch:
                 self._cancel_chunk_job()
                 renderer.patch_assembled(cpu)
-            elif chunked and len(cpu.assembled) > FIRST_UPLOAD_CHUNK:
+                if renderer.upload_pending():
+                    gen = self._job.generation
+                    self._upload_chunk_job = self.after(1, lambda: self._continue_gl_upload(gen))
+            else:
                 more = renderer.begin_cpu_upload(
                     cpu,
                     grid_filter=self._grid_filter,
                     grid_entity_id=self._grid_entity_id,
-                    defer_secondary=cpu.huge or cpu.stage != STAGE_FULL,
+                    defer_secondary=True,
                     refit=refit,
                 )
                 if more:
                     gen = self._job.generation
-                    self._upload_chunk_job = self.after(
-                        1, lambda: self._continue_gl_upload(gen, first=True)
-                    )
-            else:
-                renderer.upload_cpu_scene(
-                    cpu,
-                    grid_filter=self._grid_filter,
-                    defer_secondary=cpu.huge or cpu.stage != STAGE_FULL,
-                    refit=refit,
-                )
+                    self._upload_chunk_job = self.after(1, lambda: self._continue_gl_upload(gen))
             renderer.explode = self._explode
             renderer.dissect_mode = self._dissect_mode
             renderer.hide_armor = self._hide_armor
@@ -1202,14 +1286,27 @@ class ShipPreviewHost(ctk.CTkFrame):
         if self._renderer is None:
             return
         try:
-            chunk = FIRST_UPLOAD_CHUNK if first else UPLOAD_BATCH_CHUNK
-            more = self._renderer.continue_cpu_upload(chunk)
+            more = self._renderer.continue_cpu_upload(1)
         except Exception:
             return
+        if self._pending_swap and self._shell_swapped_in():
+            cpu = getattr(self, "_pending_cpu", None)
+            if cpu is not None:
+                self._complete_swap(generation, cpu, bool(getattr(self, "_pending_refine", False)))
         self._sync_user_hidden()
         self._refresh_status()
         self._schedule_redraw(interactive=False)
         if more:
+            self._upload_chunk_job = self.after(1, lambda: self._continue_gl_upload(generation))
+
+    def _queue_secondary_upload(self, generation: int) -> None:
+        if self._renderer is None or not self._renderer.available:
+            return
+        try:
+            more = self._renderer.upload_secondary_sets()
+        except Exception:
+            return
+        if more and self._upload_chunk_job is None:
             self._upload_chunk_job = self.after(1, lambda: self._continue_gl_upload(generation))
 
     def _finish_secondary_upload(self, generation: int) -> None:
@@ -1217,31 +1314,56 @@ class ShipPreviewHost(ctk.CTkFrame):
             return
         if self._renderer is None or not self._mesh_ready:
             return
-        try:
-            self._renderer.upload_secondary_sets()
-        except Exception:
-            return
+        self._queue_secondary_upload(generation)
         if self._explode > 1e-4:
             self._schedule_redraw(interactive=False)
+
+    def _schedule_gl_init(self) -> None:
+        if self._gl_failed or self._gl_init_job is not None:
+            return
+        if self._renderer is not None and self._renderer.available:
+            return
+        self._gl_init_job = self.after(1, self._run_gl_init)
+
+    def _run_gl_init(self) -> None:
+        self._gl_init_job = None
+        if self._gl_failed:
+            return
+        if self._renderer is None:
+            self._renderer = GLPreviewRenderer(init=False)
+        if self._renderer.available:
+            if self._pending_cpu is not None:
+                self.after(1, lambda: self._commit_cpu_upload(self._job.generation))
+            return
+        if not self._renderer.try_init():
+            self._gl_failed = True
+            self._building = False
+            self._apply_mode()
+            self._materialize_2d_fallback()
+            return
+        if self._pending_cpu is not None:
+            self.after(1, lambda: self._commit_cpu_upload(self._job.generation))
 
     def _ensure_renderer(self) -> Optional[GLPreviewRenderer]:
         if self._gl_failed:
             return None
-        if self._renderer is not None:
-            return self._renderer if self._renderer.available else None
-        renderer = GLPreviewRenderer()
-        if not renderer.available:
-            self._gl_failed = True
+        if self._renderer is None:
+            self._renderer = GLPreviewRenderer(init=False)
+            self._schedule_gl_init()
             return None
-        self._renderer = renderer
-        return renderer
+        if not self._renderer.available:
+            self._schedule_gl_init()
+            return None
+        return self._renderer
 
     def _apply_mode(self) -> None:
         want_3d = self._install_valid and not self._gl_failed and (self._mesh_ready or self._building)
         if want_3d:
-            renderer = self._ensure_renderer()
-            if renderer is None:
-                want_3d = False
+            if self._renderer is None:
+                self._renderer = GLPreviewRenderer(init=False)
+                self._schedule_gl_init()
+            elif not self._renderer.available:
+                self._schedule_gl_init()
         new_mode = "3d" if want_3d else "2d"
         if new_mode == self._mode and self._gl_frame.winfo_ismapped() == (new_mode == "3d"):
             return
@@ -1442,11 +1564,10 @@ class ShipPreviewHost(ctk.CTkFrame):
         have_offsets = mode in (cpu.dissect_modes or ())
         have_exploded = bool(cpu.exploded)
         if have_offsets and have_exploded:
-            if self._renderer is not None and self._renderer._secondary_pending:
-                try:
-                    self._renderer.upload_secondary_sets()
-                except Exception:
-                    pass
+            if self._renderer is not None and (
+                self._renderer._secondary_pending or not (self._renderer._sets.get("exploded") or [])
+            ):
+                self._queue_secondary_upload(self._job.generation)
             return
         self._start_dissect_prepare(self._job.generation, mode)
 
@@ -1547,7 +1668,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._schedule_redraw(interactive=False)
 
     def _pick_at(self, x: float, y: float) -> None:
-        if self._renderer is None:
+        if self._renderer is None or not self._edits_live():
             return
         w = max(self._gl_canvas.winfo_width(), 64)
         h = max(self._gl_canvas.winfo_height(), 64)
@@ -1762,6 +1883,8 @@ class ShipPreviewHost(ctk.CTkFrame):
             pass
         if self._renderer is not None:
             self._renderer.hide_layers = self._hide_layers
+        if self._hide_layers > 0 and self._cpu_scene is not None and not self._cpu_scene.exploded:
+            self._start_interior_fill(self._job.generation)
         self._refresh_status()
         self._schedule_redraw(interactive=False)
 
@@ -1821,7 +1944,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._schedule_redraw(interactive=False)
 
     def _hide_selected_type(self) -> None:
-        if self._selected_rec is None or self._renderer is None:
+        if self._selected_rec is None or self._renderer is None or not self._edits_live():
             return
         self._renderer.hidden_subtypes.add(self._selected_rec.subtype)
         self._sync_user_hidden()
@@ -1829,7 +1952,7 @@ class ShipPreviewHost(ctk.CTkFrame):
 
     def _hide_selected(self) -> None:
         rec = self._selected_rec
-        if rec is None:
+        if rec is None or not self._edits_live():
             return
         self._edits.hide(pick_identity(rec))
         self._sync_user_hidden()
@@ -1837,7 +1960,7 @@ class ShipPreviewHost(ctk.CTkFrame):
 
     def _delete_selected(self) -> None:
         rec = self._selected_rec
-        if rec is None:
+        if rec is None or not self._edits_live():
             return
         self._edits.delete(pick_identity(rec))
         self._sync_user_hidden()
@@ -1850,7 +1973,7 @@ class ShipPreviewHost(ctk.CTkFrame):
 
     def _nudge_selected(self, delta) -> None:
         rec = self._selected_rec
-        if rec is None or self._scene is None:
+        if rec is None or self._scene is None or not self._edits_live():
             return
         ident = pick_identity(rec)
         if self._edits.is_removed(ident):
@@ -1872,7 +1995,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._rebuild_after_edit(keep_id=keep_id)
 
     def _undo_edit(self) -> None:
-        if not self._edits.undo():
+        if not self._edits_live() or not self._edits.undo():
             return
         self._rebuild_after_edit()
 
@@ -1905,10 +2028,8 @@ class ShipPreviewHost(ctk.CTkFrame):
     def _on_edit_rebuild(self, generation: int, cpu: PreviewCpuScene, keep_id) -> None:
         if not self._job.is_current(generation) or self._renderer is None:
             return
-        try:
-            self._renderer.upload_cpu_scene(cpu, grid_filter=self._grid_filter, refit=False)
-        except Exception as exc:
-            self._toast(f"3D rebuild failed: {exc}", "warning")
+        if not self._upload_cpu(cpu, refit=False):
+            self._toast("3D rebuild failed.", "warning")
             return
         self._cpu_scene = cpu
         self._sync_user_hidden()
@@ -1949,6 +2070,9 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._focus_selection()
 
     def _save_as_new(self) -> None:
+        if not self._edits_live():
+            self._toast("Wait for the selected ship to finish loading.", "info")
+            return
         if self._save_in_flight:
             self._toast("Save As is already in progress.", "info")
             return

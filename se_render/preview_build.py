@@ -426,6 +426,7 @@ def _build_instance_columns(
     catalog: Optional[CubeBlockCatalog],
     shell_layers: Sequence[int],
     indices: Optional[Sequence[int]] = None,
+    cancel=None,
 ) -> _InstanceColumns:
     n = len(blocks)
     models = np.zeros((n, 16), dtype=np.float32)
@@ -440,7 +441,9 @@ def _build_instance_columns(
     size_cache: Dict[Tuple[str, str], Tuple[int, int, int]] = {}
     has_mwm = False
     walk = indices if indices is not None else range(n)
-    for i in walk:
+    for n_walk, i in enumerate(walk):
+        if cancel is not None and (n_walk & 255) == 0 and cancel():
+            return _InstanceColumns(models, colors, params, accents, inspect, kinds, has_mwm)
         block = blocks[i]
         skey = (block.type_id, block.subtype)
         style = style_map.get(skey)
@@ -536,7 +539,8 @@ def _collect_batches(
             defn_cache[skey] = definition
         size = definition_size(definition)
         mesh = meshes.mesh_for(
-            definition, block.subtype, size, block.grid_size, lod=lod, skip_mwm=skip_mwm
+            definition, block.subtype, size, block.grid_size, lod=lod, skip_mwm=skip_mwm,
+            cancel=cancel,
         )
         cull_mask = 0 if explode else (plan.cull_mask if plan.topology_cullable else 0)
         kind = int(cols.kinds[i])
@@ -766,8 +770,8 @@ def build_preview_cpu(
         occupied = build_occupancy(blocks, catalog, cancel=_stale) if blocks else {}
         if _stale():
             return _empty_cpu(blocks, center, radius, huge, generation, stage_key)
-        plans = plan_blocks(blocks, catalog, occupied=occupied)
-        if _stale():
+        plans = plan_blocks(blocks, catalog, occupied=occupied, cancel=_stale)
+        if _stale() or (blocks and not plans):
             return _empty_cpu(blocks, center, radius, huge, generation, stage_key)
         layer_by_grid = {
             gid: occupancy_shell_layers(cells, cancel=_stale) for gid, cells in occupied.items()
@@ -802,7 +806,9 @@ def build_preview_cpu(
             column_idx = list(keep)
         else:
             column_idx = [i for i, plan in enumerate(plans) if not plan.fully_enclosed]
-    columns = _build_instance_columns(blocks, catalog, shell_layers, indices=column_idx)
+    columns = _build_instance_columns(
+        blocks, catalog, shell_layers, indices=column_idx, cancel=_stale,
+    )
     has_mwm = columns.has_functional_mwm or _scene_has_mwm(blocks, catalog)
     if _stale():
         return _empty_cpu(blocks, center, radius, huge, generation, stage_key)
@@ -819,16 +825,7 @@ def build_preview_cpu(
 
     exploded: List[CpuBatch] = []
     exploded_picks: List[PickRecord] = []
-    if stage_key == STAGE_FULL:
-        exploded, exploded_picks = _collect_batches(
-            blocks, catalog, library, explode=True, lod=False,
-            offsets_peel=peel, offsets_decks=decks, offsets_radial=radial,
-            shell_layers=shell_layers, plans=plans, skip_mwm=False,
-            cheap_picks=True, keep_indices=None, columns=columns, cancel=_stale,
-        )
-        if _stale():
-            return _empty_cpu(blocks, center, radius, huge, generation, stage_key)
-    elif reuse and prior is not None and prior.exploded:
+    if reuse and prior is not None and prior.exploded:
         exploded = prior.exploded
         exploded_picks = [rec for rec in prior.picks]
 
@@ -936,6 +933,7 @@ def ensure_exploded_batches(
     cpu: PreviewCpuScene,
     catalog: Optional[CubeBlockCatalog] = None,
     meshes: Optional[MeshLibrary] = None,
+    cancel=None,
 ) -> PreviewCpuScene:
     """Add the interior instance set once, when Dissect first needs it."""
     if cpu.exploded:
@@ -943,18 +941,24 @@ def ensure_exploded_batches(
     blocks = cpu.source_blocks
     if not blocks:
         return cpu
+    if cancel is not None and cancel():
+        return cpu
     library = meshes or MeshLibrary()
     zeros = _zero_offsets(len(blocks))
     peel = cpu.offset_peel if cpu.offset_peel is not None else zeros
     decks = cpu.offset_decks if cpu.offset_decks is not None else zeros
     radial = cpu.offset_radial if cpu.offset_radial is not None else zeros
-    columns = _build_instance_columns(blocks, catalog, cpu.shell_layers)
+    columns = _build_instance_columns(blocks, catalog, cpu.shell_layers, cancel=cancel)
+    if cancel is not None and cancel():
+        return cpu
     exploded, picks = _collect_batches(
         blocks, catalog, library, explode=True, lod=False,
         offsets_peel=peel, offsets_decks=decks, offsets_radial=radial,
         shell_layers=cpu.shell_layers, plans=cpu.plans, skip_mwm=False,
-        cheap_picks=True, keep_indices=None, columns=columns,
+        cheap_picks=True, keep_indices=None, columns=columns, cancel=cancel,
     )
+    if cancel is not None and cancel():
+        return cpu
     cpu.exploded = exploded
     cpu.exploded_lod = exploded
     if picks:
@@ -1172,11 +1176,14 @@ def refine_mwm_cpu(
     catalog: Optional[CubeBlockCatalog],
     library: MeshLibrary,
     definitions: Sequence,
+    cancel=None,
 ) -> PreviewCpuScene:
     """
     Remesh only instances whose MWM just arrived. Reuses occupancy, plans, picks.
     """
     if cpu is None or not definitions or not cpu.source_blocks:
+        return cpu
+    if cancel is not None and cancel():
         return cpu
     keys = {getattr(item, "key", None) for item in definitions}
     keys.discard(None)
@@ -1185,12 +1192,18 @@ def refine_mwm_cpu(
     blocks = cpu.source_blocks
     affected = []
     for i, block in enumerate(blocks):
+        if cancel is not None and (i & 255) == 0 and cancel():
+            return cpu
         definition = catalog.get(block.type_id, block.subtype) if catalog is not None else None
         if definition is not None and definition.key in keys:
             affected.append(i)
     if not affected:
         return cpu
-    columns = _build_instance_columns(blocks, catalog, cpu.shell_layers, indices=affected)
+    columns = _build_instance_columns(
+        blocks, catalog, cpu.shell_layers, indices=affected, cancel=cancel,
+    )
+    if cancel is not None and cancel():
+        return cpu
     zeros = _zero_offsets(len(blocks))
     peel = cpu.offset_peel if cpu.offset_peel is not None else zeros
     decks = cpu.offset_decks if cpu.offset_decks is not None else zeros
@@ -1199,8 +1212,10 @@ def refine_mwm_cpu(
         blocks, catalog, library, explode=False, lod=False,
         offsets_peel=peel, offsets_decks=decks, offsets_radial=radial,
         shell_layers=cpu.shell_layers, plans=cpu.plans, skip_mwm=False,
-        cheap_picks=True, keep_indices=affected, columns=columns,
+        cheap_picks=True, keep_indices=affected, columns=columns, cancel=cancel,
     )
+    if cancel is not None and cancel():
+        return cpu
     drop = set(affected)
     cpu.assembled = _merge_refined_batches(cpu.assembled, new_assembled, drop)
     cpu.assembled_lod = cpu.assembled
@@ -1209,8 +1224,10 @@ def refine_mwm_cpu(
             blocks, catalog, library, explode=True, lod=False,
             offsets_peel=peel, offsets_decks=decks, offsets_radial=radial,
             shell_layers=cpu.shell_layers, plans=cpu.plans, skip_mwm=False,
-            cheap_picks=True, keep_indices=affected, columns=columns,
+            cheap_picks=True, keep_indices=affected, columns=columns, cancel=cancel,
         )
+        if cancel is not None and cancel():
+            return cpu
         cpu.exploded = _merge_refined_batches(cpu.exploded, new_exploded, drop)
         cpu.exploded_lod = cpu.exploded
     if new_picks and cpu.picks:

@@ -28,6 +28,29 @@ from se_assets.mesh_cache import MeshLibrary
 from se_render.scene_graph import PreviewScene
 from ui.widgets.grid_tree import GridHierarchyView
 from blueprint_document import subgrids_ui_applies
+
+
+def subgrids_same_ship_is_noop(
+    *,
+    path,
+    current_path,
+    scene,
+    pending_scene,
+    structure,
+    pending_structure,
+    rendered_for,
+    revision,
+) -> bool:
+    """Same-ship Subgrids tab revisit must not bump revision or rebuild 3D."""
+    if path is None or current_path is None:
+        return False
+    if str(path) != str(current_path):
+        return False
+    if scene is not pending_scene or structure is not pending_structure:
+        return False
+    if rendered_for is None:
+        return False
+    return int(rendered_for) == int(revision)
 from ui.widgets.ship_canvas import voxels_to_blocks
 from ui.widgets.ship_preview import ShipPreviewHost
 
@@ -98,6 +121,7 @@ class PreviewPanel(ctk.CTkFrame):
         self._subgrids_path = None
         self._subgrids_ship_name = ""
         self._catalog_in_flight = False
+        self._catalog_failed = False
         self._install_cleared = False
         self._render_job = None
         self._pending_analytics = None
@@ -393,22 +417,36 @@ class PreviewPanel(ctk.CTkFrame):
         if self.ship_preview is not None:
             self.ship_preview.set_install_state(valid, path_text, message, cleared=cleared)
 
-    def set_catalog_in_flight(self, pending: bool) -> None:
+    def set_catalog_in_flight(self, pending: bool, *, failed: bool = False) -> None:
         self._catalog_in_flight = bool(pending)
+        if pending:
+            self._catalog_failed = False
+        elif failed:
+            self._catalog_failed = True
         if self.ship_preview is not None:
-            self.ship_preview.set_catalog_in_flight(pending)
+            self.ship_preview.set_catalog_in_flight(pending, failed=failed)
 
     def set_se_catalog(self, catalog: Optional[CubeBlockCatalog], meshes: Optional[MeshLibrary] = None) -> None:
         if catalog is not None:
             self._catalog_in_flight = False
+            self._catalog_failed = False
         self._pending_catalog = pending_catalog_for(catalog, meshes)
         if self.ship_preview is not None:
             if catalog is None:
-                self.ship_preview.set_catalog_in_flight(self._catalog_in_flight)
+                self.ship_preview.set_catalog_in_flight(self._catalog_in_flight, failed=self._catalog_failed)
             self.ship_preview.set_catalog(catalog, meshes)
 
     def begin_blueprint_switch(self, path, ship_name: str = "") -> int:
         """Cancel in-flight Subgrids/3D work for A→B. Keep last shell on screen."""
+        if (
+            path is not None
+            and self._subgrids_path is not None
+            and str(self._subgrids_path) == str(path)
+            and self.ship_preview is not None
+            and getattr(self.ship_preview, "_mesh_ready", False)
+            and not getattr(self.ship_preview, "_switching", False)
+        ):
+            return self._subgrids_generation
         self._subgrids_generation += 1
         self._subgrids_path = path
         self._subgrids_ship_name = ship_name or ""
@@ -447,6 +485,17 @@ class PreviewPanel(ctk.CTkFrame):
         if path is not None and self._subgrids_path is not None:
             if str(self._subgrids_path) != str(path):
                 return
+        if subgrids_same_ship_is_noop(
+            path=path,
+            current_path=self._subgrids_path,
+            scene=scene,
+            pending_scene=self._pending_scene,
+            structure=structure,
+            pending_structure=self._pending_structure,
+            rendered_for=self._subgrids_rendered_for,
+            revision=self._subgrids_revision,
+        ):
+            return
         self._pending_structure = structure
         self._pending_voxels = voxels or []
         self._pending_scene = scene

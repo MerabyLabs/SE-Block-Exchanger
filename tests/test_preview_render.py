@@ -181,7 +181,7 @@ class OrbitDoesNotRebuildTests(unittest.TestCase):
             self.skipTest("OpenGL 3.3 context is not available")
         ctx.release()
 
-        renderer = GLPreviewRenderer()
+        renderer = GLPreviewRenderer(init=True)
         self.addCleanup(renderer.release)
         self.assertTrue(renderer.available)
         block = BlockInstance(
@@ -304,6 +304,8 @@ class OccupancyCullingTests(unittest.TestCase):
         self.assertFalse(corner.fully_enclosed)
         scene = PreviewScene(blocks=blocks, main_grid_name="Hull", total_blocks=27)
         cpu = build_preview_cpu(scene, catalog)
+        from se_render.preview_build import ensure_exploded_batches
+        ensure_exploded_batches(cpu, catalog)
         self.assertLess(instance_count(cpu.assembled), instance_count(cpu.exploded))
         self.assertEqual(instance_count(cpu.exploded), 27)
         self.assertLess(triangle_count(cpu.assembled), triangle_count(cpu.exploded))
@@ -374,7 +376,7 @@ class BuildJobAndCatalogPathTests(unittest.TestCase):
             self.skipTest("OpenGL 3.3 context is not available")
         ctx.release()
 
-        renderer = GLPreviewRenderer()
+        renderer = GLPreviewRenderer(init=True)
         self.addCleanup(renderer.release)
         scene = PreviewScene(blocks=[_cube((0, 0, 0))], main_grid_name="Hull", total_blocks=1)
         renderer.load(scene)
@@ -482,6 +484,8 @@ class SlopeOccupancyTests(unittest.TestCase):
         self.assertFalse(center.fully_enclosed)
         scene = PreviewScene(blocks=blocks, main_grid_name="Hull", total_blocks=27)
         cpu = build_preview_cpu(scene, catalog)
+        from se_render.preview_build import ensure_exploded_batches
+        ensure_exploded_batches(cpu, catalog)
         slope_index = next(i for i, b in enumerate(blocks) if b.subtype == "LargeBlockArmorSlope")
         assembled_ids = [int(i) for batch in cpu.assembled for i in batch.instance_ids.tolist()]
         self.assertIn(slope_index, assembled_ids)
@@ -737,6 +741,8 @@ class DissectModelTests(unittest.TestCase):
         blocks = [_cube((x, 0, 0), str(x)) for x in range(5)]
         scene = PreviewScene(blocks=blocks, main_grid_name="Hull", total_blocks=5)
         cpu = build_preview_cpu(scene, catalog)
+        from se_render.preview_build import ensure_exploded_batches
+        ensure_exploded_batches(cpu, catalog)
         apply_dissect_mode(cpu, DISSECT_PEEL, catalog)
         apply_dissect_mode(cpu, DISSECT_RADIAL, catalog)
         batch = cpu.exploded[0]

@@ -66,6 +66,7 @@ class MeshLibrary:
         lod: bool = False,
         prefer_box: bool = False,
         skip_mwm: bool = False,
+        cancel=None,
     ) -> MeshData:
         """
         Resolve a block mesh. `lod` may simplify functional MWM.
@@ -76,6 +77,8 @@ class MeshLibrary:
         """
         lod = bool(lod or prefer_box)
         skip_mwm = bool(skip_mwm)
+        if cancel is not None and cancel():
+            return topology_mesh("Box")
         if definition is not None:
             size = definition.size
             grid_size = definition.cube_size or grid_size
@@ -97,11 +100,17 @@ class MeshLibrary:
             and definition.model_path
             and self.install
         ):
-            mesh = self._from_mwm(definition.model_path, quality="low" if lod else "high")
+            mesh = self._from_mwm(
+                definition.model_path,
+                quality="low" if lod else "high",
+                cancel=cancel,
+            )
             from_mwm = mesh is not None
             if from_mwm:
                 mesh = simplify_mesh(mesh, max_triangles=96 if lod else 320)
         if mesh is None:
+            if cancel is not None and cancel():
+                return topology_mesh("Box")
             mesh = topology_mesh("Box")
             from_mwm = False
 
@@ -122,7 +131,7 @@ class MeshLibrary:
         self._meshes[key] = prepared
         return prepared
 
-    def _from_mwm(self, relative: str, quality: str = "high") -> Optional[MeshData]:
+    def _from_mwm(self, relative: str, quality: str = "high", cancel=None) -> Optional[MeshData]:
         if self.install is None:
             return None
         rel = relative.replace("\\", "/")
@@ -133,7 +142,9 @@ class MeshLibrary:
             path = self.install / "Content" / "Models" / Path(rel).name
         if not path.is_file():
             return None
-        loaded = load_mwm(path, quality=quality)
+        if cancel is not None and cancel():
+            return None
+        loaded = load_mwm(path, quality=quality, cancel=cancel)
         if loaded is None or not loaded.positions or not loaded.indices:
             return None
         positions = np.asarray(loaded.positions, dtype=np.float32)

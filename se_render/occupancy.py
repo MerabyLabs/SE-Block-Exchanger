@@ -554,11 +554,14 @@ def plan_blocks(
     blocks: Iterable[BlockInstance],
     catalog: Optional[CubeBlockCatalog] = None,
     occupied: Optional[OccupancyMap] = None,
+    cancel=None,
 ) -> List[BlockOccupancy]:
     block_list = list(blocks)
-    occ = occupied if occupied is not None else build_occupancy(block_list, catalog)
+    occ = occupied if occupied is not None else build_occupancy(block_list, catalog, cancel=cancel)
     n = len(block_list)
     if n == 0:
+        return []
+    if cancel is not None and cancel():
         return []
     defn_cache: Dict[Tuple[str, str], Optional[BlockDefinition]] = {}
 
@@ -577,6 +580,8 @@ def plan_blocks(
     by_grid: Dict[str, List[int]] = {}
     rest: List[int] = []
     for i, block in enumerate(block_list):
+        if cancel is not None and (i & 255) == 0 and cancel():
+            return []
         definition = definition_of(block)
         size = definition_size(definition)
         if size == (1, 1, 1) and is_topology_cube(definition):
@@ -585,6 +590,8 @@ def plan_blocks(
             rest.append(i)
 
     for gid, indices in by_grid.items():
+        if cancel is not None and cancel():
+            return []
         index = indexes.get(gid) or _NeighborIndex(set())
         identity: List[int] = []
         oriented: List[int] = []
@@ -624,7 +631,9 @@ def plan_blocks(
                 topology_cullable=True,
             )
 
-    for i in rest:
+    for n_rest, i in enumerate(rest):
+        if cancel is not None and (n_rest & 255) == 0 and cancel():
+            return []
         plans[i] = plan_block(block_list[i], occ, catalog)
 
     return [p if p is not None else plan_block(block_list[i], occ, catalog) for i, p in enumerate(plans)]

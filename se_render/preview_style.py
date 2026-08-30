@@ -78,9 +78,43 @@ def mwm_progress_caption(*, mesh_cached: bool, done: int, total: int) -> str:
     return f"Decoding models {done_n:,} of {total_n:,}"
 
 
-def should_defer_catalog_box_build(catalog, catalog_in_flight: bool) -> bool:
-    """Do not assemble throwaway boxes while the official catalog is loading."""
-    return catalog is None and bool(catalog_in_flight)
+def gl_upload_should_yield(
+    uploaded: bool,
+    elapsed_s: float,
+    bytes_used: int = 0,
+    time_budget_s: float = GL_UPLOAD_TIME_BUDGET_S,
+    byte_budget: int = GL_UPLOAD_BYTE_BUDGET,
+) -> bool:
+    """After the first slice, stop this GL turn when time or bytes are spent."""
+    if not uploaded:
+        return False
+    if float(elapsed_s) >= float(time_budget_s):
+        return True
+    return int(bytes_used) >= int(byte_budget)
+
+
+def stale_shell_blocks_edits(
+    *,
+    switching: bool,
+    mesh_ready: bool,
+    catalog_wait: bool = False,
+) -> bool:
+    """Retained A shell after B is selected must not accept pick/nudge/Save As."""
+    return bool(switching or catalog_wait or not mesh_ready)
+
+
+def should_defer_catalog_box_build(
+    catalog,
+    catalog_in_flight: bool,
+    *,
+    catalog_failed: bool = False,
+) -> bool:
+    """Hold throwaway box 3D until the official catalog resolves or fails."""
+    if catalog is not None:
+        return False
+    if catalog_failed:
+        return False
+    return True
 
 
 def fallback_banner_text(

@@ -323,6 +323,16 @@ class BuildReadyStatusTests(unittest.TestCase):
         host._job = SimpleNamespace(is_current=lambda _g: True)
         host._install_valid = True
         host._ensure_renderer = lambda: SimpleNamespace()
+        host._renderer = SimpleNamespace(
+            available=True,
+            upload_pending=lambda: False,
+            _incoming_cpu=None,
+            _sets={"assembled": [{}]},
+        )
+        host._gl_failed = False
+        host._pending_swap = False
+        host._source_path = None
+        host._catalog_gen = 0
         host._upload_cpu = lambda _cpu: True
         host._mesh_ready = False
         host._cpu_scene = None
