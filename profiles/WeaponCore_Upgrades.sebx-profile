@@ -1,0 +1,47 @@
+{
+  "name": "WeaponCore Upgrades",
+  "author": "Meraby Labs",
+  "version": "1.0",
+  "description": "Swap vanilla weapons to WeaponCore equivalents.",
+  "game_version": "1.205+",
+  "categories": [
+    {
+      "name": "profile:weaponcore upgrades:wc turrets",
+      "description": "Large-grid turret upgrades for WeaponCore packs.",
+      "grid_sizes": [
+        "Large"
+      ],
+      "pairs": [
+        [
+          "LargeGatlingTurret",
+          "WC_LargeGatlingTurret"
+        ],
+        [
+          "LargeMissileTurret",
+          "WC_LargeMissileTurret"
+        ],
+        [
+          "LargeInteriorTurret",
+          "WC_InteriorTurret"
+        ]
+      ]
+    },
+    {
+      "name": "profile:weaponcore upgrades:wc fixed weapons",
+      "description": "Small-grid fixed weapon upgrades for WeaponCore packs.",
+      "grid_sizes": [
+        "Small"
+      ],
+      "pairs": [
+        [
+          "SmallGatlingGun",
+          "WC_SmallGatlingGun"
+        ],
+        [
+          "SmallMissileLauncher",
+          "WC_SmallMissileLauncher"
+        ]
+      ]
+    }
+  ]
+}
