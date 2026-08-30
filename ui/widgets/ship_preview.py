@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Callable, List, Optional, Set
+from typing import Callable, List, Optional, Set, Tuple
 import tkinter as tk
 
 import customtkinter as ctk
 from PIL import Image, ImageTk
 
-from blueprint_document import build_ready_applies, save_as_result_applies
+from blueprint_document import blueprint_file, build_ready_applies, save_as_result_applies
+from safe_xml import FileStamp
 from blueprint_edit import (
     GridEditSession,
     nudge_block_instance,
@@ -33,11 +34,14 @@ from se_render.preview_build import (
     STAGE_MESHES,
     STAGE_SHELL,
     BuildGeneration,
+    PreviewCpuCache,
     PreviewCpuScene,
     apply_dissect_mode,
     build_preview_cpu,
+    copy_cpu_for_dissect,
+    cpu_cache_key,
     ensure_exploded_batches,
-    pending_mwm_definitions,
+    pending_mwm_patches,
     refine_mwm_cpu,
 )
 from se_render.preview_style import (
@@ -84,6 +88,8 @@ class ShipPreviewHost(ctk.CTkFrame):
     _session_explode = 0.0
     _session_dissect_on = False
     _session_dissect_mode = DISSECT_PEEL
+    _cpu_cache = PreviewCpuCache(max_entries=2)
+    _on_session_prefs = None
 
     def __init__(
         self,
@@ -129,6 +135,12 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._wheel_grabbed = False
         self._wheel_grab_warned = False
         self._job = BuildGeneration()
+        self._dissect_job = BuildGeneration()
+        self._catalog_gen = 0
+        self._mwm_patched_keys: Set[str] = set()
+        self._mwm_mesh_cached = True
+        self._mwm_done = 0
+        self._mwm_total = 0
         self._explode = float(self._session_explode)
         self._dissect_mode = str(self._session_dissect_mode or DISSECT_PEEL)
         if self._dissect_mode not in _MODE_LABELS:
@@ -503,6 +515,8 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._apply_mode()
 
     def set_catalog(self, catalog: Optional[CubeBlockCatalog], meshes: Optional[MeshLibrary] = None) -> None:
+        if catalog is not self._catalog:
+            self._catalog_gen += 1
         self._catalog = catalog
         if catalog is not None:
             self._catalog_in_flight = False
@@ -563,6 +577,10 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._shown_count = 0
         self._dissect_preparing = False
         self._refine_cancelled = False
+        self._mwm_patched_keys = set()
+        self._mwm_mesh_cached = True
+        self._mwm_done = 0
+        self._mwm_total = 0
         self._edits = GridEditSession(source_path=self._source_path)
         self._hide_armor = False
         self._hide_layers = 0
@@ -705,7 +723,27 @@ class ShipPreviewHost(ctk.CTkFrame):
 
     def _cancel_build(self) -> None:
         self._job.cancel()
+        self._dissect_job.cancel()
         self._cancel_chunk_job()
+
+    def _source_stamp(self) -> Tuple[str, int]:
+        path = self._source_path
+        if path is None:
+            return "", 0
+        try:
+            stamp = FileStamp.from_path(blueprint_file(path))
+            return stamp.path, stamp.mtime_ns
+        except OSError:
+            return str(path), 0
+
+    def _remember_cpu(self, cpu: PreviewCpuScene) -> None:
+        path, mtime_ns = self._source_stamp()
+        if not path or cpu is None:
+            return
+        self._cpu_cache.put(
+            cpu_cache_key(path, mtime_ns, self._catalog_gen, cpu.stage or STAGE_FULL),
+            cpu,
+        )
 
     def cancel_refine(self) -> None:
         """Keep the current shell; drop leftover MWM / interior work."""
@@ -751,6 +789,15 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._cpu_stage = ""
         n = len(self._scene.blocks)
         progressive = n > PROGRESSIVE_BLOCK_THRESHOLD
+        path, mtime_ns = self._source_stamp()
+        cached = self._cpu_cache.get_best(path, mtime_ns, self._catalog_gen)
+        if cached is not None:
+            refine = progressive and cached.stage != STAGE_FULL
+            self.after(1, lambda: self._on_build_ready(gen, cached, refine=refine))
+            self._refresh_status()
+            self._apply_cancel_refine_chrome()
+            self._apply_mode()
+            return
         self._refresh_status()
         self._apply_cancel_refine_chrome()
         self._apply_mode()
@@ -819,6 +866,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._switching = False
         self._mesh_ready = True
         self._cpu_scene = cpu
+        self._remember_cpu(cpu)
         self._cpu_stage = cpu.stage
         self._simplified = bool(cpu.simplified)
         self._shown_count = int(cpu.shown_count or 0)
@@ -876,18 +924,26 @@ class ShipPreviewHost(ctk.CTkFrame):
         library = self._meshes
         pending = remaining
         if pending is None:
-            pending = pending_mwm_definitions(self._scene.blocks, catalog, library)
+            pending = pending_mwm_patches(
+                self._scene.blocks, catalog, library, patched_keys=self._mwm_patched_keys
+            )
+            self._mwm_total = len(pending)
+            self._mwm_done = 0
         if not pending:
             self.after(16, lambda: self._start_interior_fill(generation))
             return
         chunk = pending[:MWM_REFINE_CHUNK]
         leftover = pending[MWM_REFINE_CHUNK:]
+        self._mwm_mesh_cached = all(item.mesh_cached for item in chunk)
+        self._cpu_stage = STAGE_MESHES
+        self._refresh_status()
         scene = self._scene
         prior = self._cpu_scene
+        defs = [item.definition for item in chunk]
 
         def task() -> None:
             try:
-                for definition in chunk:
+                for definition in defs:
                     library.mesh_for(definition, skip_mwm=False)
                 if prior is None:
                     cpu = build_preview_cpu(
@@ -895,16 +951,16 @@ class ShipPreviewHost(ctk.CTkFrame):
                         cancel=self._job, prior=prior,
                     )
                 else:
-                    cpu = refine_mwm_cpu(prior, catalog, library, chunk)
+                    cpu = refine_mwm_cpu(copy_cpu_for_dissect(prior), catalog, library, defs)
             except Exception as exc:
                 message = str(exc)
                 self.after(0, lambda: self._on_refine_failed(generation, message))
                 return
-            self.after(0, lambda: self._on_mwm_chunk(generation, cpu, leftover))
+            self.after(0, lambda: self._on_mwm_chunk(generation, cpu, leftover, chunk))
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _on_mwm_chunk(self, generation: int, cpu: PreviewCpuScene, leftover) -> None:
+    def _on_mwm_chunk(self, generation: int, cpu: PreviewCpuScene, leftover, chunk=()) -> None:
         if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
             return
         if self._renderer is None or not self._mesh_ready:
@@ -913,7 +969,13 @@ class ShipPreviewHost(ctk.CTkFrame):
             self._building = False
             return
         self._cpu_scene = cpu
-        self._cpu_stage = cpu.stage
+        self._remember_cpu(cpu)
+        for item in chunk:
+            key = getattr(item.definition, "key", None)
+            if key:
+                self._mwm_patched_keys.add(key)
+        self._mwm_done = len(self._mwm_patched_keys)
+        self._cpu_stage = STAGE_MESHES
         self._simplified = bool(cpu.simplified)
         self._shown_count = int(cpu.shown_count or 0)
         self._refresh_status()
@@ -931,6 +993,7 @@ class ShipPreviewHost(ctk.CTkFrame):
                 self._refresh_status()
                 self._apply_cancel_refine_chrome()
                 return
+            self._mwm_total = 0
             self.after(16, lambda: self._start_interior_fill(generation))
 
     def _start_interior_fill(self, generation: int) -> None:
@@ -961,25 +1024,34 @@ class ShipPreviewHost(ctk.CTkFrame):
 
         def task() -> None:
             try:
-                ensure_exploded_batches(cpu, catalog, library)
+                working = copy_cpu_for_dissect(cpu)
+                ensure_exploded_batches(working, catalog, library)
             except Exception as exc:
                 message = str(exc)
                 self.after(0, lambda: self._on_refine_failed(generation, message))
                 return
-            self.after(0, lambda: self._on_interior_filled(generation))
+            self.after(0, lambda: self._on_interior_filled(generation, working))
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _on_interior_filled(self, generation: int) -> None:
-        if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._cpu_scene is None:
+    def _on_interior_filled(self, generation: int, cpu: Optional[PreviewCpuScene] = None) -> None:
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
             return
-        cpu = self._cpu_scene
+        if cpu is None:
+            cpu = self._cpu_scene
+        if cpu is None:
+            return
+        self._cpu_scene = cpu
         if self._renderer is not None and cpu.exploded:
             try:
                 self._renderer._cpu = cpu
                 self._renderer.upload_secondary_sets()
             except Exception:
                 pass
+        cpu.stage = STAGE_FULL
+        self._cpu_stage = STAGE_FULL
+        self._mwm_total = 0
+        self._remember_cpu(cpu)
         if self._explode > 1e-4:
             self._start_dissect_prepare(generation)
         else:
@@ -990,35 +1062,37 @@ class ShipPreviewHost(ctk.CTkFrame):
     def _start_dissect_prepare(self, generation: int, mode: Optional[str] = None) -> None:
         if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._cpu_scene is None:
             return
-        if self._dissect_preparing:
-            return
+        wanted = mode or self._dissect_mode
+        dissect_gen = self._dissect_job.begin()
         self._dissect_preparing = True
-        cpu = self._cpu_scene
+        live = self._cpu_scene
         catalog = self._catalog
         library = self._meshes
-        wanted = mode or self._dissect_mode
 
         def task() -> None:
             try:
-                ensure_exploded_batches(cpu, catalog, library)
-                apply_dissect_mode(cpu, wanted, catalog)
+                working = copy_cpu_for_dissect(live)
+                ensure_exploded_batches(working, catalog, library)
+                apply_dissect_mode(working, wanted, catalog)
             except Exception as exc:
                 message = str(exc)
                 self.after(0, lambda: self._on_refine_failed(generation, message))
-                self._dissect_preparing = False
                 return
-            self.after(0, lambda: self._on_dissect_ready(generation, wanted))
+            self.after(0, lambda: self._on_dissect_ready(generation, dissect_gen, wanted, working))
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _on_dissect_ready(self, generation: int, mode: str) -> None:
-        self._dissect_preparing = False
-        if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._renderer is None or self._cpu_scene is None:
+    def _on_dissect_ready(self, generation: int, dissect_gen: int, mode: str, cpu: PreviewCpuScene) -> None:
+        if not self._dissect_job.is_current(dissect_gen):
             return
-        cpu = self._cpu_scene
+        self._dissect_preparing = False
+        if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._renderer is None:
+            return
+        self._cpu_scene = cpu
+        self._remember_cpu(cpu)
         try:
+            self._renderer._cpu = cpu
             if cpu.exploded:
-                self._renderer._cpu = cpu
                 self._renderer.upload_secondary_sets()
             offsets = None
             if mode == DISSECT_DECKS:
@@ -1206,6 +1280,9 @@ class ShipPreviewHost(ctk.CTkFrame):
             isolated_count=self._isolated_count,
             refining=bool(self._building and self._mesh_ready and not self._refine_cancelled),
             ship_name=self._ship_name,
+            mwm_cached=self._mwm_mesh_cached,
+            mwm_done=self._mwm_done,
+            mwm_total=self._mwm_total,
         )
         if isolated_name and self._mesh_ready and not self._building:
             text = f"{isolated_name}  ·  {self._isolated_count or 0:,} blocks"
@@ -1304,6 +1381,9 @@ class ShipPreviewHost(ctk.CTkFrame):
 
     def _on_dissect_mode(self, label: str) -> None:
         self._dissect_mode = _MODE_VALUES.get(str(label), DISSECT_PEEL)
+        ShipPreviewHost._session_dissect_mode = self._dissect_mode
+        if callable(self._on_session_prefs):
+            self._on_session_prefs()
         self._apply_dissect_chrome()
         self._refresh_status()
         if self._mesh_ready and self._explode > 1e-4:

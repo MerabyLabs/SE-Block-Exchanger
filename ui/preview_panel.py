@@ -347,6 +347,10 @@ class PreviewPanel(ctk.CTkFrame):
         if self._pending_source_path is not None:
             self.ship_preview.set_blueprint_source(self._pending_source_path)
 
+    def prewarm_subgrids(self) -> None:
+        """Build Subgrids chrome after the list first paints so first tab open skips Tk construct."""
+        self._ensure_subgrids_widgets()
+
     def current_tab(self) -> str:
         try:
             return self.tabview.get()

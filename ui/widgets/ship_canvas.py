@@ -156,6 +156,7 @@ class ShipCanvas(ctk.CTkFrame):
 
     PROJECTIONS = ("Top", "Side", "Front")
     _session_projection = "Top"
+    _on_session_prefs = None
 
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=TacticalTheme.BG_DARK, corner_radius=8, **kwargs)
@@ -515,4 +516,6 @@ class ShipCanvas(ctk.CTkFrame):
     def _on_projection_changed(self, choice: str) -> None:
         self.projection_mode = choice
         ShipCanvas._session_projection = choice
+        if callable(self._on_session_prefs):
+            self._on_session_prefs()
         self.fit_to_view()

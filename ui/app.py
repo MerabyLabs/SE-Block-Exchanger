@@ -69,6 +69,7 @@ class TacticalCommandCenter(ctk.CTk):
     def __init__(self):
         self.settings_store = SettingsStore()
         self.settings: AppSettings = self.settings_store.load()
+        self._apply_subgrids_session_prefs()
         TacticalTheme.apply(self.settings.appearance_mode)
         super().__init__()
         TacticalTheme.resolve_fonts()
@@ -293,6 +294,28 @@ class TacticalCommandCenter(ctk.CTk):
         )
         menubar.add_cascade(label="Help", menu=help_menu)
         self.configure(menu=menubar)
+
+    def _apply_subgrids_session_prefs(self) -> None:
+        from se_render.dissection import DISSECT_MODES, DISSECT_PEEL
+        from ui.widgets.ship_canvas import ShipCanvas
+        from ui.widgets.ship_preview import ShipPreviewHost
+
+        projection = str(self.settings.subgrids_projection or "Top")
+        if projection in ShipCanvas.PROJECTIONS:
+            ShipCanvas._session_projection = projection
+        mode = str(self.settings.subgrids_dissect_mode or DISSECT_PEEL)
+        if mode in DISSECT_MODES:
+            ShipPreviewHost._session_dissect_mode = mode
+        ShipPreviewHost._on_session_prefs = self._persist_subgrids_session_prefs
+        ShipCanvas._on_session_prefs = self._persist_subgrids_session_prefs
+
+    def _persist_subgrids_session_prefs(self) -> None:
+        from ui.widgets.ship_canvas import ShipCanvas
+        from ui.widgets.ship_preview import ShipPreviewHost
+
+        self.settings.subgrids_projection = ShipCanvas._session_projection
+        self.settings.subgrids_dissect_mode = ShipPreviewHost._session_dissect_mode
+        self.settings_store.save(self.settings)
 
     def _toggle_auto_update_checks(self):
         self.settings.auto_check_updates = bool(self._auto_update_var.get())
@@ -637,6 +660,7 @@ class TacticalCommandCenter(ctk.CTk):
         self.footer.set_scanned(count)
         self.blueprint_panel.set_blueprints(self.blueprints)
         self.blueprint_panel.set_recent_blueprints(self.settings.recent_blueprints)
+        self.after_idle(self.preview_panel.prewarm_subgrids)
 
         target = self._pending_select_name
         dropped = self._pending_select_name is not None
