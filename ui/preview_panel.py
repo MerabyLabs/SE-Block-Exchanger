@@ -372,6 +372,8 @@ class PreviewPanel(ctk.CTkFrame):
             valid, path_text, message = self._pending_se_state[:3]
             cleared = self._pending_se_state[3] if len(self._pending_se_state) > 3 else self._install_cleared
             self.ship_preview.set_install_state(valid, path_text, message, cleared=cleared)
+            if valid and not cleared:
+                self.ship_preview.prewarm_gl()
         if self._catalog_in_flight:
             self.ship_preview.set_catalog_in_flight(True)
         if self._pending_catalog is not None:
@@ -383,8 +385,13 @@ class PreviewPanel(ctk.CTkFrame):
     def prewarm_subgrids(self) -> None:
         """Build Subgrids chrome after the list first paints so first tab open skips Tk construct."""
         self._ensure_subgrids_widgets()
-        if self.ship_preview is not None:
-            self.ship_preview.prewarm_gl()
+        self.prewarm_gl()
+
+    def prewarm_gl(self) -> None:
+        """Retry try_init once install is valid. No-ops after File→Clear."""
+        if self._install_cleared or self.ship_preview is None:
+            return
+        self.ship_preview.prewarm_gl()
 
     def current_tab(self) -> str:
         try:
@@ -427,6 +434,8 @@ class PreviewPanel(ctk.CTkFrame):
         self._pending_se_state = (valid, path_text, message, self._install_cleared)
         if self.ship_preview is not None:
             self.ship_preview.set_install_state(valid, path_text, message, cleared=cleared)
+            if valid and not cleared:
+                self.ship_preview.prewarm_gl()
 
     def set_catalog_in_flight(self, pending: bool, *, failed: bool = False) -> None:
         self._catalog_in_flight = bool(pending)

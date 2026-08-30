@@ -394,6 +394,16 @@ class TacticalCommandCenter(ctk.CTk):
                 self.settings.space_engineers_install = str(status.path)
                 self.settings_store.save(self.settings)
             self._load_se_catalog_async(status.path)
+            self.after_idle(self._retry_prewarm_gl)
+
+    def _retry_prewarm_gl(self) -> None:
+        """List-load prewarm can run before install is valid; retry once apply/locate lands."""
+        if self._closing or self.settings.space_engineers_cleared:
+            return
+        status = self._se_install_status
+        if status is None or not getattr(status, "valid", False):
+            return
+        self.preview_panel.prewarm_gl()
 
     def _load_se_catalog_async(self, install) -> None:
         generation = self._catalog_token.begin()

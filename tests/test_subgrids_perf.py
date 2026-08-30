@@ -467,6 +467,63 @@ class SessionPrefAndPrewarmTests(unittest.TestCase):
         self.assertIn("subgrids_projection", app)
         self.assertIn("subgrids_dissect_mode", app)
 
+    def test_prewarm_is_scheduled_after_install_apply_not_only_list_load(self):
+        from ui.app import TacticalCommandCenter
+
+        apply = inspect.getsource(TacticalCommandCenter._apply_se_install_state)
+        retry = inspect.getsource(TacticalCommandCenter._retry_prewarm_gl)
+        loaded = inspect.getsource(TacticalCommandCenter._on_blueprints_loaded)
+        locate = inspect.getsource(TacticalCommandCenter.locate_space_engineers)
+        clear = inspect.getsource(TacticalCommandCenter.clear_space_engineers_path)
+        select = inspect.getsource(TacticalCommandCenter.on_blueprint_select)
+        self.assertIn("after_idle(self._retry_prewarm_gl)", apply)
+        self.assertIn("prewarm_gl", retry)
+        self.assertIn("space_engineers_cleared", retry)
+        self.assertIn("after_idle(self.preview_panel.prewarm_subgrids)", loaded)
+        self.assertIn("_apply_se_install_state", locate)
+        self.assertNotIn("try_init", select)
+        self.assertNotIn("prewarm_gl", select)
+        self.assertNotIn("_retry_prewarm_gl", select)
+        self.assertNotIn("try_init", clear)
+        self.assertNotIn("prewarm_gl", clear)
+        self.assertNotIn("_retry_prewarm_gl", clear)
+        state = inspect.getsource(PreviewPanel.set_se_preview_state)
+        self.assertIn("prewarm_gl", state)
+
+    def test_prewarm_noops_before_install_then_runs_after_apply(self):
+        host = ShipPreviewHost.__new__(ShipPreviewHost)
+        host._gl_failed = False
+        host._install_valid = False
+        host._install_cleared = False
+        host._renderer = None
+        host._gl_init_job = None
+        inits = []
+        host._run_gl_init = lambda: inits.append("init")
+        host._cancel_gl_init_job = lambda: None
+        host.prewarm_gl()
+        self.assertEqual(inits, [])
+        host._install_valid = True
+        host.prewarm_gl()
+        self.assertEqual(inits, ["init"])
+        host._install_cleared = True
+        host.prewarm_gl()
+        self.assertEqual(inits, ["init"])
+
+    def test_retry_prewarm_after_clear_does_not_init(self):
+        from ui.app import TacticalCommandCenter
+
+        app = TacticalCommandCenter.__new__(TacticalCommandCenter)
+        app._closing = False
+        app.settings = SimpleNamespace(space_engineers_cleared=True)
+        app._se_install_status = SimpleNamespace(valid=True)
+        called = []
+        app.preview_panel = SimpleNamespace(prewarm_gl=lambda: called.append(1))
+        app._retry_prewarm_gl()
+        self.assertEqual(called, [])
+        app.settings.space_engineers_cleared = False
+        app._retry_prewarm_gl()
+        self.assertEqual(called, [1])
+
 
 class GlTurnBudgetTests(unittest.TestCase):
     def test_yield_helper_requires_first_slice_then_time_or_bytes(self):

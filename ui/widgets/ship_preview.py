@@ -509,6 +509,7 @@ class ShipPreviewHost(ctk.CTkFrame):
             if self._scene is not None and not self._mesh_ready:
                 self._start_build()
         else:
+            self._cancel_gl_init_job()
             self._cancel_build()
             self._mesh_ready = False
             if self._renderer is not None:
@@ -549,15 +550,14 @@ class ShipPreviewHost(ctk.CTkFrame):
         return bool(self._install_valid and not self._gl_failed)
 
     def prewarm_gl(self) -> None:
-        """Pay try_init after list paint so the first A→B switch does not."""
-        if self._gl_failed or not self._install_valid:
+        """Pay try_init after install is known so the first Subgrids select does not."""
+        if self._gl_failed or not self._install_valid or self._install_cleared:
             return
         if self._renderer is None:
             self._renderer = GLPreviewRenderer(init=False)
         if self._renderer.available:
             return
-        if self._gl_init_job is not None:
-            return
+        self._cancel_gl_init_job()
         self._run_gl_init()
 
     def begin_switch(self, ship_name: str = "") -> None:
@@ -1374,8 +1374,19 @@ class ShipPreviewHost(ctk.CTkFrame):
         if self._explode > 1e-4:
             self._schedule_redraw(interactive=False)
 
+    def _cancel_gl_init_job(self) -> None:
+        if self._gl_init_job is None:
+            return
+        try:
+            self.after_cancel(self._gl_init_job)
+        except Exception:
+            pass
+        self._gl_init_job = None
+
     def _schedule_gl_init(self) -> None:
-        if self._gl_failed or self._gl_init_job is not None:
+        if self._gl_failed or not self._install_valid or self._install_cleared:
+            return
+        if self._gl_init_job is not None:
             return
         if self._renderer is not None and self._renderer.available:
             return
@@ -1383,7 +1394,7 @@ class ShipPreviewHost(ctk.CTkFrame):
 
     def _run_gl_init(self) -> None:
         self._gl_init_job = None
-        if self._gl_failed:
+        if self._gl_failed or not self._install_valid or self._install_cleared:
             return
         if self._renderer is None:
             self._renderer = GLPreviewRenderer(init=False)
