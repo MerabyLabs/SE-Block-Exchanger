@@ -246,6 +246,7 @@ class BlueprintAnalyticsEngine:
         blueprint_name: str,
         grid_size: str = "Unknown",
         thruster_forwards: Optional[Mapping[str, int]] = None,
+        thruster_count: Optional[int] = None,
     ) -> BlueprintAnalyticsResult:
         component_totals: Dict[str, int] = defaultdict(int)
         category_totals: Dict[str, int] = defaultdict(int)
@@ -278,6 +279,7 @@ class BlueprintAnalyticsEngine:
             counted,
             sorted(unknown_subtypes),
             thruster_forwards=thruster_forwards,
+            thruster_count=thruster_count,
         )
 
         return BlueprintAnalyticsResult(
@@ -499,6 +501,7 @@ class BlueprintAnalyticsEngine:
         subtype_counts: Dict[str, int],
         unknown_subtypes: List[str],
         thruster_forwards: Optional[Mapping[str, int]] = None,
+        thruster_count: Optional[int] = None,
     ) -> List[HealthIssue]:
         issues: List[HealthIssue] = []
         subtype_keys = list(subtype_counts.keys())
@@ -537,13 +540,22 @@ class BlueprintAnalyticsEngine:
                 )
             )
 
+        inferred_thrusters = sum(
+            int(count) for subtype, count in subtype_counts.items() if "thrust" in subtype.lower()
+        )
         if thruster_forwards is not None:
+            oriented = sum(int(v) for v in thruster_forwards.values())
+            n_blocks = max(inferred_thrusters, oriented)
+            if thruster_count is not None:
+                n_blocks = max(n_blocks, int(thruster_count))
             thruster_balance = self._thruster_balance_from_dirs(
                 Counter(thruster_forwards),
-                sum(int(v) for v in thruster_forwards.values()),
+                n_blocks,
             )
         elif root is not None:
             thruster_balance = self._thruster_balance(root)
+        elif inferred_thrusters >= 6:
+            thruster_balance = self._thruster_balance_from_dirs({}, inferred_thrusters)
         else:
             thruster_balance = None
         if thruster_balance:

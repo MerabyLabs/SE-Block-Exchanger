@@ -6,6 +6,13 @@ from ui.theme import TacticalTheme
 from ui.widgets.blueprint_card import BlueprintCard
 
 
+def highlight_cards_by_visible_index(cards, selected_indices) -> None:
+    """Highlight by each card's visible index, not its position in `_cards`."""
+    selected = set(selected_indices)
+    for card in cards:
+        card.set_selected(getattr(card, "index", -1) in selected)
+
+
 class BlueprintPanel(ctk.CTkFrame):
     """Left panel containing search bar and scrollable blueprint card list."""
 
@@ -171,8 +178,7 @@ class BlueprintPanel(ctk.CTkFrame):
         else:
             self._selected_indices = {index}
 
-        for i, card in enumerate(self._cards):
-            card.set_selected(i in self._selected_indices)
+        highlight_cards_by_visible_index(self._cards, self._selected_indices)
 
         visible = self._get_visible_blueprints()
         if index < len(visible) and self._on_select:

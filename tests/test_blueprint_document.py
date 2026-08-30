@@ -13,6 +13,7 @@ from blueprint_document import (
     JobToken,
     catalog_completion_allowed,
     dry_run_from_counts,
+    inspect_result_applies,
 )
 from blueprint_scanner import BlueprintScanner
 from mappings import build_registry
@@ -75,6 +76,9 @@ class DocumentSharingTests(unittest.TestCase):
         self.assertEqual(from_scene.total_blocks, from_xml.total_blocks)
         self.assertEqual(from_scene.root_node.grid_name, from_xml.root_node.grid_name)
         self.assertEqual(len(from_scene.root_node.children), len(from_xml.root_node.children))
+        self.assertGreaterEqual(len(from_scene.mechanical_links), 1)
+        self.assertTrue(from_scene.root_node.is_main_grid)
+        self.assertFalse(from_scene.root_node.children[0].is_main_grid)
 
 
 class DocumentCacheTests(unittest.TestCase):
@@ -238,6 +242,12 @@ class JobTokenTests(unittest.TestCase):
         second = token.begin()
         self.assertFalse(token.is_current(first))
         self.assertTrue(token.is_current(second))
+
+    def test_inspect_result_applies_checks_path(self):
+        token = JobToken()
+        generation = token.begin()
+        self.assertTrue(inspect_result_applies(token, generation, Path("/ship"), Path("/ship")))
+        self.assertFalse(inspect_result_applies(token, generation, Path("/ship"), Path("/other")))
 
     def test_catalog_completion_rejected_after_clear(self):
         hub = JobHub()

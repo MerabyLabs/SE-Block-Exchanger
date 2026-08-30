@@ -11,8 +11,8 @@ from se_render.camera import (
     wheel_zoom_inward,
 )
 from se_render.hsv import hsv_offset_to_rgb
-from se_render.occupancy import FACE_NEG_X, FACE_POS_X, is_fully_enclosed, is_solid_box, plan_blocks
-from se_render.orientation import identity_mat4, translation_mat4
+from se_render.occupancy import FACE_NEG_X, FACE_POS_X, is_fully_enclosed, is_solid_box
+from se_render.orientation import translation_mat4
 from se_render.camera import (
     OrbitCamera,
     zoom_factor_for_distance,

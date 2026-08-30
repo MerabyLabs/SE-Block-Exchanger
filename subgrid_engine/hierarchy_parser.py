@@ -242,6 +242,7 @@ class SubgridHierarchyParser:
 
         nodes: Dict[str, SubgridNode] = {}
         main_name = getattr(scene, "main_grid_name", "") or ""
+        main_id = getattr(scene, "main_grid_entity_id", "") or ""
         for grid in grids:
             eid = grid.entity_id
             nodes[eid] = SubgridNode(
@@ -249,7 +250,7 @@ class SubgridHierarchyParser:
                 entity_id=eid,
                 grid_size=grid.grid_size,
                 block_count=counts.get(eid, 0),
-                is_main_grid=(grid.name == main_name),
+                is_main_grid=False,
                 attachment_via=grid.attachment_via,
                 children=[],
             )
@@ -257,7 +258,7 @@ class SubgridHierarchyParser:
         if not nodes and blocks:
             node = SubgridNode(
                 grid_name=main_name or "MainGrid",
-                entity_id="grid_default",
+                entity_id=main_id or "grid_default",
                 grid_size=getattr(blocks[0], "grid_size", "Large"),
                 block_count=len(blocks),
                 is_main_grid=True,
@@ -273,7 +274,7 @@ class SubgridHierarchyParser:
             )
 
         parent_of = getattr(scene, "parent_of", None) or {}
-        child_ids = set()
+        child_ids: Set[str] = set()
         for child_id, parent_id in parent_of.items():
             parent = nodes.get(parent_id)
             child = nodes.get(child_id)
@@ -284,15 +285,19 @@ class SubgridHierarchyParser:
             parent.children.append(child)
             child_ids.add(child_id)
 
-        main = next((g for g in grids if g.name == main_name), grids[0] if grids else None)
-        root_id = main.entity_id if main is not None else next(iter(nodes))
-        root_node = nodes.get(root_id)
-        orphans = [node for eid, node in nodes.items() if eid != root_id and eid not in child_ids]
+        if not main_id or main_id not in nodes:
+            candidates = [eid for eid in nodes if eid not in child_ids] or list(nodes)
+            main_id = max(candidates, key=lambda eid: (nodes[eid].block_count, nodes[eid].grid_name))
+        if main_id in nodes:
+            nodes[main_id].is_main_grid = True
+
+        root_node = nodes.get(main_id)
+        orphans = [node for eid, node in nodes.items() if eid != main_id and eid not in child_ids]
         return MultiGridStructure(
             root_node=root_node,
             total_grids=len(nodes),
             total_blocks=sum(counts.values()) if counts else len(blocks),
-            mechanical_links=[],
+            mechanical_links=_mechanical_links_from_scene(grids, parent_of),
             orphaned_grids=orphans,
         )
 
@@ -318,6 +323,31 @@ class SubgridHierarchyParser:
         if child is not None and child.text:
             return child.text.strip()
         return None
+
+
+def _mechanical_links_from_scene(grids, parent_of: Dict[str, str]) -> List[MechanicalLink]:
+    via_by_child: Dict[str, Optional[str]] = {}
+    for grid in grids:
+        via_by_child[grid.entity_id] = getattr(grid, "attachment_via", None)
+    links: List[MechanicalLink] = []
+    for child_id, parent_id in parent_of.items():
+        via = via_by_child.get(child_id) or "Mechanical"
+        block_type = "Mechanical"
+        subtype = via
+        if "(" in via:
+            head, rest = via.split("(", 1)
+            block_type = head.strip() or "Mechanical"
+            subtype = rest.rstrip(")").strip() or via
+        links.append(
+            MechanicalLink(
+                block_type=block_type,
+                subtype=subtype,
+                custom_name=subtype,
+                base_entity_id=parent_id,
+                top_entity_id=child_id,
+            )
+        )
+    return links
 
 
 def _optional_float(element: ET.Element, tag: str) -> float:

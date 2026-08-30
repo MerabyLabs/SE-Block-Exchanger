@@ -442,7 +442,6 @@ def _collect_batches(
         if uvs is None or len(uvs) != mesh.vertex_count:
             uvs = np.zeros((mesh.vertex_count, 2), dtype=np.float32)
         idx = np.asarray(indices, dtype=np.int32)
-        n = int(idx.size)
         models = np.ascontiguousarray(cols.models[idx], dtype=np.float32)
         colors = np.ascontiguousarray(cols.colors[idx], dtype=np.float32)
         params = np.ascontiguousarray(cols.params[idx], dtype=np.float32)

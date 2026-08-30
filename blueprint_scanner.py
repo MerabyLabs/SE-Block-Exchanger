@@ -34,6 +34,7 @@ class BlueprintInfo:
     category_counts: Dict[str, int] = field(default_factory=dict)
     convertible_counts: Dict[str, int] = field(default_factory=dict)
     thruster_forwards: Dict[str, int] = field(default_factory=dict)
+    thruster_count: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -49,6 +50,7 @@ class BlueprintInfo:
             "category_counts": self.category_counts,
             "convertible_counts": self.convertible_counts,
             "thruster_forwards": self.thruster_forwards,
+            "thruster_count": self.thruster_count,
         }
 
 
@@ -64,6 +66,7 @@ class ScanRecord:
     heavy_armor_count: int
     subtype_counts: Dict[str, int]
     thruster_forwards: Dict[str, int] = field(default_factory=dict)
+    thruster_count: int = 0
 
     def to_payload(self) -> dict:
         return {
@@ -77,6 +80,7 @@ class ScanRecord:
             "heavy_armor_count": self.heavy_armor_count,
             "subtype_counts": self.subtype_counts,
             "thruster_forwards": self.thruster_forwards,
+            "thruster_count": self.thruster_count,
         }
 
     @classmethod
@@ -96,6 +100,7 @@ class ScanRecord:
                 heavy_armor_count=int(data.get("heavy_armor_count") or 0),
                 subtype_counts={str(k): int(v) for k, v in (data.get("subtype_counts") or {}).items()},
                 thruster_forwards={str(k): int(v) for k, v in (data.get("thruster_forwards") or {}).items()},
+                thruster_count=int(data.get("thruster_count") or 0),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -210,6 +215,7 @@ class BlueprintScanner:
             category_counts=dict(sorted(category_counter.items())),
             convertible_counts=dict(sorted(convertible_counter.items())),
             thruster_forwards=dict(record.thruster_forwards),
+            thruster_count=int(record.thruster_count or 0),
         )
 
     def remap_cached(self) -> List[BlueprintInfo]:
@@ -287,12 +293,59 @@ class BlueprintScanner:
                 continue
             records.append(record)
             parsed_any = parsed_any or parsed
+        if cancel is not None and cancel():
+            return list(self.blueprints_cache)
         self._records = records
         if parsed_any:
             self._save_persist()
         blueprints = [self._info_from_record(record) for record in records]
         self.blueprints_cache = blueprints
         return blueprints
+
+    def invalidate_path(self, path: Path) -> None:
+        """Drop cached ScanRecord facts so the next read re-parses bp.sbc."""
+        candidates = {str(Path(path))}
+        try:
+            candidates.add(str(Path(path).resolve()))
+        except OSError:
+            pass
+        if Path(path).name != "bp.sbc":
+            candidates.add(str(Path(path) / "bp.sbc"))
+            try:
+                candidates.add(str((Path(path) / "bp.sbc").resolve()))
+            except OSError:
+                pass
+        for key in candidates:
+            self._meta.pop(key, None)
+
+    def refresh_path(self, folder_or_file: Path) -> Optional[BlueprintInfo]:
+        """Re-parse one blueprint after an in-place XML edit and update caches."""
+        folder = Path(folder_or_file)
+        if folder.name.lower() == "bp.sbc":
+            bp_file = folder
+            folder = folder.parent
+        else:
+            bp_file = folder / "bp.sbc"
+        if not bp_file.exists():
+            return None
+        self.invalidate_path(bp_file)
+        record, parsed = self._record_for(folder, bp_file)
+        path_key = record.stamp.path
+        replaced = False
+        new_records: List[ScanRecord] = []
+        for existing in self._records:
+            if existing.stamp.path == path_key:
+                new_records.append(record)
+                replaced = True
+            else:
+                new_records.append(existing)
+        if not replaced:
+            new_records.append(record)
+        self._records = new_records
+        if parsed:
+            self._save_persist()
+        self.blueprints_cache = [self._info_from_record(item) for item in self._records]
+        return self._info_from_record(record)
 
     def parse_folder(self, folder_path: Path) -> BlueprintInfo:
         folder_path = Path(folder_path)
@@ -325,9 +378,10 @@ class BlueprintScanner:
         light_armor_count = 0
         heavy_armor_count = 0
         block_count = 0
+        thruster_count = 0
 
         def consume(block: ET.Element) -> None:
-            nonlocal light_armor_count, heavy_armor_count, block_count
+            nonlocal light_armor_count, heavy_armor_count, block_count, thruster_count
             block_count += 1
             subtype = self._extract_subtype(block)
             if not subtype:
@@ -340,6 +394,7 @@ class BlueprintScanner:
             lowered = subtype.lower()
             if "thrust" not in lowered:
                 return
+            thruster_count += 1
             kids = safe_xml.index_children(block)
             orient = kids.get("BlockOrientation")
             if orient is None:
@@ -349,14 +404,44 @@ class BlueprintScanner:
                 thruster_forwards[forward] += 1
 
         if grids:
+            grid_stats: List[Tuple[str, str, int]] = []
+            top_to_owner: Dict[str, str] = {}
+            block_to_grid: Dict[str, str] = {}
             for grid in grids:
-                if grid_size == "Unknown":
-                    kids = safe_xml.index_children(grid)
-                    size_elem = kids.get("GridSizeEnum")
-                    if size_elem is not None and size_elem.text and size_elem.text.strip():
-                        grid_size = size_elem.text.strip()
+                kids = safe_xml.index_children(grid)
+                eid = _kid_text(kids, "EntityId") or f"grid_{id(grid)}"
+                size_elem = kids.get("GridSizeEnum")
+                size = (
+                    size_elem.text.strip()
+                    if size_elem is not None and size_elem.text and size_elem.text.strip()
+                    else "Unknown"
+                )
+                before = block_count
                 for block in safe_xml.iter_blocks_in_grid(grid):
                     consume(block)
+                    block_kids = safe_xml.index_children(block)
+                    bid = _kid_text(block_kids, "EntityId")
+                    if bid:
+                        block_to_grid[bid] = eid
+                    top = _first_kid_text(
+                        block_kids,
+                        ("TopBlockId", "TopPartEntityId", "RotorEntityId", "AttachedSubgridId", "TopGridId"),
+                    )
+                    if top and top != "0":
+                        top_to_owner[top] = eid
+                grid_stats.append((eid, size, block_count - before))
+            child_ids: Set[str] = set()
+            grid_ids = {eid for eid, _size, _n in grid_stats}
+            for top, owner in top_to_owner.items():
+                if top in grid_ids and top != owner:
+                    child_ids.add(top)
+                elif top in block_to_grid and block_to_grid[top] != owner:
+                    child_ids.add(block_to_grid[top])
+            candidates = [row for row in grid_stats if row[0] not in child_ids] or grid_stats
+            if candidates:
+                _eid, size, _n = max(candidates, key=lambda row: row[2])
+                if size != "Unknown":
+                    grid_size = size
         else:
             for block in root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock") or root.findall(
                 ".//MyObjectBuilder_CubeBlock"
@@ -372,6 +457,7 @@ class BlueprintScanner:
             heavy_armor_count=heavy_armor_count,
             subtype_counts=dict(subtype_counter),
             thruster_forwards=dict(thruster_forwards),
+            thruster_count=thruster_count,
         )
 
     @staticmethod
@@ -404,4 +490,19 @@ class BlueprintScanner:
                 continue
             filtered.append(bp)
         return filtered
+
+
+def _kid_text(kids: Dict[str, ET.Element], tag: str) -> Optional[str]:
+    child = kids.get(tag)
+    if child is not None and child.text and child.text.strip():
+        return child.text.strip()
+    return None
+
+
+def _first_kid_text(kids: Dict[str, ET.Element], tags: Sequence[str]) -> Optional[str]:
+    for tag in tags:
+        text = _kid_text(kids, tag)
+        if text:
+            return text
+    return None
 

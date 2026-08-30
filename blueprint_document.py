@@ -69,6 +69,20 @@ def catalog_completion_allowed(token: JobToken, generation: int, *, cleared: boo
     return (not cleared) and token.is_current(generation)
 
 
+def inspect_result_applies(
+    token: JobToken,
+    generation: int,
+    selected_path: Optional[Path],
+    result_path: Optional[Path],
+) -> bool:
+    """Drop inspect success/error callbacks that belong to a previous selection."""
+    if not token.is_current(generation):
+        return False
+    if selected_path is None or result_path is None:
+        return False
+    return Path(selected_path) == Path(result_path)
+
+
 def blueprint_file(path: Path) -> Path:
     path = Path(path)
     if path.is_dir():
@@ -123,7 +137,12 @@ class BlueprintDocument:
                 thruster_forwards[block.forward] += 1
         grid_size = "Unknown"
         if scene.grids:
-            main = next((g for g in scene.grids if g.name == scene.main_grid_name), scene.grids[0])
+            main = next(
+                (g for g in scene.grids if g.entity_id and g.entity_id == scene.main_grid_entity_id),
+                None,
+            )
+            if main is None:
+                main = next((g for g in scene.grids if g.name == scene.main_grid_name), scene.grids[0])
             grid_size = main.grid_size or "Unknown"
         return cls(
             stamp=stamp or FileStamp("", 0, 0),

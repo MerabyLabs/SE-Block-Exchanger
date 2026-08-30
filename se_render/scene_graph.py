@@ -70,6 +70,7 @@ class PreviewScene:
     blocks: List[BlockInstance] = field(default_factory=list)
     grids: List[GridPose] = field(default_factory=list)
     main_grid_name: str = ""
+    main_grid_entity_id: str = ""
     total_blocks: int = 0
     # child CubeGrid EntityId → parent CubeGrid EntityId (mechanical attach)
     parent_of: Dict[str, str] = field(default_factory=dict)
@@ -92,6 +93,7 @@ class PreviewScene:
             blocks=filtered,
             grids=grids,
             main_grid_name=self.main_grid_name,
+            main_grid_entity_id=self.main_grid_entity_id,
             total_blocks=len(filtered),
             parent_of={c: p for c, p in self.parent_of.items() if c in keep_ids and p in keep_ids},
         )
@@ -110,8 +112,10 @@ def extract_scene_from_root(root: ET.Element) -> PreviewScene:
     if not parsed:
         return PreviewScene()
 
-    main = max(parsed, key=lambda g: (len(g["blocks"]), -parsed.index(g)))
-    world, parent_of = _assemble_grid_worlds(parsed, main["entity_id"])
+    children, parent_of, child_ids = _link_mechanical_grids(parsed)
+    non_children = [g for g in parsed if g["entity_id"] not in child_ids] or parsed
+    main = max(non_children, key=lambda g: (len(g["blocks"]), -parsed.index(g)))
+    world, parent_of = _assemble_grid_worlds(parsed, main["entity_id"], children, parent_of)
 
     instances: List[BlockInstance] = []
     poses: List[GridPose] = []
@@ -159,6 +163,7 @@ def extract_scene_from_root(root: ET.Element) -> PreviewScene:
         blocks=instances,
         grids=poses,
         main_grid_name=main["name"],
+        main_grid_entity_id=main["entity_id"],
         total_blocks=len(instances),
         parent_of=parent_of,
     )
@@ -218,7 +223,7 @@ _HSV_RGB_CACHE: Dict[Tuple[float, float, float], Tuple[float, float, float]] = {
 
 
 def _color_rgb(hsv: Tuple[float, float, float]) -> Tuple[float, float, float]:
-    key = (round(hsv[0], 5), round(hsv[1], 5), round(hsv[2], 5))
+    key = hsv
     cached = _HSV_RGB_CACHE.get(key)
     if cached is not None:
         return cached
@@ -355,7 +360,9 @@ def _grid_pose(grid: ET.Element) -> Tuple[list, bool]:
     return pose_matrix(pos, forward, up), True
 
 
-def _assemble_grid_worlds(parsed: List[dict], main_id: str) -> Tuple[Dict[str, list], Dict[str, str]]:
+def _link_mechanical_grids(
+    parsed: List[dict],
+) -> Tuple[Dict[str, List[tuple]], Dict[str, str], set]:
     by_id = {g["entity_id"]: g for g in parsed}
     block_owner: Dict[str, str] = {}
     for grid in parsed:
@@ -365,7 +372,7 @@ def _assemble_grid_worlds(parsed: List[dict], main_id: str) -> Tuple[Dict[str, l
 
     children: Dict[str, List[tuple]] = {g["entity_id"]: [] for g in parsed}
     parent_of: Dict[str, str] = {}
-    child_ids = set()
+    child_ids: set = set()
     for grid in parsed:
         for block in grid["blocks"]:
             top = block.get("top_id")
@@ -383,6 +390,18 @@ def _assemble_grid_worlds(parsed: List[dict], main_id: str) -> Tuple[Dict[str, l
                 child_grid = by_id.get(child_id)
                 if child_grid is not None:
                     child_grid["attachment_via"] = f"{block['joint'] or 'Mechanical'} ({block['subtype']})"
+    return children, parent_of, child_ids
+
+
+def _assemble_grid_worlds(
+    parsed: List[dict],
+    main_id: str,
+    children: Optional[Dict[str, List[tuple]]] = None,
+    parent_of: Optional[Dict[str, str]] = None,
+) -> Tuple[Dict[str, list], Dict[str, str]]:
+    if children is None or parent_of is None:
+        children, parent_of, _ = _link_mechanical_grids(parsed)
+    by_id = {g["entity_id"]: g for g in parsed}
 
     usable_poses = sum(1 for g in parsed if g["has_pose"])
     if usable_poses == len(parsed) and len(parsed) > 0:

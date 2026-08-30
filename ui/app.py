@@ -29,6 +29,7 @@ from blueprint_document import (
     JobHub,
     catalog_completion_allowed,
     dry_run_from_counts,
+    inspect_result_applies,
 )
 from blueprint_scanner import BlueprintInfo, BlueprintScanner
 from mapping_profiles import ProfileManager
@@ -626,6 +627,7 @@ class TacticalCommandCenter(ctk.CTk):
     # ------------------------------------------------------------------
 
     def on_blueprint_select(self, bp: BlueprintInfo):
+        self._inspect_token.cancel()
         self.selected_blueprint = bp
         self.settings_store.add_recent_blueprint(self.settings, bp.display_name)
         self.blueprint_panel.set_recent_blueprints(self.settings.recent_blueprints)
@@ -722,7 +724,8 @@ class TacticalCommandCenter(ctk.CTk):
             bp.subtype_counts or {},
             blueprint_name=bp.name,
             grid_size=bp.grid_size,
-            thruster_forwards=getattr(bp, "thruster_forwards", None) or None,
+            thruster_forwards=getattr(bp, "thruster_forwards", None),
+            thruster_count=getattr(bp, "thruster_count", None),
         )
         comparison = self.analytics_engine.compare_conversion_cost_from_result(
             analytics,
@@ -775,14 +778,15 @@ class TacticalCommandCenter(ctk.CTk):
                 return
             except Exception as exc:
                 error_message = str(exc)
-                self._ui(lambda msg=error_message: self._on_inspect_error(generation, msg))
+                self._ui(lambda msg=error_message, ship=bp: self._on_inspect_error(generation, ship, msg))
 
         threading.Thread(target=task, daemon=True).start()
 
     def _on_document_ready(self, generation: int, bp: BlueprintInfo, doc: BlueprintDocument):
-        if self._closing or not self._inspect_token.is_current(generation):
+        if self._closing:
             return
-        if not self.selected_blueprint or self.selected_blueprint.path != bp.path:
+        selected = self.selected_blueprint.path if self.selected_blueprint else None
+        if not inspect_result_applies(self._inspect_token, generation, selected, bp.path):
             return
         self._document = doc
         try:
@@ -790,8 +794,11 @@ class TacticalCommandCenter(ctk.CTk):
         except Exception as exc:
             self.toasts.toast(f"Map view failed: {exc}", level="warning")
 
-    def _on_inspect_error(self, generation: int, message: str):
-        if self._closing or not self._inspect_token.is_current(generation):
+    def _on_inspect_error(self, generation: int, bp: BlueprintInfo, message: str):
+        if self._closing:
+            return
+        selected = self.selected_blueprint.path if self.selected_blueprint else None
+        if not inspect_result_applies(self._inspect_token, generation, selected, bp.path):
             return
         self._show_error(f"Preview failed: {message}")
         self._update_convert_state()
@@ -1442,10 +1449,28 @@ class TacticalCommandCenter(ctk.CTk):
         success = self.analytics_engine.apply_fix(bp_file, fix_id)
         if success:
             self.toasts.toast(f"Applied fix: {fix_id}", level="success")
-            self.refresh_analytics_async()
-            self.preview_panel.load_xml(bp_file, f"SOURCE: {self.selected_blueprint.name}")
+            self._refresh_after_inplace_edit(self.selected_blueprint)
         else:
             self.toasts.toast(f"Fix '{fix_id}' could not be applied.", level="warning")
+
+    def _refresh_after_inplace_edit(self, bp: BlueprintInfo) -> None:
+        """Re-read the edited bp.sbc so Analytics / Convert / XML / Subgrids match disk."""
+        self._documents.invalidate(bp.path)
+        self._document = None
+        refreshed = self.scanner.refresh_path(bp.path)
+        if refreshed is not None:
+            self.selected_blueprint = refreshed
+            remapped = self.scanner.remap_cached()
+            self.blueprints = remapped
+            self.blueprint_panel.set_blueprints(remapped)
+            self.blueprint_panel.select_blueprint_by_name(refreshed.display_name, notify=False)
+            self.control_panel.update_details(refreshed)
+            self.preview_panel.update_intel(refreshed, self.conversion_mode)
+        self.preview_panel.invalidate_xml(bp.path / "bp.sbc")
+        if self.selected_blueprint:
+            self._apply_instant_inspect(self.selected_blueprint)
+        if self.preview_panel.current_tab() == "Subgrids":
+            self._inspect_blueprint_async()
 
     # ------------------------------------------------------------------
     # Changelog / utilities

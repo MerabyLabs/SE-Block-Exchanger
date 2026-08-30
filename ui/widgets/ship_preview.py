@@ -1410,11 +1410,6 @@ class ShipPreviewHost(ctk.CTkFrame):
         origin, direction = renderer.camera.screen_ray(x, y, w, h, proj)
         # Intersect the view ray with the plane through the current pivot.
         target = renderer.camera.target
-        to_plane = (
-            target[0] - origin[0],
-            target[1] - origin[1],
-            target[2] - origin[2],
-        )
         denom = direction[0] ** 2 + direction[1] ** 2 + direction[2] ** 2
         if denom < 1e-8:
             return tuple(target)

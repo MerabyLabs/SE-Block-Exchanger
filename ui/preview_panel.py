@@ -31,6 +31,11 @@ from ui.widgets.ship_canvas import VoxelBlock
 from ui.widgets.ship_preview import ShipPreviewHost
 
 
+def xml_reload_required(loaded_path, path) -> bool:
+    """True when the XML tab must re-read disk (path changed or cache cleared)."""
+    return loaded_path != path
+
+
 class PreviewPanel(ctk.CTkFrame):
     """Center panel with tabbed views for blueprint information."""
 
@@ -610,6 +615,12 @@ class PreviewPanel(ctk.CTkFrame):
             switch_tab=False,
         )
 
+    def invalidate_xml(self, file_path=None) -> None:
+        """Force the XML tab to re-read disk even when the path is unchanged."""
+        path = str(file_path) if file_path is not None else None
+        if path is None or self._xml_loaded_path == path:
+            self._xml_loaded_path = None
+
     def load_xml(self, file_path, status_text: str):
         self._xml_path = str(file_path)
         self._xml_status_text = status_text
@@ -625,7 +636,7 @@ class PreviewPanel(ctk.CTkFrame):
         path = self._xml_path
         if not path:
             return
-        if self._xml_loaded_path == path:
+        if not xml_reload_required(self._xml_loaded_path, path):
             return
         self.xml_status.configure(text="Opening…")
         XML_PREVIEW_LIMIT = 120000
