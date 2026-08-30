@@ -26,7 +26,8 @@ from blueprint_document import (
     BlueprintDocument,
     BlueprintDocumentCache,
     CancelledError,
-    JobToken,
+    JobHub,
+    catalog_completion_allowed,
     dry_run_from_counts,
 )
 from blueprint_scanner import BlueprintInfo, BlueprintScanner
@@ -114,15 +115,14 @@ class TacticalCommandCenter(ctk.CTk):
         self._closing = False
         self._ui_queue: SimpleQueue = SimpleQueue()
         self._documents = BlueprintDocumentCache()
-        self._inspect_token = JobToken()
-        self._scan_token = JobToken()
+        self._jobs = JobHub()
+        self._inspect_token = self._jobs.inspect
+        self._scan_token = self._jobs.scan
+        self._catalog_token = self._jobs.catalog
         self._document: Optional[BlueprintDocument] = None
         self._se_catalog = CubeBlockCatalog()
         self._se_meshes = MeshLibrary()
-        self._se_install_status = resolve_install(
-            self.settings.space_engineers_install,
-            allow_detect=not self.settings.space_engineers_cleared,
-        )
+        self._se_install_status = None
 
         self._build_ui()
         self.toasts = ToastManager(self)
@@ -141,8 +141,8 @@ class TacticalCommandCenter(ctk.CTk):
             self.enabled_categories,
         )
 
+        self.after(0, self._detect_install_after_paint)
         self.after(200, self.load_blueprints_async)
-        self.after(250, self._apply_se_install_state)
         if self.settings.auto_check_updates:
             self.after(900, self._check_updates_async)
 
@@ -315,8 +315,20 @@ class TacticalCommandCenter(ctk.CTk):
     # Settings and appearance
     # ------------------------------------------------------------------
 
+    def _detect_install_after_paint(self) -> None:
+        """First layout/paint happens before Steam-library install detection."""
+        if self._closing:
+            return
+        self._se_install_status = resolve_install(
+            self.settings.space_engineers_install,
+            allow_detect=not self.settings.space_engineers_cleared,
+        )
+        self._apply_se_install_state()
+
     def _apply_se_install_state(self) -> None:
         status = self._se_install_status
+        if status is None:
+            return
         path_text = str(status.path) if status.path else ""
         self.preview_panel.set_se_preview_state(status.valid, path_text, status.reason)
         if status.valid and status.path is not None and not self.settings.space_engineers_cleared:
@@ -326,19 +338,27 @@ class TacticalCommandCenter(ctk.CTk):
             self._load_se_catalog_async(status.path)
 
     def _load_se_catalog_async(self, install) -> None:
+        generation = self._catalog_token.begin()
+
         def task():
             try:
                 catalog = CubeBlockCatalog()
                 catalog.load(install)
                 meshes = MeshLibrary(install)
-                self._ui(lambda: self._on_se_catalog_ready(catalog, meshes))
+                self._ui(lambda: self._on_se_catalog_ready(catalog, meshes, generation))
             except Exception as exc:
                 self._ui(lambda msg=str(exc): self.toasts.toast(f"Block catalog failed: {msg}", level="warning"))
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _on_se_catalog_ready(self, catalog: CubeBlockCatalog, meshes: MeshLibrary) -> None:
+    def _on_se_catalog_ready(self, catalog: CubeBlockCatalog, meshes: MeshLibrary, generation: int) -> None:
         if self._closing:
+            return
+        if not catalog_completion_allowed(
+            self._catalog_token,
+            generation,
+            cleared=self.settings.space_engineers_cleared,
+        ):
             return
         self._se_catalog = catalog
         self._se_meshes = meshes
@@ -384,11 +404,14 @@ class TacticalCommandCenter(ctk.CTk):
             pass
 
     def clear_space_engineers_path(self) -> None:
+        self._jobs.cancel_stale()
         self.settings.space_engineers_install = ""
         self.settings.space_engineers_cleared = True
         self.settings_store.save(self.settings)
         self._se_install_status = resolve_install("", allow_detect=False)
         self._apply_se_install_state()
+        if self.preview_panel.ship_preview is not None:
+            self.preview_panel.ship_preview.set_catalog(None)
         self.toasts.toast("Cleared the Space Engineers path. Using the 2D map.", level="info")
 
     def set_appearance_mode(self, mode: str):
@@ -1499,8 +1522,7 @@ class TacticalCommandCenter(ctk.CTk):
         self._closing = True
         self._inspect_generation += 1
         try:
-            self._inspect_token.cancel()
-            self._scan_token.cancel()
+            self._jobs.cancel_stale()
         except Exception:
             pass
         for attr in ("_rescan_after_id", "_preview_after_id"):

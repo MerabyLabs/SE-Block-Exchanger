@@ -38,11 +38,13 @@ from se_render.preview_build import (
     build_preview_cpu,
     ensure_exploded_batches,
     pending_mwm_definitions,
+    refine_mwm_cpu,
 )
 from se_render.preview_style import (
     INSPECT_CATEGORIES,
     MWM_REFINE_CHUNK,
     PROGRESSIVE_BLOCK_THRESHOLD,
+    UPLOAD_BATCH_CHUNK,
     render_target_size,
 )
 from se_render.scene_graph import PreviewScene
@@ -96,6 +98,9 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._catalog: Optional[CubeBlockCatalog] = None
         self._meshes = MeshLibrary()
         self._grid_filter: Optional[str] = None
+        self._grid_entity_id: Optional[str] = None
+        self._grid_isolate_key: Optional[str] = None
+        self._upload_chunk_job = None
         self._declared_total = 0
         self._renderer: Optional[GLPreviewRenderer] = None
         self._photo = None
@@ -476,6 +481,8 @@ class ShipPreviewHost(ctk.CTkFrame):
     def load_structure_data(self, blocks: List[VoxelBlock], scene: Optional[PreviewScene] = None) -> None:
         self._scene = scene
         self._grid_filter = None
+        self._grid_entity_id = None
+        self._grid_isolate_key = None
         self._mesh_ready = False
         self._building = False
         self._cpu_stage = ""
@@ -493,26 +500,47 @@ class ShipPreviewHost(ctk.CTkFrame):
             self._renderer.hide_armor = False
             self._renderer.hide_layers = 0
             self._renderer.category_mask = 0
-        self.ship_canvas.load_structure_data(blocks)
+        want_3d = bool(self._install_valid and scene is not None)
+        self.ship_canvas.load_structure_data(blocks, draw=not want_3d)
         self._apply_mode()
-        if self._install_valid and scene is not None:
+        if want_3d:
             self._start_build()
 
-    def filter_by_grid(self, grid_name: Optional[str]) -> None:
+    def filter_by_grid(
+        self,
+        grid_name: Optional[str] = None,
+        grid_entity_id: Optional[str] = None,
+    ) -> None:
+        self.isolate_grid(grid_name, grid_entity_id)
+
+    def isolate_grid(
+        self,
+        grid_name: Optional[str] = None,
+        grid_entity_id: Optional[str] = None,
+    ) -> None:
+        """Isolate one CubeGrid by entity id. Fit if already isolated — no remesh."""
+        key = grid_entity_id or grid_name
+        already = key == self._grid_isolate_key
         self._grid_filter = grid_name
-        self.ship_canvas.filter_by_grid(grid_name)
-        if self._mesh_ready and self._renderer is not None and self._mode == "3d":
-            self._renderer.set_grid_filter(grid_name)
-            self._refresh_status()
-            self._schedule_redraw(interactive=False)
-        elif self._install_valid and self._scene is not None and not self._mesh_ready:
-            # Filter is stored; the in-flight full-ship build applies it on upload.
-            pass
+        self._grid_entity_id = grid_entity_id
+        self._grid_isolate_key = key
+        self.ship_canvas.filter_by_grid(grid_name, grid_entity_id)
+        if self._mode == "2d" or not self._mesh_ready or self._renderer is None:
+            return
+        if already:
+            self.fit_to_view()
+            return
+        self._sync_user_hidden()
+        self._renderer.refit_to_visible()
+        self._refresh_status()
+        self._schedule_redraw(interactive=False)
 
     def clear(self) -> None:
         self._cancel_build()
         self._scene = None
         self._grid_filter = None
+        self._grid_entity_id = None
+        self._grid_isolate_key = None
         self._mesh_ready = False
         self._building = False
         self._cpu_stage = ""
@@ -557,6 +585,14 @@ class ShipPreviewHost(ctk.CTkFrame):
 
     def _cancel_build(self) -> None:
         self._job.cancel()
+        if self._upload_chunk_job is not None:
+            try:
+                self.after_cancel(self._upload_chunk_job)
+            except Exception:
+                pass
+            self._upload_chunk_job = None
+        if self._renderer is not None:
+            self._renderer.cancel_chunked_upload()
 
     def _start_build(self) -> None:
         if not self._install_valid or self._gl_failed or self._scene is None:
@@ -625,6 +661,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._shown_count = int(cpu.shown_count or 0)
         self._set_dissect_enabled(True)
         self._apply_dissect_chrome()
+        self._sync_user_hidden()
         self._apply_mode()
         self._refresh_status()
         self._schedule_redraw(interactive=False)
@@ -683,10 +720,13 @@ class ShipPreviewHost(ctk.CTkFrame):
             try:
                 for definition in chunk:
                     library.mesh_for(definition, skip_mwm=False)
-                cpu = build_preview_cpu(
-                    scene, catalog, library, generation=generation, stage=STAGE_MESHES,
-                    cancel=self._job, prior=prior,
-                )
+                if prior is None:
+                    cpu = build_preview_cpu(
+                        scene, catalog, library, generation=generation, stage=STAGE_MESHES,
+                        cancel=self._job, prior=prior,
+                    )
+                else:
+                    cpu = refine_mwm_cpu(prior, catalog, library, chunk)
             except Exception as exc:
                 message = str(exc)
                 self.after(0, lambda: self._on_refine_failed(generation, message))
@@ -700,7 +740,7 @@ class ShipPreviewHost(ctk.CTkFrame):
             return
         if self._renderer is None or not self._mesh_ready:
             return
-        if not self._upload_cpu(cpu, refit=False):
+        if not self._upload_cpu(cpu, refit=False, patch=True):
             self._building = False
             return
         self._cpu_scene = cpu
@@ -838,7 +878,14 @@ class ShipPreviewHost(ctk.CTkFrame):
         if cpu.huge and cpu.exploded:
             self.after(16, lambda: self._finish_secondary_upload(generation))
 
-    def _upload_cpu(self, cpu: PreviewCpuScene, *, refit: bool = True) -> bool:
+    def _upload_cpu(
+        self,
+        cpu: PreviewCpuScene,
+        *,
+        refit: bool = True,
+        chunked: bool = True,
+        patch: bool = False,
+    ) -> bool:
         renderer = self._ensure_renderer()
         if renderer is None:
             self._gl_status.configure(text=last_gl_error() or "OpenGL preview is unavailable.")
@@ -847,16 +894,30 @@ class ShipPreviewHost(ctk.CTkFrame):
             self._apply_mode()
             return False
         try:
-            renderer.upload_cpu_scene(
-                cpu,
-                grid_filter=self._grid_filter,
-                defer_secondary=cpu.huge or cpu.stage != STAGE_FULL,
-                refit=refit,
-            )
+            if patch:
+                renderer.patch_assembled(cpu)
+            elif chunked and len(cpu.assembled) > UPLOAD_BATCH_CHUNK:
+                more = renderer.begin_cpu_upload(
+                    cpu,
+                    grid_filter=self._grid_filter,
+                    grid_entity_id=self._grid_entity_id,
+                    defer_secondary=cpu.huge or cpu.stage != STAGE_FULL,
+                    refit=refit,
+                )
+                if more:
+                    gen = self._job.generation
+                    self._upload_chunk_job = self.after_idle(lambda: self._continue_gl_upload(gen))
+            else:
+                renderer.upload_cpu_scene(
+                    cpu,
+                    grid_filter=self._grid_filter,
+                    defer_secondary=cpu.huge or cpu.stage != STAGE_FULL,
+                    refit=refit,
+                )
             renderer.explode = self._explode
             renderer.dissect_mode = self._dissect_mode
             renderer.hide_armor = self._hide_armor
-            if refit:
+            if refit and not patch:
                 self._clear_selection()
                 renderer.select(None)
             return True
@@ -870,6 +931,18 @@ class ShipPreviewHost(ctk.CTkFrame):
                 self._building = False
                 self._apply_mode()
             return False
+
+    def _continue_gl_upload(self, generation: int) -> None:
+        self._upload_chunk_job = None
+        if not self._job.is_current(generation) or self._renderer is None:
+            return
+        try:
+            more = self._renderer.continue_cpu_upload()
+        except Exception:
+            return
+        self._schedule_redraw(interactive=False)
+        if more:
+            self._upload_chunk_job = self.after_idle(lambda: self._continue_gl_upload(generation))
 
     def _finish_secondary_upload(self, generation: int) -> None:
         if not self._job.is_current(generation) or not self._install_valid:
@@ -911,6 +984,8 @@ class ShipPreviewHost(ctk.CTkFrame):
         else:
             self._gl_frame.pack_forget()
             self.ship_canvas.pack(fill="both", expand=True)
+            if self.ship_canvas.blocks:
+                self.ship_canvas.refresh()
 
     def _refresh_status(self) -> None:
         if self._scene is None:
@@ -922,6 +997,7 @@ class ShipPreviewHost(ctk.CTkFrame):
             self._declared_total,
             shown=self._shown_count if self._simplified else None,
             simplified=self._simplified,
+            grid_entity_id=self._grid_entity_id,
         )
         if self._building and not self._mesh_ready:
             text = "Building 3D preview…"
@@ -1005,7 +1081,6 @@ class ShipPreviewHost(ctk.CTkFrame):
             )
             self._renderer.hide_layers = self._hide_layers
             self._renderer.category_mask = self._category_mask()
-            self._sync_user_hidden()
 
     def _toggle_dissect(self) -> None:
         if not self._mesh_ready:
@@ -1379,15 +1454,20 @@ class ShipPreviewHost(ctk.CTkFrame):
         return mask
 
     def _sync_user_hidden(self) -> None:
-        if self._renderer is None or self._scene is None:
+        if self._renderer is None:
             return
         hidden_ids = set()
-        for i, block in enumerate(self._scene.blocks):
-            ident = pick_identity(block)
-            if self._edits.is_inspect_hidden(ident):
-                hidden_ids.add(i)
+        if self._scene is not None:
+            for i, block in enumerate(self._scene.blocks):
+                ident = pick_identity(block)
+                if self._edits.is_inspect_hidden(ident):
+                    hidden_ids.add(i)
         self._renderer.hidden_subtypes = set(getattr(self._renderer, "hidden_subtypes", set()))
-        self._renderer.set_user_hidden(hidden_ids)
+        self._renderer.isolate_grid_instances(
+            self._grid_entity_id,
+            self._grid_filter,
+            extra_hidden=hidden_ids,
+        )
 
     def _on_layer_slider(self, value) -> None:
         self._set_hide_layers(int(round(float(value))))
@@ -1595,21 +1675,29 @@ class ShipPreviewHost(ctk.CTkFrame):
         if dest.exists():
             self._toast("Could not pick a free Save As folder.", "error")
             return
-        try:
-            written = save_blueprint_as(
-                source,
-                self._edits.deleted,
-                self._edits.moves,
-                dest_dir=dest,
-                overwrite_original=overwrite,
-            )
-        except FileExistsError:
-            self._toast("Save As cancelled — destination already exists.", "warning")
-            return
-        except Exception as exc:
-            self._toast(f"Save failed: {exc}", "error")
-            return
-        self._toast(f"Saved new blueprint: {written}", "success")
+        deleted = set(self._edits.deleted)
+        moves = dict(self._edits.moves)
+
+        def task() -> None:
+            try:
+                written = save_blueprint_as(
+                    source,
+                    deleted,
+                    moves,
+                    dest_dir=dest,
+                    overwrite_original=overwrite,
+                )
+            except FileExistsError:
+                self.after(0, lambda: self._toast("Save As cancelled — destination already exists.", "warning"))
+                return
+            except Exception as exc:
+                message = str(exc)
+                self.after(0, lambda: self._toast(f"Save failed: {message}", "error"))
+                return
+            self.after(0, lambda: self._toast(f"Saved new blueprint: {written}", "success"))
+
+        threading.Thread(target=task, daemon=True).start()
+        self._toast("Saving edited blueprint…", "info")
 
     def gl_failed_message(self) -> str:
         return last_gl_error() or "OpenGL preview is unavailable on this machine."

@@ -20,6 +20,7 @@ class GridHierarchyView(ctk.CTkFrame):
         self._hit_rows = []
         self._structure = None
         self._selected_grid: Optional[str] = None
+        self._selected_entity_id: Optional[str] = None
         self._last_width = 0
         self.canvas = tk.Canvas(
             self,
@@ -39,12 +40,14 @@ class GridHierarchyView(ctk.CTkFrame):
     def render(self, structure: Optional[MultiGridStructure]) -> None:
         self._structure = structure
         self._selected_grid = None
+        self._selected_entity_id = None
         self._paint_tree()
 
-    def set_selected(self, grid_name: Optional[str]) -> None:
-        if grid_name == self._selected_grid:
+    def set_selected(self, grid_name: Optional[str], entity_id: Optional[str] = None) -> None:
+        if grid_name == self._selected_grid and entity_id == self._selected_entity_id:
             return
         self._selected_grid = grid_name
+        self._selected_entity_id = entity_id
         self._paint_tree()
 
     def _on_configure(self, event) -> None:
@@ -84,8 +87,9 @@ class GridHierarchyView(ctk.CTkFrame):
             title=f"All grids  ·  {structure.total_grids}",
             subtitle=f"{structure.total_blocks:,} blocks",
             grid_name=None,
+            entity_id=None,
             accent=TacticalTheme.CYAN_PRIMARY,
-            selected=self._selected_grid is None,
+            selected=self._selected_grid is None and self._selected_entity_id is None,
         )
         y += 8
 
@@ -109,8 +113,9 @@ class GridHierarchyView(ctk.CTkFrame):
             title=title,
             subtitle=subtitle,
             grid_name=node.grid_name,
+            entity_id=node.entity_id,
             accent=accent,
-            selected=self._selected_grid == node.grid_name,
+            selected=self._selected_entity_id == node.entity_id,
         )
         for child in node.children:
             y = self._draw_node(child, depth + 1, y, width)
@@ -126,6 +131,7 @@ class GridHierarchyView(ctk.CTkFrame):
         grid_name: Optional[str],
         accent: str,
         selected: bool = False,
+        entity_id: Optional[str] = None,
     ) -> int:
         x = 10 + indent * 18
         height = 58
@@ -158,14 +164,14 @@ class GridHierarchyView(ctk.CTkFrame):
             anchor="nw",
             width=width - x - 24,
         )
-        self._hit_rows.append((y, y + height, grid_name))
+        self._hit_rows.append((y, y + height, grid_name, entity_id))
         return y + height + 6
 
     def _on_click(self, event) -> None:
         y = self.canvas.canvasy(event.y)
-        for top, bottom, grid_name in self._hit_rows:
+        for top, bottom, grid_name, entity_id in self._hit_rows:
             if top <= y <= bottom:
-                self.set_selected(grid_name)
+                self.set_selected(grid_name, entity_id)
                 if self._on_select:
-                    self._on_select(grid_name)
+                    self._on_select(grid_name, entity_id)
                 return

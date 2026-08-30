@@ -164,6 +164,67 @@ def _matches(ident: Identity, grid_eid: str, block: ET.Element) -> bool:
     return mn == _min_from_element(block)
 
 
+def _cube_blocks_parent(grid: ET.Element) -> ET.Element:
+    parent = grid.find("CubeBlocks")
+    if parent is None:
+        parent = grid.find("{*}CubeBlocks")
+    return parent if parent is not None else grid
+
+
+def _index_cube_blocks(root: ET.Element) -> dict:
+    """One O(N) pass: identity lookups for delete/move without scanning every ident."""
+    by_eid: Dict[Tuple[str, str], Tuple[ET.Element, ET.Element]] = {}
+    by_min: Dict[Tuple[str, Tuple[int, int, int]], Tuple[ET.Element, ET.Element]] = {}
+    by_eid_any: Dict[str, List[Tuple[ET.Element, ET.Element, str]]] = {}
+    by_min_any: Dict[Tuple[int, int, int], List[Tuple[ET.Element, ET.Element, str]]] = {}
+    for grid in _iter_cube_grids(root):
+        grid_eid = _text(grid, "EntityId") or ""
+        parent = _cube_blocks_parent(grid)
+        for block in _blocks_in_grid(grid):
+            eid = _entity_id(block)
+            mn = _min_from_element(block)
+            if eid:
+                if (grid_eid, eid) not in by_eid:
+                    by_eid[(grid_eid, eid)] = (parent, block)
+                by_eid_any.setdefault(eid, []).append((parent, block, grid_eid))
+            if (grid_eid, mn) not in by_min:
+                by_min[(grid_eid, mn)] = (parent, block)
+            by_min_any.setdefault(mn, []).append((parent, block, grid_eid))
+    return {
+        "by_eid": by_eid,
+        "by_min": by_min,
+        "by_eid_any": by_eid_any,
+        "by_min_any": by_min_any,
+    }
+
+
+def _lookup_indexed_block(ident: Identity, index: dict) -> Optional[Tuple[ET.Element, ET.Element]]:
+    gid, mn, eid = ident
+    if eid:
+        if gid:
+            hit = index["by_eid"].get((gid, eid))
+            if hit is not None:
+                return hit
+        else:
+            hits = index["by_eid_any"].get(eid) or []
+            if hits:
+                return hits[0][0], hits[0][1]
+        if gid:
+            hit = index["by_min"].get((gid, mn))
+            if hit is not None:
+                return hit
+        hits = index["by_min_any"].get(mn) or []
+        if hits:
+            return hits[0][0], hits[0][1]
+        return None
+    if gid:
+        return index["by_min"].get((gid, mn))
+    hits = index["by_min_any"].get(mn) or []
+    if hits:
+        return hits[0][0], hits[0][1]
+    return None
+
+
 def apply_edits_to_tree(
     tree: ET.ElementTree,
     deleted: Iterable[Identity],
@@ -173,33 +234,35 @@ def apply_edits_to_tree(
     """Remove deleted CubeBlocks and rewrite Min for moves. Returns (deleted, moved)."""
     root = tree.getroot()
     deleted_list = list(deleted)
+    deleted_set = set(deleted_list)
+    index = _index_cube_blocks(root)
     removed = 0
+    for ident in deleted_list:
+        hit = _lookup_indexed_block(ident, index)
+        if hit is None:
+            continue
+        parent, block = hit
+        try:
+            parent.remove(block)
+        except ValueError:
+            continue
+        removed += 1
     moved = 0
-    for grid in _iter_cube_grids(root):
-        grid_eid = _text(grid, "EntityId") or ""
-        parent = grid.find("CubeBlocks")
-        if parent is None:
-            parent = grid.find("{*}CubeBlocks")
-        blocks = _blocks_in_grid(grid)
-        for block in list(blocks):
-            drop = any(_matches(ident, grid_eid, block) for ident in deleted_list)
-            if drop:
-                (parent if parent is not None else grid).remove(block)
-                removed += 1
-                continue
-            for ident, nxt in moves.items():
-                if ident in deleted_list:
-                    continue
-                if _matches(ident, grid_eid, block):
-                    min_elem = block.find("Min")
-                    if min_elem is None:
-                        min_elem = block.find("{*}Min")
-                    if min_elem is not None:
-                        min_elem.attrib["x"] = str(int(nxt[0]))
-                        min_elem.attrib["y"] = str(int(nxt[1]))
-                        min_elem.attrib["z"] = str(int(nxt[2]))
-                        moved += 1
-                    break
+    for ident, nxt in moves.items():
+        if ident in deleted_set:
+            continue
+        hit = _lookup_indexed_block(ident, index)
+        if hit is None:
+            continue
+        _parent, block = hit
+        min_elem = block.find("Min")
+        if min_elem is None:
+            min_elem = block.find("{*}Min")
+        if min_elem is not None:
+            min_elem.attrib["x"] = str(int(nxt[0]))
+            min_elem.attrib["y"] = str(int(nxt[1]))
+            min_elem.attrib["z"] = str(int(nxt[2]))
+            moved += 1
     if new_name:
         _rename_blueprint(root, new_name)
     return removed, moved

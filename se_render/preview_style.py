@@ -37,6 +37,9 @@ PREVIEW_INSTANCE_CAP = 20000
 EXTREME_BLOCK_THRESHOLD = 50000
 MWM_REFINE_CHUNK = 32
 
+# First GPU upload: this many CpuBatches per Tk idle slice.
+UPLOAD_BATCH_CHUNK = 8
+
 
 def format_preview_count_caption(
     shown: int,

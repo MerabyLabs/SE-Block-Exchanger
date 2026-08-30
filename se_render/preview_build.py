@@ -132,6 +132,7 @@ class CpuBatch:
     grid_names: List[str]
     accents: np.ndarray
     kind: str = "armor"
+    grid_entity_ids: List[str] = field(default_factory=list)
     # Three precomputed 100% offsets. Shader picks the mode; slider is u_explode.
     explode_peel: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=np.float32))
     explode_decks: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=np.float32))
@@ -453,6 +454,7 @@ def _collect_batches(
         explode_arr = peel_arr
         instance_ids = idx.astype(np.float32, copy=False)
         grid_names = [blocks[i].grid_name for i in indices]
+        grid_entity_ids = [blocks[i].grid_entity_id for i in indices]
         kind_name = "armor" if key[0] == 0 else "functional"
         if not lod:
             for slot, block_index in enumerate(indices):
@@ -497,6 +499,7 @@ def _collect_batches(
                 explode=explode_arr,
                 instance_ids=instance_ids,
                 grid_names=grid_names,
+                grid_entity_ids=grid_entity_ids,
                 accents=accents,
                 kind=kind_name,
                 explode_peel=peel_arr,
@@ -855,13 +858,14 @@ def pending_mwm_definitions(
     return out
 
 
-def filter_batch(batch: CpuBatch, grid_name: Optional[str]) -> Optional[CpuBatch]:
-    if not grid_name:
-        return batch
-    keep = [i for i, name in enumerate(batch.grid_names) if name == grid_name]
-    if not keep:
-        return None
+def _slice_batch(batch: CpuBatch, keep: Sequence[int]) -> CpuBatch:
     idx = np.asarray(keep, dtype=np.int32)
+    eids = list(getattr(batch, "grid_entity_ids", None) or [])
+    inspect = getattr(batch, "inspect", None)
+    if inspect is not None and getattr(inspect, "size", 0):
+        inspect_arr = _slice_offsets(inspect, batch.explode, idx)
+    else:
+        inspect_arr = np.zeros((len(keep), 3), dtype=np.float32)
     return CpuBatch(
         positions=batch.positions,
         normals=batch.normals,
@@ -873,13 +877,38 @@ def filter_batch(batch: CpuBatch, grid_name: Optional[str]) -> Optional[CpuBatch
         explode=batch.explode[idx],
         instance_ids=batch.instance_ids[idx],
         grid_names=[batch.grid_names[i] for i in keep],
+        grid_entity_ids=[eids[i] if i < len(eids) else "" for i in keep],
         accents=batch.accents[idx],
         kind=batch.kind,
         explode_peel=_slice_offsets(batch.explode_peel, batch.explode, idx),
         explode_decks=_slice_offsets(batch.explode_decks, batch.explode, idx),
         explode_radial=_slice_offsets(batch.explode_radial, batch.explode, idx),
-        inspect=_slice_offsets(batch.inspect, batch.explode, idx) if getattr(batch, "inspect", None) is not None and getattr(batch.inspect, "size", 0) else np.zeros((len(keep), 3), dtype=np.float32),
+        inspect=inspect_arr,
     )
+
+
+def filter_batch(
+    batch: CpuBatch,
+    grid_name: Optional[str] = None,
+    grid_entity_id: Optional[str] = None,
+) -> Optional[CpuBatch]:
+    if grid_entity_id:
+        eids = getattr(batch, "grid_entity_ids", None) or []
+        if eids:
+            keep = [i for i, eid in enumerate(eids) if eid == grid_entity_id]
+        elif grid_name:
+            keep = [i for i, name in enumerate(batch.grid_names) if name == grid_name]
+        else:
+            return None
+    elif grid_name:
+        keep = [i for i, name in enumerate(batch.grid_names) if name == grid_name]
+    else:
+        return batch
+    if not keep:
+        return None
+    if len(keep) == len(batch.instance_ids):
+        return batch
+    return _slice_batch(batch, keep)
 
 
 def _slice_offsets(primary: np.ndarray, fallback: np.ndarray, idx: np.ndarray) -> np.ndarray:
@@ -887,15 +916,110 @@ def _slice_offsets(primary: np.ndarray, fallback: np.ndarray, idx: np.ndarray) -
     return src[idx]
 
 
-def filter_batches(batches: Sequence[CpuBatch], grid_name: Optional[str]) -> List[CpuBatch]:
-    if not grid_name:
+def filter_batches(
+    batches: Sequence[CpuBatch],
+    grid_name: Optional[str] = None,
+    grid_entity_id: Optional[str] = None,
+) -> List[CpuBatch]:
+    if not grid_name and not grid_entity_id:
         return list(batches)
     out: List[CpuBatch] = []
     for batch in batches:
-        filtered = filter_batch(batch, grid_name)
+        filtered = filter_batch(batch, grid_name, grid_entity_id)
         if filtered is not None:
             out.append(filtered)
     return out
+
+
+def should_alias_lod_sets(full: Sequence[CpuBatch], lod: Sequence[CpuBatch]) -> bool:
+    """True when LOD is the same batch list — do not upload it twice."""
+    if lod is full:
+        return True
+    if not full and not lod:
+        return True
+    if len(lod) != len(full):
+        return False
+    return all(a is b for a, b in zip(lod, full))
+
+
+def split_upload_chunks(batches: Sequence[CpuBatch], chunk: int) -> List[List[CpuBatch]]:
+    size = max(1, int(chunk))
+    return [list(batches[i:i + size]) for i in range(0, len(batches), size)]
+
+
+def _merge_refined_batches(
+    old: Sequence[CpuBatch],
+    new: Sequence[CpuBatch],
+    drop_ids: set,
+) -> List[CpuBatch]:
+    kept: List[CpuBatch] = []
+    for batch in old:
+        ids = [int(round(float(i))) for i in batch.instance_ids]
+        keep = [j for j, iid in enumerate(ids) if iid not in drop_ids]
+        if not keep:
+            continue
+        if len(keep) == len(ids):
+            kept.append(batch)
+        else:
+            kept.append(_slice_batch(batch, keep))
+    kept.extend(new)
+    return kept
+
+
+def refine_mwm_cpu(
+    cpu: PreviewCpuScene,
+    catalog: Optional[CubeBlockCatalog],
+    library: MeshLibrary,
+    definitions: Sequence,
+) -> PreviewCpuScene:
+    """
+    Remesh only instances whose MWM just arrived. Reuses occupancy, plans, picks.
+    """
+    if cpu is None or not definitions or not cpu.source_blocks:
+        return cpu
+    keys = {getattr(item, "key", None) for item in definitions}
+    keys.discard(None)
+    if not keys:
+        return cpu
+    blocks = cpu.source_blocks
+    affected = []
+    for i, block in enumerate(blocks):
+        definition = catalog.get(block.type_id, block.subtype) if catalog is not None else None
+        if definition is not None and definition.key in keys:
+            affected.append(i)
+    if not affected:
+        return cpu
+    columns = _build_instance_columns(blocks, catalog, cpu.shell_layers, indices=affected)
+    zeros = _zero_offsets(len(blocks))
+    peel = cpu.offset_peel if cpu.offset_peel is not None else zeros
+    decks = cpu.offset_decks if cpu.offset_decks is not None else zeros
+    radial = cpu.offset_radial if cpu.offset_radial is not None else zeros
+    new_assembled, new_picks = _collect_batches(
+        blocks, catalog, library, explode=False, lod=False,
+        offsets_peel=peel, offsets_decks=decks, offsets_radial=radial,
+        shell_layers=cpu.shell_layers, plans=cpu.plans, skip_mwm=False,
+        cheap_picks=True, keep_indices=affected, columns=columns,
+    )
+    drop = set(affected)
+    cpu.assembled = _merge_refined_batches(cpu.assembled, new_assembled, drop)
+    cpu.assembled_lod = cpu.assembled
+    if cpu.exploded:
+        new_exploded, _ = _collect_batches(
+            blocks, catalog, library, explode=True, lod=False,
+            offsets_peel=peel, offsets_decks=decks, offsets_radial=radial,
+            shell_layers=cpu.shell_layers, plans=cpu.plans, skip_mwm=False,
+            cheap_picks=True, keep_indices=affected, columns=columns,
+        )
+        cpu.exploded = _merge_refined_batches(cpu.exploded, new_exploded, drop)
+        cpu.exploded_lod = cpu.exploded
+    if new_picks and cpu.picks:
+        pick_map = {p.instance_id: p for p in new_picks}
+        cpu.picks = [pick_map.get(p.instance_id, p) for p in cpu.picks]
+    elif new_picks:
+        cpu.picks = new_picks
+    cpu.has_functional_mwm = True
+    cpu.shown_count = instance_count(cpu.assembled)
+    return cpu
 
 
 def triangle_count(batches: Iterable[CpuBatch]) -> int:
@@ -928,6 +1052,9 @@ __all__ = [
     "instance_count",
     "pending_mwm_definitions",
     "pick_identity",
+    "refine_mwm_cpu",
+    "should_alias_lod_sets",
+    "split_upload_chunks",
     "selection_caption",
     "selection_meta",
     "triangle_count",

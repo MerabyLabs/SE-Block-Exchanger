@@ -165,11 +165,16 @@ class CubeBlockCatalog:
 
 
 def _iter_definitions(root: ET.Element) -> Iterator[ET.Element]:
-    for cubes in root.findall(".//CubeBlocks"):
-        for child in list(cubes):
-            yield child
-    for cubes in root.findall(".//{*}CubeBlocks"):
-        for child in list(cubes):
+    """Each CubeBlocks parent once. `.//CubeBlocks` and `.//{*}CubeBlocks` are the same nodes."""
+    seen = set()
+    for element in root.iter():
+        if safe_xml.local_tag(element.tag) != "CubeBlocks":
+            continue
+        key = id(element)
+        if key in seen:
+            continue
+        seen.add(key)
+        for child in element:
             yield child
 
 

@@ -24,8 +24,10 @@ from se_render.preview_build import (
     PreviewCpuScene,
     build_preview_cpu,
     filter_batches,
+    should_alias_lod_sets,
 )
 from se_render.preview_style import (
+    UPLOAD_BATCH_CHUNK,
     active_preview_set,
     format_preview_count_caption,
     render_target_size,
@@ -87,6 +89,10 @@ class GLPreviewRenderer:
         }
         self._cpu: Optional[PreviewCpuScene] = None
         self._grid_filter: Optional[str] = None
+        self._grid_entity_id: Optional[str] = None
+        self._chunk_queue: List[tuple] = []
+        self._alias_assembled_lod = False
+        self._alias_exploded_lod = False
         self.camera = OrbitCamera()
         self._center = (0.0, 0.0, 0.0)
         self._radius = 10.0
@@ -223,24 +229,128 @@ class GLPreviewRenderer:
         self._aabb_min = cpu.aabb_min
         self._aabb_max = cpu.aabb_max
         self._apply_visible_bounds()
-        self._break_set_aliases()
-        self._upload_named("assembled", filter_batches(cpu.assembled, self._grid_filter))
-        if cpu.huge:
-            self._upload_named("assembled_lod", filter_batches(cpu.assembled_lod, self._grid_filter))
-        else:
-            self._sets["assembled_lod"] = self._sets["assembled"]
-        if defer_secondary:
-            self._sets["exploded"] = []
-            self._sets["exploded_lod"] = []
-            self._secondary_pending = True
-        else:
-            self._upload_secondary()
+        more = self._begin_set_uploads(cpu, defer_secondary=defer_secondary)
+        if more:
+            while self.continue_cpu_upload(10**9):
+                pass
         self.upload_generation += 1
         should_fit = refit or (not self.camera_user_moved) or prev_empty
         if should_fit:
             self.camera.frame(self._center, self._radius, keep_orientation=True)
             if refit:
                 self.camera_user_moved = False
+
+    def begin_cpu_upload(
+        self,
+        cpu: PreviewCpuScene,
+        *,
+        grid_filter: Optional[str] = None,
+        grid_entity_id: Optional[str] = None,
+        defer_secondary: bool = False,
+        refit: bool = True,
+        chunk_size: int = UPLOAD_BATCH_CHUNK,
+    ) -> bool:
+        """Upload metadata + first assembled slice. Returns True if more batches remain."""
+        if not self.available:
+            return False
+        prev_empty = self._cpu is None or self.block_count == 0 or self._radius <= 1.0
+        if grid_filter is not None:
+            self._grid_filter = grid_filter or None
+        if grid_entity_id is not None:
+            self._grid_entity_id = grid_entity_id or None
+        self._cpu = cpu
+        self.block_count = cpu.block_count
+        self._center = cpu.center
+        self._radius = cpu.radius
+        self._aabb_min = cpu.aabb_min
+        self._aabb_max = cpu.aabb_max
+        self._apply_visible_bounds()
+        more = self._begin_set_uploads(cpu, defer_secondary=defer_secondary)
+        if more:
+            self.continue_cpu_upload(chunk_size)
+        self.upload_generation += 1
+        should_fit = refit or (not self.camera_user_moved) or prev_empty
+        if should_fit:
+            self.camera.frame(self._center, self._radius, keep_orientation=True)
+            if refit:
+                self.camera_user_moved = False
+        return bool(self._chunk_queue)
+
+    def continue_cpu_upload(self, chunk_size: int = UPLOAD_BATCH_CHUNK) -> bool:
+        """Upload the next slice of pending GPU batches. True if more remain."""
+        if not self.available or not self._chunk_queue:
+            self._finish_lod_aliases()
+            return False
+        size = max(1, int(chunk_size))
+        name, batches, offset = self._chunk_queue[0]
+        nxt = offset + size
+        slice_batches = batches[offset:nxt]
+        self._upload_named(name, slice_batches, append=offset > 0)
+        if nxt >= len(batches):
+            self._chunk_queue.pop(0)
+        else:
+            self._chunk_queue[0] = (name, batches, nxt)
+        if not self._chunk_queue:
+            self._finish_lod_aliases()
+            self.upload_generation += 1
+            return False
+        return True
+
+    def cancel_chunked_upload(self) -> None:
+        self._chunk_queue = []
+
+    def _begin_set_uploads(self, cpu: PreviewCpuScene, *, defer_secondary: bool) -> bool:
+        self._break_set_aliases()
+        self._chunk_queue = []
+        assembled = filter_batches(cpu.assembled, self._grid_filter, self._grid_entity_id)
+        self._alias_assembled_lod = should_alias_lod_sets(cpu.assembled, cpu.assembled_lod) or not cpu.huge
+        self._alias_exploded_lod = should_alias_lod_sets(cpu.exploded, cpu.exploded_lod) or not cpu.huge
+        self._chunk_queue.append(("assembled", assembled, 0))
+        if not self._alias_assembled_lod:
+            self._chunk_queue.append(
+                ("assembled_lod", filter_batches(cpu.assembled_lod, self._grid_filter, self._grid_entity_id), 0)
+            )
+        if defer_secondary:
+            self._sets["exploded"] = []
+            self._sets["exploded_lod"] = []
+            self._secondary_pending = True
+        else:
+            exploded = filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id)
+            self._chunk_queue.append(("exploded", exploded, 0))
+            if not self._alias_exploded_lod:
+                self._chunk_queue.append(
+                    ("exploded_lod", filter_batches(cpu.exploded_lod, self._grid_filter, self._grid_entity_id), 0)
+                )
+            self._secondary_pending = False
+        return True
+
+    def _finish_lod_aliases(self) -> None:
+        if self._alias_assembled_lod:
+            self._sets["assembled_lod"] = self._sets.get("assembled") or []
+        if not self._secondary_pending and self._alias_exploded_lod:
+            self._sets["exploded_lod"] = self._sets.get("exploded") or []
+
+    def patch_assembled(self, cpu: PreviewCpuScene) -> None:
+        """Re-upload assembled after an MWM patch. Alias LOD; leave exploded if still pending."""
+        if not self.available:
+            self._cpu = cpu
+            return
+        self._cpu = cpu
+        self.block_count = cpu.block_count
+        assembled = filter_batches(cpu.assembled, self._grid_filter, self._grid_entity_id)
+        self._upload_named("assembled", assembled)
+        if should_alias_lod_sets(cpu.assembled, cpu.assembled_lod) or not cpu.huge:
+            self._sets["assembled_lod"] = self._sets["assembled"]
+        else:
+            self._upload_named(
+                "assembled_lod",
+                filter_batches(cpu.assembled_lod, self._grid_filter, self._grid_entity_id),
+            )
+        if cpu.exploded and not self._secondary_pending:
+            self._upload_named("exploded", filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id))
+            if should_alias_lod_sets(cpu.exploded, cpu.exploded_lod) or not cpu.huge:
+                self._sets["exploded_lod"] = self._sets["exploded"]
+        self.upload_generation += 1
 
     def upload_secondary_sets(self) -> None:
         """Exploded / LOD-exploded buffers. Safe to call after the first blit."""
@@ -287,30 +397,49 @@ class GLPreviewRenderer:
             return
         if self._sets.get("exploded_lod") is self._sets.get("exploded"):
             self._sets["exploded_lod"] = []
-        self._upload_named("exploded", filter_batches(cpu.exploded, self._grid_filter))
-        if cpu.huge:
-            self._upload_named("exploded_lod", filter_batches(cpu.exploded_lod, self._grid_filter))
-        else:
+        exploded = filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id)
+        self._upload_named("exploded", exploded)
+        if should_alias_lod_sets(cpu.exploded, cpu.exploded_lod) or not cpu.huge:
             self._sets["exploded_lod"] = self._sets["exploded"]
+        else:
+            self._upload_named(
+                "exploded_lod",
+                filter_batches(cpu.exploded_lod, self._grid_filter, self._grid_entity_id),
+            )
         self._secondary_pending = False
 
-    def set_grid_filter(self, grid_name: Optional[str]) -> None:
+    def set_grid_filter(
+        self,
+        grid_name: Optional[str] = None,
+        grid_entity_id: Optional[str] = None,
+    ) -> None:
         """Rebind instance buffers only — isolate must not remesh."""
         name = grid_name or None
-        if name == self._grid_filter and self._cpu is not None and not self._secondary_pending:
+        eid = grid_entity_id or None
+        if (
+            name == self._grid_filter
+            and eid == self._grid_entity_id
+            and self._cpu is not None
+            and not self._secondary_pending
+        ):
             self.refit_to_visible()
             return
         self._grid_filter = name
+        self._grid_entity_id = eid
         if self._cpu is None or not self.available:
             return
         cpu = self._cpu
         self._apply_visible_bounds()
         self._break_set_aliases()
-        self._upload_named("assembled", filter_batches(cpu.assembled, self._grid_filter))
-        if cpu.huge:
-            self._upload_named("assembled_lod", filter_batches(cpu.assembled_lod, self._grid_filter))
-        else:
+        assembled = filter_batches(cpu.assembled, self._grid_filter, self._grid_entity_id)
+        self._upload_named("assembled", assembled)
+        if should_alias_lod_sets(cpu.assembled, cpu.assembled_lod) or not cpu.huge:
             self._sets["assembled_lod"] = self._sets["assembled"]
+        else:
+            self._upload_named(
+                "assembled_lod",
+                filter_batches(cpu.assembled_lod, self._grid_filter, self._grid_entity_id),
+            )
         if self._secondary_pending:
             self._sets["exploded"] = []
             self._sets["exploded_lod"] = []
@@ -319,15 +448,42 @@ class GLPreviewRenderer:
         self.upload_generation += 1
         self.camera.frame(self._center, self._radius, keep_orientation=True)
 
+    def isolate_grid_instances(
+        self,
+        grid_entity_id: Optional[str],
+        grid_name: Optional[str],
+        extra_hidden: Optional[set] = None,
+    ) -> None:
+        """Hide other grids via inspect.z — no remesh / re-upload."""
+        self._grid_entity_id = grid_entity_id or None
+        self._grid_filter = grid_name or None
+        hidden = set(extra_hidden or ())
+        if self._cpu is not None and (self._grid_entity_id or self._grid_filter):
+            for rec in self._cpu.picks:
+                if self._grid_entity_id:
+                    if rec.grid_entity_id != self._grid_entity_id:
+                        hidden.add(rec.instance_id)
+                elif rec.grid_name != self._grid_filter:
+                    hidden.add(rec.instance_id)
+        self.hidden_ids = hidden
+        self._write_inspect_hidden()
+        self._apply_visible_bounds()
+
+    def _visible_picks(self) -> List[PickRecord]:
+        if self._cpu is None:
+            return []
+        recs = self._cpu.picks
+        if self._grid_entity_id:
+            return [rec for rec in recs if rec.grid_entity_id == self._grid_entity_id]
+        if self._grid_filter:
+            return [rec for rec in recs if rec.grid_name == self._grid_filter]
+        return list(recs)
+
     def _apply_visible_bounds(self) -> None:
         """AABB / origin from visible picks so clip and GPU share one center."""
         if self._cpu is None:
             return
-        recs = [
-            rec
-            for rec in self._cpu.picks
-            if not self._grid_filter or rec.grid_name == self._grid_filter
-        ]
+        recs = self._visible_picks()
         if recs:
             self._aabb_min = (
                 min(rec.aabb_min[0] for rec in recs),
@@ -361,11 +517,14 @@ class GLPreviewRenderer:
         self._release_batches(batches)
         self._sets[name] = []
 
-    def _upload_named(self, name: str, batches: Sequence[CpuBatch]) -> None:
+    def _upload_named(self, name: str, batches: Sequence[CpuBatch], *, append: bool = False) -> None:
         ctx = self._ctx
         assert ctx is not None and self._prog is not None
-        self._detach_and_release(name)
-        uploaded: List[dict] = []
+        if append:
+            uploaded = self._sets.get(name) or []
+        else:
+            self._detach_and_release(name)
+            uploaded = []
         for batch in batches:
             if batch.positions.size == 0 or batch.indices.size == 0 or batch.models.shape[0] == 0:
                 continue
@@ -540,7 +699,9 @@ class GLPreviewRenderer:
         extra_pull = self.pull if self.selected_id >= 0.0 else 0.0
         isolating = self.isolate_id >= 0.0
         for rec in self._cpu.picks:
-            if self._grid_filter and rec.grid_name != self._grid_filter:
+            if self._grid_entity_id and rec.grid_entity_id != self._grid_entity_id:
+                continue
+            if self._grid_filter and not self._grid_entity_id and rec.grid_name != self._grid_filter:
                 continue
             if isolating and abs(rec.instance_id - self.isolate_id) > 0.5:
                 continue
@@ -665,10 +826,14 @@ def scene_bounds_caption(
     *,
     shown: Optional[int] = None,
     simplified: bool = False,
+    grid_entity_id: Optional[str] = None,
 ) -> str:
-    blocks = scene.filter_grid(grid_filter).blocks if grid_filter else scene.blocks
+    if grid_entity_id or grid_filter:
+        blocks = scene.filter_grid(grid_filter, grid_entity_id).blocks
+    else:
+        blocks = scene.blocks
     if not blocks:
-        return "No blocks on this grid." if grid_filter else "No ship loaded"
+        return "No blocks on this grid." if (grid_filter or grid_entity_id) else "No ship loaded"
     prefix = f"{grid_filter}  ·  " if grid_filter else ""
     count = int(shown) if shown is not None else len(blocks)
     total = int(declared_total or scene.total_blocks or len(blocks))

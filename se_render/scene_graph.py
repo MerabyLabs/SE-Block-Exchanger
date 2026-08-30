@@ -74,11 +74,19 @@ class PreviewScene:
     # child CubeGrid EntityId → parent CubeGrid EntityId (mechanical attach)
     parent_of: Dict[str, str] = field(default_factory=dict)
 
-    def filter_grid(self, grid_name: Optional[str]) -> "PreviewScene":
-        if not grid_name:
+    def filter_grid(
+        self,
+        grid_name: Optional[str] = None,
+        grid_entity_id: Optional[str] = None,
+    ) -> "PreviewScene":
+        if grid_entity_id:
+            filtered = [b for b in self.blocks if b.grid_entity_id == grid_entity_id]
+            grids = [g for g in self.grids if g.entity_id == grid_entity_id]
+        elif grid_name:
+            filtered = [b for b in self.blocks if b.grid_name == grid_name]
+            grids = [g for g in self.grids if g.name == grid_name]
+        else:
             return self
-        filtered = [b for b in self.blocks if b.grid_name == grid_name]
-        grids = [g for g in self.grids if g.name == grid_name]
         keep_ids = {g.entity_id for g in grids}
         return PreviewScene(
             blocks=filtered,
@@ -165,6 +173,7 @@ def voxels_from_scene(scene: PreviewScene) -> List[dict]:
             "z": block.min_z,
             "subtype": block.subtype,
             "grid_name": block.grid_name,
+            "grid_entity_id": block.grid_entity_id,
             "grid_size": block.grid_size,
             "is_subgrid": block.is_subgrid,
             "hsv": block.hsv,

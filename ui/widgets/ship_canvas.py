@@ -21,6 +21,7 @@ class VoxelBlock:
     is_subgrid: bool
     grid_size: str = "Large"
     color_rgb: Optional[Tuple[float, float, float]] = None
+    grid_entity_id: str = ""
 
 
 class ShipCanvas(ctk.CTkFrame):
@@ -32,6 +33,7 @@ class ShipCanvas(ctk.CTkFrame):
         super().__init__(master, fg_color=TacticalTheme.BG_DARK, corner_radius=8, **kwargs)
         self.blocks: List[VoxelBlock] = []
         self.selected_grid_filter: Optional[str] = None
+        self.selected_grid_entity_id: Optional[str] = None
         self.projection_mode = "Top"
         self.min_coords = (0, 0, 0)
         self.max_coords = (0, 0, 0)
@@ -122,21 +124,29 @@ class ShipCanvas(ctk.CTkFrame):
         )
         self.info_status.pack(side="right")
 
-    def load_structure_data(self, blocks: List[VoxelBlock]) -> None:
+    def load_structure_data(self, blocks: List[VoxelBlock], *, draw: bool = True) -> None:
         self.blocks = list(blocks)
         self.selected_grid_filter = None
+        self.selected_grid_entity_id = None
         if not self.blocks:
             self.min_coords = (0, 0, 0)
             self.max_coords = (0, 0, 0)
             self.info_status.configure(text="No blocks to draw")
-            self._schedule_redraw()
+            if draw:
+                self._schedule_redraw()
             return
         self.min_coords, self.max_coords = self.bounds_for(self.blocks)
         self._update_status_caption(self.blocks)
-        self.fit_to_view()
+        if draw:
+            self.fit_to_view()
 
-    def filter_by_grid(self, grid_name: Optional[str]) -> None:
+    def filter_by_grid(
+        self,
+        grid_name: Optional[str] = None,
+        grid_entity_id: Optional[str] = None,
+    ) -> None:
         self.selected_grid_filter = grid_name
+        self.selected_grid_entity_id = grid_entity_id
         visible = self._visible_blocks()
         self._update_status_caption(visible)
         if self.blocks:
@@ -145,6 +155,8 @@ class ShipCanvas(ctk.CTkFrame):
             self._schedule_redraw()
 
     def _visible_blocks(self) -> List[VoxelBlock]:
+        if self.selected_grid_entity_id:
+            return [b for b in self.blocks if b.grid_entity_id == self.selected_grid_entity_id]
         if not self.selected_grid_filter:
             return self.blocks
         return [b for b in self.blocks if b.grid_name == self.selected_grid_filter]
@@ -230,13 +242,23 @@ class ShipCanvas(ctk.CTkFrame):
         else:
             self._schedule_redraw()
 
+    def _is_drawn(self) -> bool:
+        try:
+            return bool(self.winfo_ismapped() and self.canvas.winfo_ismapped())
+        except Exception:
+            return False
+
     def _schedule_redraw(self) -> None:
+        if not self._is_drawn():
+            return
         if self._redraw_job is not None:
             self.after_cancel(self._redraw_job)
         self._redraw_job = self.after(40, self.redraw)
 
     def redraw(self) -> None:
         self._redraw_job = None
+        if not self._is_drawn():
+            return
         w = self.canvas.winfo_width()
         h = self.canvas.winfo_height()
         if w < 40 or h < 40:

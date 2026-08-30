@@ -50,6 +50,25 @@ class JobToken:
             raise CancelledError()
 
 
+class JobHub:
+    """One cancel surface for inspect, folder scan, and SE catalog."""
+
+    def __init__(self) -> None:
+        self.inspect = JobToken()
+        self.scan = JobToken()
+        self.catalog = JobToken()
+
+    def cancel_stale(self) -> None:
+        self.inspect.cancel()
+        self.scan.cancel()
+        self.catalog.cancel()
+
+
+def catalog_completion_allowed(token: JobToken, generation: int, *, cleared: bool) -> bool:
+    """File → Clear must reject an in-flight catalog even if the worker finishes."""
+    return (not cleared) and token.is_current(generation)
+
+
 def blueprint_file(path: Path) -> Path:
     path = Path(path)
     if path.is_dir():

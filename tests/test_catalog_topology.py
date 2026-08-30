@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from se_assets.cube_catalog import CubeBlockCatalog, infer_cube_topology
+from se_assets.cube_catalog import CubeBlockCatalog, _iter_definitions, infer_cube_topology
 from se_assets.install_locator import validate_install
 from se_assets.mesh_cache import MeshLibrary
 from se_render.topology import known_topologies, topology_mesh
@@ -78,6 +78,13 @@ class CatalogTests(unittest.TestCase):
             again.load(root)
             self.assertEqual(len(again), len(catalog))
             self.assertEqual(again.get("CubeBlock", "LargeBlockArmorSlope").cube_topology, "Slope")
+
+    def test_cubeblocks_parent_is_not_walked_twice(self):
+        import xml.etree.ElementTree as ET
+
+        root = ET.fromstring(CUBE_SBC)
+        yielded = list(_iter_definitions(root))
+        self.assertEqual(len(yielded), 3)
 
 
 class TopologyInferenceTests(unittest.TestCase):

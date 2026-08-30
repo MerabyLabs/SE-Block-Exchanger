@@ -80,8 +80,13 @@ class PreviewPanel(ctk.CTkFrame):
         self._pending_structure = None
         self._pending_voxels: List[dict] = []
         self._subgrids_rendered_for = None
+        self._subgrids_revision = 0
         self._pending_analytics = None
         self._pending_se2 = None
+        self._pending_preview = None
+        self._applied_preview_key = None
+        self._applied_analytics = None
+        self._applied_se2 = None
         self._ui_queue: SimpleQueue = SimpleQueue()
 
         self.tabview = ctk.CTkTabview(
@@ -333,19 +338,18 @@ class PreviewPanel(ctk.CTkFrame):
             if self._on_need_subgrids:
                 self._on_need_subgrids()
             self._render_subgrids()
-            if self.ship_preview is not None:
-                self.after(40, self.ship_preview.refresh)
-                self.after(180, self.ship_preview.refresh)
         elif name == "XML":
             self._ensure_xml_loaded()
         elif name == "Analytics":
             self._apply_pending_analytics()
         elif name == "SE2":
             self._apply_pending_se2()
+        elif name == "Preview":
+            self._apply_pending_preview()
 
-    def _on_hierarchy_select(self, grid_name: Optional[str]):
+    def _on_hierarchy_select(self, grid_name: Optional[str], entity_id: Optional[str] = None):
         if self.ship_preview is not None:
-            self.ship_preview.filter_by_grid(grid_name)
+            self.ship_preview.filter_by_grid(grid_name, entity_id)
 
     def set_se_preview_state(self, valid: bool, path_text: str = "", message: str = "") -> None:
         self._pending_se_state = (valid, path_text, message)
@@ -367,6 +371,7 @@ class PreviewPanel(ctk.CTkFrame):
         self._pending_structure = structure
         self._pending_voxels = list(voxels or [])
         self._pending_scene = scene
+        self._subgrids_revision += 1
         self._subgrids_rendered_for = None
         if self.ship_preview is not None:
             self.ship_preview.set_declared_total(getattr(structure, "total_blocks", 0) or 0)
@@ -374,13 +379,7 @@ class PreviewPanel(ctk.CTkFrame):
             self._render_subgrids()
 
     def _subgrids_render_key(self):
-        structure = self._pending_structure
-        voxels = self._pending_voxels
-        return (
-            id(structure),
-            len(voxels),
-            tuple(sorted({v.get("grid_name", "") for v in voxels})),
-        )
+        return self._subgrids_revision
 
     def _render_subgrids(self):
         self._ensure_subgrids_widgets()
@@ -407,6 +406,7 @@ class PreviewPanel(ctk.CTkFrame):
                 grid_size=v.get("grid_size", "Large"),
                 is_subgrid=bool(v.get("is_subgrid", False)),
                 color_rgb=v.get("color_rgb"),
+                grid_entity_id=str(v.get("grid_entity_id") or ""),
             )
             for v in voxels
         ]
@@ -418,6 +418,7 @@ class PreviewPanel(ctk.CTkFrame):
         self._pending_structure = None
         self._pending_voxels = []
         self._pending_scene = None
+        self._subgrids_revision += 1
         self._subgrids_rendered_for = None
         if self.hierarchy_view is not None:
             self.hierarchy_view.render(None)
@@ -601,6 +602,7 @@ class PreviewPanel(ctk.CTkFrame):
         )
         self.clear_analytics()
         self.clear_subgrids()
+        self._applied_preview_key = None
         self.show_preview_diff(
             {},
             {},
@@ -665,6 +667,28 @@ class PreviewPanel(ctk.CTkFrame):
         summary_text: str,
         switch_tab: bool = False,
     ):
+        self._pending_preview = (before_counts, after_counts, summary_text or "")
+        if switch_tab:
+            self.tabview.set("Preview")
+        if self.current_tab() == "Preview" or switch_tab:
+            self._apply_pending_preview()
+
+    def _preview_key(self, pending) -> tuple:
+        before_counts, after_counts, summary_text = pending
+        return (
+            tuple(sorted((before_counts or {}).items())),
+            tuple(sorted((after_counts or {}).items())),
+            summary_text or "",
+        )
+
+    def _apply_pending_preview(self):
+        pending = self._pending_preview
+        if pending is None:
+            return
+        key = self._preview_key(pending)
+        if key == self._applied_preview_key:
+            return
+        before_counts, after_counts, summary_text = pending
         self._set_textbox_content(
             self.preview_before_text,
             self._format_counts(before_counts, "No matching blocks in this ship."),
@@ -674,8 +698,7 @@ class PreviewPanel(ctk.CTkFrame):
             self._format_counts(after_counts, "Nothing would change."),
         )
         self._set_textbox_content(self.preview_summary_text, summary_text or "No changes with the current settings.")
-        if switch_tab:
-            self.tabview.set("Preview")
+        self._applied_preview_key = key
 
     def update_analytics(self, analytics_result, comparison: Optional[ConversionComparison] = None):
         self._pending_analytics = (analytics_result, comparison)
@@ -686,6 +709,9 @@ class PreviewPanel(ctk.CTkFrame):
         pending = self._pending_analytics
         if not pending:
             return
+        if pending is self._applied_analytics:
+            return
+        self._applied_analytics = pending
         analytics_result, comparison = pending
         self.metric_labels["Blocks"].configure(text=f"{analytics_result.block_count:,}")
         self.metric_labels["PCU"].configure(text=f"{analytics_result.pcu_total:,}")
@@ -709,6 +735,7 @@ class PreviewPanel(ctk.CTkFrame):
         self.chart_canvas.delete("all")
         self._set_textbox_content(self.resource_tree, "Select a blueprint to see ore, ingot, and component totals.")
         self._populate_health_issues([])
+        self._applied_analytics = None
         self.clear_se2_transition()
 
     def _populate_health_issues(self, issues: Iterable[HealthIssue]):
@@ -1010,6 +1037,9 @@ class PreviewPanel(ctk.CTkFrame):
         pending = self._pending_se2
         if not pending:
             return
+        if pending is self._applied_se2:
+            return
+        self._applied_se2 = pending
         info, readiness = pending
         self.btn_vanillafy.configure(state="normal")
         self.btn_gridsizer.configure(state="normal")
@@ -1083,4 +1113,6 @@ class PreviewPanel(ctk.CTkFrame):
         self._set_textbox_content(self.se2_audit_textbox, "Select a blueprint to see Space Engineers 2 readiness.\n")
         self.btn_vanillafy.configure(state="disabled")
         self.btn_gridsizer.configure(state="disabled")
+        self._applied_se2 = None
+        self._pending_se2 = None
 

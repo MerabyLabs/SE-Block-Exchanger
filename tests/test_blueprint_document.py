@@ -9,7 +9,9 @@ from blueprint_document import (
     BlueprintDocument,
     BlueprintDocumentCache,
     CancelledError,
+    JobHub,
     JobToken,
+    catalog_completion_allowed,
     dry_run_from_counts,
 )
 from blueprint_scanner import BlueprintScanner
@@ -236,6 +238,16 @@ class JobTokenTests(unittest.TestCase):
         second = token.begin()
         self.assertFalse(token.is_current(first))
         self.assertTrue(token.is_current(second))
+
+    def test_catalog_completion_rejected_after_clear(self):
+        hub = JobHub()
+        generation = hub.catalog.begin()
+        self.assertTrue(catalog_completion_allowed(hub.catalog, generation, cleared=False))
+        hub.cancel_stale()
+        self.assertFalse(catalog_completion_allowed(hub.catalog, generation, cleared=False))
+        again = hub.catalog.begin()
+        self.assertFalse(catalog_completion_allowed(hub.catalog, again, cleared=True))
+        self.assertTrue(catalog_completion_allowed(hub.catalog, again, cleared=False))
 
 
 if __name__ == "__main__":
