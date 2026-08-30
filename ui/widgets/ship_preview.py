@@ -727,7 +727,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._cancel_chunk_job()
 
     def _source_stamp(self) -> Tuple[str, int]:
-        path = self._source_path
+        path = getattr(self, "_source_path", None)
         if path is None:
             return "", 0
         try:
