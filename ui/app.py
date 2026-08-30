@@ -43,7 +43,7 @@ from ui.dragdrop_windows import WindowsFileDropTarget
 from ui.footer import Footer
 from ui.header import Header
 from ui.labels import category_label, conversion_target_phrase, convertible_total
-from ui.preview_panel import PreviewPanel, subgrids_voxels_for_ui
+from ui.preview_panel import PreviewPanel, subgrids_map_payload
 from ui.profile_editor import ProfileEditorDialog
 from ui.selective_exchange_panel import SelectiveExchangePanel
 from ui.theme import TacticalTheme
@@ -115,8 +115,8 @@ class TacticalCommandCenter(ctk.CTk):
         self._profile_editor: Optional[ProfileEditorDialog] = None
         self._rescan_after_id = None
         self._preview_after_id = None
-        self._inspect_generation = 0
         self._preview_convert_count = None
+        self._instant_tabs_stale = False
         self._closing = False
         self._ui_queue: SimpleQueue = SimpleQueue()
         self._documents = BlueprintDocumentCache()
@@ -225,6 +225,7 @@ class TacticalCommandCenter(ctk.CTk):
             on_scale_grid=self.scale_grid_choice,
             on_locate_space_engineers=self.locate_space_engineers,
             on_need_subgrids=self._ensure_subgrids_document,
+            on_need_tab_data=self._fill_hidden_preview_tabs,
             on_toast=lambda msg, level="info": self.toasts.toast(msg, level=level),
         )
         self.preview_panel.grid(row=0, column=1, sticky="nsew", padx=3)
@@ -727,14 +728,14 @@ class TacticalCommandCenter(ctk.CTk):
         self.blueprint_panel.set_recent_blueprints(self.settings.recent_blueprints)
 
         self.control_panel.update_details(bp)
-        self.preview_panel.update_intel(bp, self.conversion_mode)
         self.preview_panel.begin_blueprint_switch(bp.path, bp.display_name)
         cached = self._documents.get(bp.path)
         self._document = cached
-        self._apply_instant_inspect(bp)
-        self.footer.set_status(f"Selected: {bp.display_name}")
         if self.preview_panel.current_tab() == "Subgrids":
             self._ensure_subgrids_document()
+        self.preview_panel.update_intel(bp, self.conversion_mode)
+        self._apply_instant_inspect(bp)
+        self.footer.set_status(f"Selected: {bp.display_name}")
 
     def _get_selected_blueprint_file(self) -> Optional[str]:
         if not self.selected_blueprint:
@@ -807,9 +808,17 @@ class TacticalCommandCenter(ctk.CTk):
                 self.selected_blueprint = found
                 self.blueprint_panel.select_blueprint_by_name(selected_name, notify=False)
 
-    def _apply_instant_inspect(self, bp: BlueprintInfo) -> None:
-        """Fill Overview / Preview / Analytics / SE2 / Convert from scan counts. No XML."""
+    def _apply_instant_inspect(self, bp: BlueprintInfo, *, force_tabs: bool = False) -> None:
+        """Fill Convert from scan counts. Overview / Preview / Analytics / SE2 stay off Tk on Subgrids."""
         mapping = self.converter.replacer.mapping
+        on_subgrids = (not force_tabs) and self.preview_panel.current_tab() == "Subgrids"
+        if on_subgrids:
+            preview_count = convertible_total(bp)
+            self.preview_panel.load_xml(bp.path / "bp.sbc", f"Source: {bp.name}")
+            self._update_convert_state(preview_count)
+            self.control_panel.set_pending_change_count(preview_count)
+            self._instant_tabs_stale = True
+            return
         before_counts, after_counts, report, preview_count = dry_run_from_counts(
             bp.subtype_counts or {},
             mapping,
@@ -835,10 +844,28 @@ class TacticalCommandCenter(ctk.CTk):
         self.preview_panel.load_xml(bp.path / "bp.sbc", f"Source: {bp.name}")
         self._update_convert_state(preview_count)
         self.control_panel.set_pending_change_count(preview_count)
+        self._instant_tabs_stale = False
+
+    def _fill_hidden_preview_tabs(self) -> None:
+        if not self._instant_tabs_stale or not self.selected_blueprint:
+            return
+        self._apply_instant_inspect(self.selected_blueprint, force_tabs=True)
 
     def _subgrids_will_show_3d(self) -> bool:
         preview = getattr(self.preview_panel, "ship_preview", None)
         return bool(preview is not None and preview.will_show_3d())
+
+    def _publish_subgrids_document(self, doc: BlueprintDocument) -> None:
+        voxels, blocks = subgrids_map_payload(self._subgrids_will_show_3d(), doc)
+        self.preview_panel.update_subgrids(
+            doc.structure,
+            voxels=voxels,
+            blocks=blocks,
+            scene=doc.scene,
+            path=doc.path.parent,
+            generation=self.preview_panel.subgrids_generation,
+            ship_name=doc.display_name,
+        )
 
     def _ensure_subgrids_document(self) -> None:
         if not self.selected_blueprint or self._closing:
@@ -851,18 +878,12 @@ class TacticalCommandCenter(ctk.CTk):
         cached = self._documents.get(self.selected_blueprint.path)
         if cached is not None:
             self._document = cached
+            will_3d = self._subgrids_will_show_3d()
+            if (not will_3d) and cached._map_blocks is None:
+                self._inspect_blueprint_async(immediate=True)
+                return
             try:
-                self.preview_panel.update_subgrids(
-                    cached.structure,
-                    voxels=subgrids_voxels_for_ui(
-                        self._subgrids_will_show_3d(),
-                        lambda: cached.voxels,
-                    ),
-                    scene=cached.scene,
-                    path=cached.path.parent,
-                    generation=self.preview_panel.subgrids_generation,
-                    ship_name=cached.display_name,
-                )
+                self._publish_subgrids_document(cached)
             except Exception as exc:
                 self.toasts.toast(f"Map view failed: {exc}", level="warning")
             return
@@ -880,14 +901,17 @@ class TacticalCommandCenter(ctk.CTk):
         self._preview_after_id = None
         if not self.selected_blueprint or self._closing:
             return
-        self._inspect_generation += 1
         generation = self._inspect_token.begin()
-        self._inspect_generation = generation
         bp = self.selected_blueprint
+        prepare_2d = not self._subgrids_will_show_3d()
 
         def task():
             try:
                 doc = self._documents.get_or_load(bp.path, token=self._inspect_token, generation=generation)
+                if prepare_2d:
+                    from ui.widgets.ship_canvas import voxels_to_blocks
+
+                    doc.ensure_map_blocks(voxels_to_blocks)
                 self._ui(lambda: self._on_document_ready(generation, bp, doc))
             except CancelledError:
                 return
@@ -905,17 +929,7 @@ class TacticalCommandCenter(ctk.CTk):
             return
         self._document = doc
         try:
-            self.preview_panel.update_subgrids(
-                doc.structure,
-                voxels=subgrids_voxels_for_ui(
-                    self._subgrids_will_show_3d(),
-                    lambda: doc.voxels,
-                ),
-                scene=doc.scene,
-                path=doc.path.parent,
-                generation=self.preview_panel.subgrids_generation,
-                ship_name=doc.display_name,
-            )
+            self._publish_subgrids_document(doc)
         except Exception as exc:
             self.toasts.toast(f"Map view failed: {exc}", level="warning")
 
@@ -1707,7 +1721,6 @@ class TacticalCommandCenter(ctk.CTk):
         if self._closing:
             os._exit(0)
         self._closing = True
-        self._inspect_generation += 1
         try:
             self._jobs.cancel_stale()
         except Exception:

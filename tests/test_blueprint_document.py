@@ -8,6 +8,7 @@ from blueprint_analytics import BlueprintAnalyticsEngine
 from blueprint_document import (
     BlueprintDocument,
     BlueprintDocumentCache,
+    DOCUMENT_CACHE_SIZE,
     CancelledError,
     JobHub,
     JobToken,
@@ -51,6 +52,10 @@ class DocumentSharingTests(unittest.TestCase):
         self.assertEqual(len(doc.voxels), 3)
         self.assertIsNotNone(doc._voxels)
         self.assertIs(doc.voxels, doc._voxels)
+        self.assertIsNone(doc._map_blocks)
+        made = doc.ensure_map_blocks(lambda voxels: [("block", len(voxels))])
+        self.assertEqual(made, [("block", 3)])
+        self.assertIs(doc.ensure_map_blocks(lambda _v: "nope"), made)
 
     def test_one_extract_feeds_scene_voxels_and_structure(self):
         root = ET.fromstring(ROTOR_BLUEPRINT)
@@ -90,9 +95,10 @@ class DocumentSharingTests(unittest.TestCase):
 
 
 class DocumentCacheTests(unittest.TestCase):
-    def test_cache_defaults_to_two_entries_and_evicts(self):
+    def test_cache_keeps_three_ships_and_size_two_still_evicts(self):
+        self.assertGreaterEqual(DOCUMENT_CACHE_SIZE, 3)
         cache = BlueprintDocumentCache()
-        self.assertEqual(cache.max_entries, 2)
+        self.assertEqual(cache.max_entries, DOCUMENT_CACHE_SIZE)
         with tempfile.TemporaryDirectory() as tmp:
             folders = []
             for name in ("A", "B", "C"):
@@ -100,9 +106,20 @@ class DocumentCacheTests(unittest.TestCase):
                 _write_ship(folder, 3, name)
                 folders.append(folder)
                 cache.get_or_load(folder)
-            self.assertIsNone(cache.get(folders[0]))
+            self.assertIsNotNone(cache.get(folders[0]))
             self.assertIsNotNone(cache.get(folders[1]))
             self.assertIsNotNone(cache.get(folders[2]))
+        tight = BlueprintDocumentCache(max_entries=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            folders = []
+            for name in ("A", "B", "C"):
+                folder = Path(tmp) / name
+                _write_ship(folder, 3, name)
+                folders.append(folder)
+                tight.get_or_load(folder)
+            self.assertIsNone(tight.get(folders[0]))
+            self.assertIsNotNone(tight.get(folders[1]))
+            self.assertIsNotNone(tight.get(folders[2]))
 
     def test_cache_hit_same_mtime(self):
         with tempfile.TemporaryDirectory() as tmp:

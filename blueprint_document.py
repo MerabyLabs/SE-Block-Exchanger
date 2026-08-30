@@ -21,6 +21,9 @@ from se_armor_replacer import ArmorBlockReplacer
 from se_render.scene_graph import PreviewScene, extract_scene_from_root, voxels_from_scene
 from subgrid_engine.hierarchy_parser import MultiGridStructure, SubgridHierarchyParser
 
+# Keep A→B→C→A without re-parsing. Three large ships plus a couple extras.
+DOCUMENT_CACHE_SIZE = 6
+
 
 class CancelledError(Exception):
     """Raised when a worker should drop a stale scan/inspect job."""
@@ -163,6 +166,7 @@ class BlueprintDocument:
     heavy_armor_count: int
     thruster_forwards: Dict[str, int] = field(default_factory=dict)
     _voxels: Optional[List[dict]] = field(default=None, repr=False, compare=False)
+    _map_blocks: Optional[list] = field(default=None, repr=False, compare=False)
 
     @property
     def path(self) -> Path:
@@ -174,6 +178,12 @@ class BlueprintDocument:
         if self._voxels is None:
             self._voxels = voxels_from_scene(self.scene)
         return self._voxels
+
+    def ensure_map_blocks(self, to_blocks) -> list:
+        """2D cubes from voxels. Call from a worker, never from Tk."""
+        if self._map_blocks is None:
+            self._map_blocks = to_blocks(self.voxels)
+        return self._map_blocks
 
     @classmethod
     def from_root(
@@ -258,7 +268,7 @@ class BlueprintDocument:
 class BlueprintDocumentCache:
     """LRU of recently selected ships. Hit only when path + mtime + size match."""
 
-    def __init__(self, max_entries: int = 2) -> None:
+    def __init__(self, max_entries: int = DOCUMENT_CACHE_SIZE) -> None:
         self.max_entries = max(1, int(max_entries))
         self._lock = threading.Lock()
         self._docs: Dict[str, BlueprintDocument] = {}

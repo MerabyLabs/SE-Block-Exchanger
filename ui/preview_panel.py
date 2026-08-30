@@ -28,6 +28,8 @@ from se_assets.mesh_cache import MeshLibrary
 from se_render.scene_graph import PreviewScene
 from ui.widgets.grid_tree import GridHierarchyView
 from blueprint_document import subgrids_ui_applies
+from ui.widgets.ship_canvas import voxels_to_blocks
+from ui.widgets.ship_preview import ShipPreviewHost
 
 
 def subgrids_same_ship_is_noop(
@@ -53,6 +55,22 @@ def subgrids_same_ship_is_noop(
     return int(rendered_for) == int(revision)
 
 
+def subgrids_already_showing(*, path, current_path, preview) -> bool:
+    """True when begin_switch would only flicker chrome for the ship already on screen."""
+    if path is None or current_path is None or preview is None:
+        return False
+    if str(path) != str(current_path):
+        return False
+    if getattr(preview, "_switching", False):
+        return False
+    if getattr(preview, "_mesh_ready", False):
+        return True
+    if getattr(preview, "_mode", "") != "2d":
+        return False
+    canvas = getattr(preview, "ship_canvas", None)
+    return bool(getattr(canvas, "blocks", None))
+
+
 def subgrids_voxels_for_ui(will_show_3d: bool, load_voxels=None):
     """Skip voxels_from_scene on Tk when 3D will draw the scene."""
     if will_show_3d:
@@ -60,8 +78,16 @@ def subgrids_voxels_for_ui(will_show_3d: bool, load_voxels=None):
     if load_voxels is None:
         return None
     return load_voxels()
-from ui.widgets.ship_canvas import voxels_to_blocks
-from ui.widgets.ship_preview import ShipPreviewHost
+
+
+def subgrids_map_payload(will_show_3d: bool, doc):
+    """Tk-safe 2D/3D payload. Never reads doc.voxels (that walk belongs on a worker)."""
+    if will_show_3d or doc is None:
+        return None, None
+    blocks = getattr(doc, "_map_blocks", None)
+    if blocks is not None:
+        return None, blocks
+    return getattr(doc, "_voxels", None), None
 
 
 def xml_reload_required(loaded_path, path) -> bool:
@@ -90,6 +116,7 @@ class PreviewPanel(ctk.CTkFrame):
         on_scale_grid=None,
         on_locate_space_engineers=None,
         on_need_subgrids=None,
+        on_need_tab_data=None,
         on_toast=None,
         **kwargs,
     ):
@@ -109,6 +136,7 @@ class PreviewPanel(ctk.CTkFrame):
         self._on_scale_grid = on_scale_grid
         self._on_locate_space_engineers = on_locate_space_engineers
         self._on_need_subgrids = on_need_subgrids
+        self._on_need_tab_data = on_need_tab_data
         self._on_toast = on_toast
         self._subgrids_built = False
         self.ship_preview = None
@@ -124,6 +152,9 @@ class PreviewPanel(ctk.CTkFrame):
         self._xml_status_text = ""
         self._pending_structure = None
         self._pending_voxels: List[dict] = []
+        self._pending_map_blocks = None
+        self._pending_intel = None
+        self._applied_intel = None
         self._subgrids_rendered_for = None
         self._subgrids_revision = 0
         self._subgrids_generation = 0
@@ -407,16 +438,21 @@ class PreviewPanel(ctk.CTkFrame):
                 self._on_need_subgrids()
             if self._subgrids_rendered_for != self._subgrids_revision:
                 self._render_subgrids()
-            elif self.ship_preview is not None:
+            elif self.ship_preview is not None and getattr(self.ship_preview, "_mode", "") == "3d":
                 self.ship_preview.refresh()
-        elif name == "XML":
-            self._ensure_xml_loaded()
-        elif name == "Analytics":
-            self._apply_pending_analytics()
-        elif name == "SE2":
-            self._apply_pending_se2()
-        elif name == "Preview":
-            self._apply_pending_preview()
+        else:
+            if name != "XML" and self._on_need_tab_data:
+                self._on_need_tab_data()
+            if name == "XML":
+                self._ensure_xml_loaded()
+            elif name == "Analytics":
+                self._apply_pending_analytics()
+            elif name == "SE2":
+                self._apply_pending_se2()
+            elif name == "Preview":
+                self._apply_pending_preview()
+            elif name == "Overview":
+                self._apply_pending_intel()
 
     def _on_hierarchy_select(self, grid_name: Optional[str], entity_id: Optional[str] = None):
         if self.ship_preview is not None:
@@ -458,13 +494,10 @@ class PreviewPanel(ctk.CTkFrame):
 
     def begin_blueprint_switch(self, path, ship_name: str = "") -> int:
         """Cancel in-flight Subgrids/3D work for A→B. Keep last shell on screen."""
-        if (
-            path is not None
-            and self._subgrids_path is not None
-            and str(self._subgrids_path) == str(path)
-            and self.ship_preview is not None
-            and getattr(self.ship_preview, "_mesh_ready", False)
-            and not getattr(self.ship_preview, "_switching", False)
+        if subgrids_already_showing(
+            path=path,
+            current_path=self._subgrids_path,
+            preview=self.ship_preview,
         ):
             return self._subgrids_generation
         self._subgrids_generation += 1
@@ -487,13 +520,13 @@ class PreviewPanel(ctk.CTkFrame):
     def update_subgrids(
         self,
         structure: MultiGridStructure,
-        matrix_summaries=None,
         voxels: Optional[List[dict]] = None,
         scene: Optional[PreviewScene] = None,
         path=None,
         generation: Optional[int] = None,
         ship_name: str = "",
         defer: bool = True,
+        blocks=None,
     ):
         if generation is not None and not subgrids_ui_applies(
             self._subgrids_generation,
@@ -522,8 +555,10 @@ class PreviewPanel(ctk.CTkFrame):
             and scene is not None
         ):
             voxels = None
+            blocks = None
         self._pending_structure = structure
         self._pending_voxels = voxels or []
+        self._pending_map_blocks = blocks
         self._pending_scene = scene
         if ship_name:
             self._subgrids_ship_name = ship_name
@@ -566,7 +601,8 @@ class PreviewPanel(ctk.CTkFrame):
                 self.ship_preview.refresh()
             return
         self.hierarchy_view.render(structure if structure and getattr(structure, "total_grids", 0) else None)
-        if scene is None and not voxels:
+        map_blocks = self._pending_map_blocks
+        if scene is None and not voxels and map_blocks is None:
             if self.ship_preview is not None and not self.ship_preview._switching:
                 self.ship_preview.clear()
             self._subgrids_rendered_for = render_key
@@ -574,6 +610,8 @@ class PreviewPanel(ctk.CTkFrame):
         want_3d = self.ship_preview.will_show_3d() and scene is not None
         if want_3d:
             self.ship_preview.load_scene(scene, voxels=None)
+        elif map_blocks is not None:
+            self.ship_preview.load_structure_data(map_blocks, scene=scene)
         else:
             self.ship_preview.load_structure_data(voxels_to_blocks(voxels), scene=scene)
         self._subgrids_rendered_for = render_key
@@ -581,6 +619,7 @@ class PreviewPanel(ctk.CTkFrame):
     def clear_subgrids(self):
         self._pending_structure = None
         self._pending_voxels = []
+        self._pending_map_blocks = None
         self._pending_scene = None
         self._subgrids_revision += 1
         self._subgrids_rendered_for = None
@@ -734,6 +773,18 @@ class PreviewPanel(ctk.CTkFrame):
             self._on_export_txt()
 
     def update_intel(self, bp_info, conversion_mode: str):
+        self._pending_intel = (bp_info, conversion_mode)
+        if self.current_tab() == "Overview":
+            self._apply_pending_intel()
+
+    def _apply_pending_intel(self):
+        pending = self._pending_intel
+        if not pending:
+            return
+        if pending is self._applied_intel:
+            return
+        self._applied_intel = pending
+        bp_info, conversion_mode = pending
         convertible = (
             bp_info.light_armor_count
             if conversion_mode == "light_to_heavy"
@@ -767,6 +818,8 @@ class PreviewPanel(ctk.CTkFrame):
         self.clear_analytics()
         self.clear_subgrids()
         self._applied_preview_key = None
+        self._applied_intel = None
+        self._pending_intel = None
         self.show_preview_diff(
             {},
             {},

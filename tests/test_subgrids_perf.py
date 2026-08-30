@@ -51,12 +51,17 @@ from se_render.preview_style import (
 from se_render.occupancy import plan_blocks
 from se_assets.mwm_loader import load_mwm
 from se_render.viewport import GLPreviewRenderer
-from ui.preview_panel import subgrids_same_ship_is_noop, subgrids_voxels_for_ui
+from ui.preview_panel import (
+    PreviewPanel,
+    subgrids_already_showing,
+    subgrids_map_payload,
+    subgrids_same_ship_is_noop,
+    subgrids_voxels_for_ui,
+)
 from se_render.scene_graph import PreviewScene, extract_scene_from_root
 from tests.test_preview_render import _block, _catalog_with, _cube, _def
 from tests.test_scene_graph import ROTOR_BLUEPRINT
 from tests.test_blueprint_document import _write_ship
-from ui.preview_panel import PreviewPanel
 from ui.widgets.ship_preview import ShipPreviewHost
 
 
@@ -945,17 +950,61 @@ class SkipVoxelsWhen3dTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertEqual(subgrids_voxels_for_ui(False, lambda: ["v"]), ["v"])
 
+    def test_map_payload_never_reads_voxels_property(self):
+        class ExplosiveDoc:
+            _map_blocks = None
+            _voxels = None
+
+            @property
+            def voxels(self):
+                raise AssertionError("voxels_from_scene ran on Tk")
+
+        self.assertEqual(subgrids_map_payload(True, ExplosiveDoc()), (None, None))
+        self.assertEqual(subgrids_map_payload(False, ExplosiveDoc()), (None, None))
+        doc = ExplosiveDoc()
+        doc._map_blocks = ["cube"]
+        self.assertEqual(subgrids_map_payload(False, doc), (None, ["cube"]))
+        doc2 = ExplosiveDoc()
+        doc2._voxels = [{"x": 0}]
+        self.assertEqual(subgrids_map_payload(False, doc2), ([{"x": 0}], None))
+
+    def test_already_showing_covers_2d_and_3d(self):
+        preview_3d = SimpleNamespace(_switching=False, _mesh_ready=True, _mode="3d", ship_canvas=None)
+        self.assertTrue(subgrids_already_showing(path="/A", current_path="/A", preview=preview_3d))
+        preview_2d = SimpleNamespace(
+            _switching=False,
+            _mesh_ready=False,
+            _mode="2d",
+            ship_canvas=SimpleNamespace(blocks=[object()]),
+        )
+        self.assertTrue(subgrids_already_showing(path="/A", current_path="/A", preview=preview_2d))
+        preview_2d._switching = True
+        self.assertFalse(subgrids_already_showing(path="/A", current_path="/A", preview=preview_2d))
+        self.assertFalse(subgrids_already_showing(path="/B", current_path="/A", preview=preview_3d))
+
     def test_ensure_and_ready_skip_voxels_property_when_3d(self):
         from ui.app import TacticalCommandCenter
 
         ensure = inspect.getsource(TacticalCommandCenter._ensure_subgrids_document)
         ready = inspect.getsource(TacticalCommandCenter._on_document_ready)
-        self.assertIn("subgrids_voxels_for_ui", ensure)
-        self.assertIn("subgrids_voxels_for_ui", ready)
+        publish = inspect.getsource(TacticalCommandCenter._publish_subgrids_document)
+        inspect_now = inspect.getsource(TacticalCommandCenter._run_inspect_now)
+        select = inspect.getsource(TacticalCommandCenter.on_blueprint_select)
+        self.assertIn("subgrids_map_payload", publish)
+        self.assertIn("_publish_subgrids_document", ensure)
+        self.assertIn("_publish_subgrids_document", ready)
+        self.assertIn("ensure_map_blocks", inspect_now)
+        self.assertLess(select.find("_ensure_subgrids_document"), select.find("_apply_instant_inspect"))
         render = inspect.getsource(PreviewPanel._render_subgrids)
         want = render[render.find("want_3d") :]
         self.assertIn("load_scene(scene, voxels=None)", want)
         self.assertLess(want.find("load_scene"), want.find("voxels_to_blocks"))
+        tabs = inspect.getsource(PreviewPanel._on_tab_changed)
+        self.assertIn('_mode", "") == "3d"', tabs)
+        canvas_src = inspect.getsource(__import__("ui.widgets.ship_canvas", fromlist=["ShipCanvas"]).ShipCanvas.fit_to_view)
+        self.assertIn("_redraw_now", canvas_src)
+        load_src = inspect.getsource(ShipPreviewHost.load_scene)
+        self.assertIn("self._switching = False", load_src)
 
     def test_cache_hit_does_not_materialize_voxels_when_3d(self):
         from ui.app import TacticalCommandCenter
@@ -965,6 +1014,8 @@ class SkipVoxelsWhen3dTests(unittest.TestCase):
             scene = object()
             path = Path("/ships/A/bp.sbc")
             display_name = "A"
+            _map_blocks = None
+            _voxels = None
 
             @property
             def voxels(self):
@@ -985,6 +1036,37 @@ class SkipVoxelsWhen3dTests(unittest.TestCase):
         app._ensure_subgrids_document()
         self.assertEqual(len(seen), 1)
         self.assertIsNone(seen[0].get("voxels"))
+        self.assertIsNone(seen[0].get("blocks"))
+
+    def test_2d_cache_without_map_blocks_does_not_walk_voxels_on_tk(self):
+        from ui.app import TacticalCommandCenter
+
+        class ExplosiveDoc:
+            structure = object()
+            scene = object()
+            path = Path("/ships/A/bp.sbc")
+            display_name = "A"
+            _map_blocks = None
+
+            @property
+            def voxels(self):
+                raise AssertionError("voxels_from_scene ran on Tk")
+
+        inspect_calls = []
+        app = TacticalCommandCenter.__new__(TacticalCommandCenter)
+        app.selected_blueprint = SimpleNamespace(path=Path("/ships/A"), display_name="A")
+        app._closing = False
+        app._document = None
+        app._documents = SimpleNamespace(get=lambda _p: ExplosiveDoc())
+        app.toasts = SimpleNamespace(toast=lambda *_a, **_k: None)
+        app.preview_panel = SimpleNamespace(
+            subgrids_generation=1,
+            ship_preview=SimpleNamespace(will_show_3d=lambda: False),
+            update_subgrids=lambda *a, **k: (_ for _ in ()).throw(AssertionError("Tk rebuilt 2D from cache")),
+        )
+        app._inspect_blueprint_async = lambda immediate=False: inspect_calls.append(immediate)
+        app._ensure_subgrids_document()
+        self.assertEqual(inspect_calls, [True])
 
 
 class VisibleBoundsSkipTests(unittest.TestCase):

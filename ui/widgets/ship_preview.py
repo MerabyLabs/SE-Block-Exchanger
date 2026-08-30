@@ -637,6 +637,9 @@ class ShipPreviewHost(ctk.CTkFrame):
             if not drawn and self._deferred_voxels:
                 drawn = voxels_to_blocks(self._deferred_voxels)
             self.ship_canvas.load_structure_data(drawn, draw=True)
+            self._switching = False
+            self._building = False
+            self._refresh_status()
         self._apply_mode()
         if want_3d:
             if should_defer_catalog_box_build(

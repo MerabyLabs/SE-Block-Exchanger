@@ -267,7 +267,7 @@ class ShipCanvas(ctk.CTkFrame):
             self.max_coords = (0, 0, 0)
             self.info_status.configure(text="No blocks to draw")
             if draw:
-                self._schedule_redraw()
+                self._redraw_now()
             return
         self.min_coords, self.max_coords = self.bounds_for(self.blocks)
         self._update_status_caption(self.blocks)
@@ -361,16 +361,28 @@ class ShipCanvas(ctk.CTkFrame):
         return "#334155", "#475569"
 
     def _on_configure(self, _event=None) -> None:
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        if self._photo is not None and self._photo_size == (w, h):
+            return
         self._schedule_redraw()
 
     def _on_mapped(self, _event=None) -> None:
+        if self._photo is not None:
+            return
         if self.blocks:
             self.fit_to_view()
         else:
             self._schedule_redraw()
 
     def refresh(self) -> None:
-        """Redraw after the Map/Subgrids tab becomes visible."""
+        """Redraw after the Map/Subgrids tab becomes visible, if the bitmap is gone or resized."""
+        if self._photo is not None:
+            try:
+                if self._photo_size == (self.canvas.winfo_width(), self.canvas.winfo_height()):
+                    return
+            except Exception:
+                return
         if self.blocks:
             self.fit_to_view()
         else:
@@ -388,6 +400,15 @@ class ShipCanvas(ctk.CTkFrame):
         if self._redraw_job is not None:
             self.after_cancel(self._redraw_job)
         self._redraw_job = self.after(40, self.redraw)
+
+    def _redraw_now(self) -> None:
+        if self._redraw_job is not None:
+            try:
+                self.after_cancel(self._redraw_job)
+            except Exception:
+                pass
+            self._redraw_job = None
+        self.redraw()
 
     def redraw(self) -> None:
         self._redraw_job = None
@@ -471,7 +492,7 @@ class ShipCanvas(ctk.CTkFrame):
             self.scale = 16.0
             self.pan_x = 0.0
             self.pan_y = 0.0
-            self._schedule_redraw()
+            self._redraw_now()
             return
         min_c, max_c = self.bounds_for(visible)
         dim_x = max(1, max_c[0] - min_c[0] + 1)
@@ -486,7 +507,7 @@ class ShipCanvas(ctk.CTkFrame):
         self.scale = max(6.0, min(40.0, min((w * 0.8) / span_w, (h * 0.8) / span_h)))
         self.pan_x = 0.0
         self.pan_y = 0.0
-        self._schedule_redraw()
+        self._redraw_now()
 
     def _zoom(self, factor: float) -> None:
         self.scale = max(4.0, min(48.0, self.scale * factor))
