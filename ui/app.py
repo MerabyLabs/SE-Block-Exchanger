@@ -805,6 +805,11 @@ class TacticalCommandCenter(ctk.CTk):
     def _ensure_subgrids_document(self) -> None:
         if not self.selected_blueprint or self._closing:
             return
+        if self.preview_panel.subgrids_generation == 0:
+            self.preview_panel.begin_blueprint_switch(
+                self.selected_blueprint.path,
+                self.selected_blueprint.display_name,
+            )
         cached = self._documents.get(self.selected_blueprint.path)
         if cached is not None:
             self._document = cached
