@@ -10,12 +10,12 @@ import tkinter as tk
 import customtkinter as ctk
 from PIL import Image, ImageTk
 
+from blueprint_document import save_as_result_applies
 from blueprint_edit import (
     GridEditSession,
     nudge_block_instance,
     resolve_blueprint_dir,
     save_blueprint_as,
-    unique_edited_dir,
 )
 from se_assets.cube_catalog import CubeBlockCatalog
 from se_assets.mesh_cache import MeshLibrary
@@ -139,6 +139,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._source_path: Optional[Path] = None
         self._idle_job = None
         self._save_generation = 0
+        self._save_in_flight = False
 
         self._banner = ctk.CTkFrame(self, fg_color=TacticalTheme.BG_GLASS, corner_radius=8)
         self._banner.pack(fill="x", padx=8, pady=(8, 0))
@@ -1588,6 +1589,7 @@ class ShipPreviewHost(ctk.CTkFrame):
             return
         block = self._scene.blocks[idx]
         new_min = self._edits.move(ident, block.local_min, delta)
+        keep_id = self._edits.canonical_identity(ident)
         # Session move is absolute; align the instance to that Min.
         step = (
             new_min[0] - block.local_min[0],
@@ -1596,7 +1598,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         )
         if step != (0, 0, 0):
             nudge_block_instance(block, step)
-        self._rebuild_after_edit(keep_id=ident)
+        self._rebuild_after_edit(keep_id=keep_id)
 
     def _undo_edit(self) -> None:
         if not self._edits.undo():
@@ -1641,7 +1643,8 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._sync_user_hidden()
         if keep_id is not None:
             for rec in cpu.picks:
-                if pick_identity(rec) == keep_id:
+                rec_id = pick_identity(rec)
+                if rec_id == keep_id or self._edits.canonical_identity(rec_id) == keep_id:
                     self._selected_rec = rec
                     self._selected_label = selection_caption(rec)
                     self._renderer.select(rec.instance_id)
@@ -1675,6 +1678,9 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._focus_selection()
 
     def _save_as_new(self) -> None:
+        if self._save_in_flight:
+            self._toast("Save As is already in progress.", "info")
+            return
         if self._source_path is None:
             self._toast("Load a blueprint folder before saving.", "warning")
             return
@@ -1683,13 +1689,8 @@ class ShipPreviewHost(ctk.CTkFrame):
         except Exception as exc:
             self._toast(str(exc), "error")
             return
-        dest = unique_edited_dir(source)
-        overwrite = False
-        if dest.exists():
-            self._toast("Could not pick a free Save As folder.", "error")
-            return
-        deleted = set(self._edits.deleted)
-        moves = dict(self._edits.moves)
+        deleted, moves = self._edits.committed_edits()
+        self._save_in_flight = True
         self._save_generation += 1
         generation = self._save_generation
 
@@ -1699,8 +1700,8 @@ class ShipPreviewHost(ctk.CTkFrame):
                     source,
                     deleted,
                     moves,
-                    dest_dir=dest,
-                    overwrite_original=overwrite,
+                    dest_dir=None,
+                    overwrite_original=False,
                 )
             except FileExistsError:
                 self.after(0, lambda: self._on_save_as_done(generation, None, "exists"))
@@ -1715,7 +1716,9 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._toast("Saving edited blueprint…", "info")
 
     def _on_save_as_done(self, generation: int, written, error: Optional[str]) -> None:
-        if generation != self._save_generation:
+        if generation == self._save_generation:
+            self._save_in_flight = False
+        if not save_as_result_applies(generation, self._save_generation):
             return
         if error == "exists":
             self._toast("Save As cancelled — destination already exists.", "warning")

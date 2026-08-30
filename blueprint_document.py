@@ -73,6 +73,39 @@ def catalog_completion_allowed(token: JobToken, generation: int, *, cleared: boo
     return (not cleared) and token.is_current(generation)
 
 
+def scan_callback_applies(token: JobToken, generation: int) -> bool:
+    """Drop scan success / not-found / error callbacks from a superseded folder scan."""
+    return token.is_current(generation)
+
+
+def install_detection_applies(
+    token: JobToken,
+    generation: int,
+    *,
+    cleared: bool,
+    saved_install: str = "",
+    incoming_path: Optional[str] = None,
+) -> bool:
+    """
+    Stale Steam detect must not override a manual locate.
+    File → Clear still wins: the callback applies so the caller can force a cleared status.
+    """
+    if not token.is_current(generation):
+        return False
+    if cleared:
+        return True
+    if saved_install and incoming_path and str(incoming_path) != str(saved_install):
+        return False
+    return True
+
+
+def save_as_result_applies(generation: int, current: int, *, in_flight: bool = False) -> bool:
+    """Drop superseded Save As toasts. A newer click owns the UI."""
+    if in_flight and generation != current:
+        return False
+    return generation == current
+
+
 def inspect_result_applies(
     token: JobToken,
     generation: int,

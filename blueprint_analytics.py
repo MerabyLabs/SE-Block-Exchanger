@@ -475,6 +475,7 @@ class BlueprintAnalyticsEngine:
         new_block = ET.SubElement(cube_blocks, "MyObjectBuilder_CubeBlock")
         new_block.set("{http://www.w3.org/2001/XMLSchema-instance}type", block_type)
         ET.SubElement(new_block, "SubtypeName").text = subtype
+        # Origin is valid SE XML even if another cube already sits at 0,0,0.
         ET.SubElement(new_block, "Min").attrib.update({"x": "0", "y": "0", "z": "0"})
         ET.SubElement(new_block, "BlockOrientation").attrib.update(
             {"Forward": "Forward", "Up": "Up"}

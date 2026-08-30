@@ -7,8 +7,92 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import customtkinter as ctk
+from PIL import Image, ImageDraw, ImageTk
 
 from ui.theme import TacticalTheme
+
+
+MAP_BG_RGB = (7, 12, 24)
+MAP_GRID_RGB = (30, 41, 59)
+
+
+def project_cell_key(block: "VoxelBlock", mode: str) -> Tuple[int, int]:
+    if mode == "Top":
+        return (int(block.x), int(block.z))
+    if mode == "Side":
+        return (int(block.x), -int(block.y))
+    return (int(block.z), -int(block.y))
+
+
+def collect_projected_cells(
+    blocks: List["VoxelBlock"],
+    mode: str,
+) -> Dict[Tuple[int, int], Tuple[str, str]]:
+    cells: Dict[Tuple[int, int], Tuple[str, str]] = {}
+    for block in blocks:
+        cells[project_cell_key(block, mode)] = ShipCanvas._get_block_color(
+            block.subtype, block.is_subgrid, block.color_rgb
+        )
+    return cells
+
+
+def _hex_to_rgb(color: str) -> Tuple[int, int, int]:
+    raw = (color or "").lstrip("#")
+    if len(raw) != 6:
+        return MAP_BG_RGB
+    return int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+
+
+def rasterize_projected_cells(
+    cells: Dict[Tuple[int, int], Tuple[str, str]],
+    *,
+    width: int,
+    height: int,
+    step: float,
+    cx: float,
+    cy: float,
+    mid_x: float,
+    mid_y: float,
+    projection: str,
+    draw_grid: bool,
+) -> Image.Image:
+    """One bitmap for the 2D map — same colors/legend as per-cell rectangles."""
+    image = Image.new("RGB", (max(1, int(width)), max(1, int(height))), MAP_BG_RGB)
+    if not cells:
+        return image
+    draw = ImageDraw.Draw(image)
+    cell = max(1.0, float(step))
+
+    def project(gx: int, gy: int) -> Tuple[float, float]:
+        if projection == "Top":
+            return cx + (gx - mid_x) * cell, cy + (gy - mid_y) * cell
+        if projection == "Side":
+            return cx + (gx - mid_x) * cell, cy - ((-gy) - mid_y) * cell
+        return cx + (gx - mid_x) * cell, cy - ((-gy) - mid_y) * cell
+
+    xs = [key[0] for key in cells]
+    ys = [key[1] for key in cells]
+    min_gx, max_gx = min(xs), max(xs)
+    min_gy, max_gy = min(ys), max(ys)
+    if draw_grid and (max_gx - min_gx) <= 80 and (max_gy - min_gy) <= 80:
+        for gx in range(min_gx, max_gx + 2):
+            x0, y0 = project(gx, min_gy)
+            x1, y1 = project(gx, max_gy + 1)
+            draw.line([(x0, y0), (x1, y1)], fill=MAP_GRID_RGB, width=1)
+        for gy in range(min_gy, max_gy + 2):
+            x0, y0 = project(min_gx, gy)
+            x1, y1 = project(max_gx + 1, gy)
+            draw.line([(x0, y0), (x1, y1)], fill=MAP_GRID_RGB, width=1)
+
+    inset = 1 if cell >= 8 else 0
+    for (gx, gy), (fill, outline) in cells.items():
+        px, py = project(gx, gy)
+        x1 = px + cell - 1
+        y1 = py + cell - 1
+        draw.rectangle([px, py, x1, y1], fill=_hex_to_rgb(fill))
+        if inset and outline:
+            draw.rectangle([px, py, x1, y1], outline=_hex_to_rgb(outline))
+    return image
 
 
 @dataclass
@@ -43,6 +127,9 @@ class ShipCanvas(ctk.CTkFrame):
         self._drag_start_x = 0
         self._drag_start_y = 0
         self._redraw_job = None
+        self._photo = None
+        self._photo_size = (0, 0)
+        self._map_image_id = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -265,8 +352,9 @@ class ShipCanvas(ctk.CTkFrame):
             if self.blocks:
                 self.after(80, self.refresh)
             return
-        self.canvas.delete("all")
         if not self.blocks:
+            self._clear_map_image()
+            self.canvas.delete("all")
             self.canvas.create_text(
                 w // 2,
                 h // 2,
@@ -281,6 +369,8 @@ class ShipCanvas(ctk.CTkFrame):
         cy = h / 2 + self.pan_y
         active = self._visible_blocks()
         if not active:
+            self._clear_map_image()
+            self.canvas.delete("all")
             self.canvas.create_text(
                 w // 2, h // 2,
                 text="No blocks on this grid.",
@@ -294,47 +384,37 @@ class ShipCanvas(ctk.CTkFrame):
         mid_y = (min_c[1] + max_c[1]) / 2.0
         mid_z = (min_c[2] + max_c[2]) / 2.0
         step = max(4.0, self.scale)
-        cells: Dict[Tuple[int, int], Tuple[str, str]] = {}
-        for b in active:
-            fill, outline = self._get_block_color(b.subtype, b.is_subgrid, b.color_rgb)
-            if self.projection_mode == "Top":
-                key = (b.x, b.z)
-            elif self.projection_mode == "Side":
-                key = (b.x, -b.y)
+        cells = collect_projected_cells(active, self.projection_mode)
+        if self.projection_mode == "Top":
+            axis_mid_x, axis_mid_y = mid_x, mid_z
+        elif self.projection_mode == "Side":
+            axis_mid_x, axis_mid_y = mid_x, mid_y
+        else:
+            axis_mid_x, axis_mid_y = mid_z, mid_y
+        image = rasterize_projected_cells(
+            cells,
+            width=w,
+            height=h,
+            step=step,
+            cx=cx,
+            cy=cy,
+            mid_x=axis_mid_x,
+            mid_y=axis_mid_y,
+            projection=self.projection_mode,
+            draw_grid=True,
+        )
+        if self._photo is not None and self._photo_size == image.size:
+            self._photo.paste(image)
+        else:
+            self._photo = ImageTk.PhotoImage(image)
+            self._photo_size = image.size
+            if self._map_image_id is None:
+                self.canvas.delete("all")
+                self._map_image_id = self.canvas.create_image(0, 0, image=self._photo, anchor="nw")
             else:
-                key = (b.z, -b.y)
-            cells[key] = (fill, outline)
-
-        def project(gx: int, gy: int) -> Tuple[float, float]:
-            if self.projection_mode == "Top":
-                return cx + (gx - mid_x) * step, cy + (gy - mid_z) * step
-            if self.projection_mode == "Side":
-                return cx + (gx - mid_x) * step, cy - ((-gy) - mid_y) * step
-            return cx + (gx - mid_z) * step, cy - ((-gy) - mid_y) * step
-
-        xs = [key[0] for key in cells]
-        ys = [key[1] for key in cells]
-        min_gx, max_gx = min(xs), max(xs)
-        min_gy, max_gy = min(ys), max(ys)
-        if (max_gx - min_gx) <= 80 and (max_gy - min_gy) <= 80:
-            grid_color = "#1e293b"
-            for gx in range(min_gx, max_gx + 2):
-                x0, y0 = project(gx, min_gy)
-                x1, y1 = project(gx, max_gy + 1)
-                self.canvas.create_line(x0, y0, x1, y1, fill=grid_color, width=1)
-            for gy in range(min_gy, max_gy + 2):
-                x0, y0 = project(min_gx, gy)
-                x1, y1 = project(max_gx + 1, gy)
-                self.canvas.create_line(x0, y0, x1, y1, fill=grid_color, width=1)
-
-        for (gx, gy), (fill, outline) in cells.items():
-            px, py = project(gx, gy)
-            self.canvas.create_rectangle(
-                px, py, px + step - 1, py + step - 1,
-                fill=fill,
-                outline=outline if step >= 8 else "",
-                width=1,
-            )
+                self.canvas.itemconfig(self._map_image_id, image=self._photo)
+        if self._map_image_id is not None:
+            self.canvas.coords(self._map_image_id, 0, 0)
 
     def fit_to_view(self) -> None:
         w = max(self.canvas.winfo_width(), 320)
@@ -372,6 +452,11 @@ class ShipCanvas(ctk.CTkFrame):
         self._drag_start_x = event.x
         self._drag_start_y = event.y
 
+    def _clear_map_image(self) -> None:
+        self._photo = None
+        self._photo_size = (0, 0)
+        self._map_image_id = None
+
     def _on_pan_drag(self, event) -> None:
         dx = event.x - self._drag_start_x
         dy = event.y - self._drag_start_y
@@ -379,7 +464,7 @@ class ShipCanvas(ctk.CTkFrame):
         self.pan_y += dy
         self._drag_start_x = event.x
         self._drag_start_y = event.y
-        self.canvas.move("all", dx, dy)
+        self._schedule_redraw()
 
     def _on_projection_changed(self, choice: str) -> None:
         self.projection_mode = choice

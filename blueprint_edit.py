@@ -62,30 +62,64 @@ class GridEditSession:
         self._undo = None
         return True
 
+    def canonical_identity(self, ident: Identity) -> Identity:
+        """Stable Min-only key: later picks at a move dest still refer to the source."""
+        if ident in self.moves or ident in self.deleted or ident in self.hidden:
+            return ident
+        gid, mn, eid = ident
+        if eid:
+            return ident
+        for key, dest in self.moves.items():
+            kg, _km, ke = key
+            if ke:
+                continue
+            if dest != mn:
+                continue
+            if gid and kg and kg != gid:
+                continue
+            return key
+        return ident
+
     def delete(self, ident: Identity) -> None:
         self._push_undo()
-        self.deleted.add(ident)
-        self.hidden.discard(ident)
+        key = self.canonical_identity(ident)
+        self.deleted.add(key)
+        self.hidden.discard(key)
 
     def hide(self, ident: Identity) -> None:
         self._push_undo()
-        self.hidden.add(ident)
+        self.hidden.add(self.canonical_identity(ident))
 
     def move(self, ident: Identity, current_min: Tuple[int, int, int], delta: Sequence[int]) -> Tuple[int, int, int]:
         self._push_undo()
-        base = self.moves.get(ident, current_min)
+        key = self.canonical_identity(ident)
+        base = self.moves.get(key, current_min)
         nxt = (int(base[0] + delta[0]), int(base[1] + delta[1]), int(base[2] + delta[2]))
-        self.moves[ident] = nxt
+        if key != ident and ident in self.moves and ident != key:
+            del self.moves[ident]
+        self.moves[key] = nxt
         return nxt
 
     def is_removed(self, ident: Identity) -> bool:
-        return ident in self.deleted
+        return self.canonical_identity(ident) in self.deleted
 
     def is_inspect_hidden(self, ident: Identity) -> bool:
-        return ident in self.hidden or ident in self.deleted
+        key = self.canonical_identity(ident)
+        return key in self.hidden or key in self.deleted
 
     def min_for(self, ident: Identity, fallback: Tuple[int, int, int]) -> Tuple[int, int, int]:
-        return self.moves.get(ident, fallback)
+        return self.moves.get(self.canonical_identity(ident), fallback)
+
+    def committed_edits(self) -> Tuple[Set[Identity], Dict[Identity, Tuple[int, int, int]]]:
+        """Deletes and moves keyed by the original CubeBlock identity."""
+        deleted = {self.canonical_identity(ident) for ident in self.deleted}
+        moves: Dict[Identity, Tuple[int, int, int]] = {}
+        for ident, dest in self.moves.items():
+            key = self.canonical_identity(ident)
+            if key in deleted:
+                continue
+            moves[key] = dest
+        return deleted, moves
 
 
 def resolve_blueprint_dir(path: Path) -> Path:
@@ -236,6 +270,72 @@ def _delete_matching_blocks(root: ET.Element, identities: Sequence[Identity]) ->
     return removed
 
 
+def collapse_min_only_moves(
+    root: ET.Element,
+    moves: Dict[Identity, Tuple[int, int, int]],
+) -> Dict[Identity, Tuple[int, int, int]]:
+    """
+    Sequential Min-only nudges record a new key at each dest. If that key
+    has no live CubeBlock, it is a continuation and must not be dropped.
+    """
+    if not moves:
+        return {}
+    collapsed = dict(moves)
+    index = _index_cube_blocks(root)
+    changed = True
+    while changed:
+        changed = False
+        for key, dest in list(collapsed.items()):
+            gid, mn, eid = key
+            if eid or _lookup_indexed_block(key, index) is not None:
+                continue
+            for src, src_dest in list(collapsed.items()):
+                if src == key:
+                    continue
+                sg, _sm, se = src
+                if se:
+                    continue
+                if src_dest != mn:
+                    continue
+                if gid and sg and gid != sg:
+                    continue
+                collapsed[src] = dest
+                del collapsed[key]
+                changed = True
+                break
+    return collapsed
+
+
+def retarget_min_only_deletes(
+    root: ET.Element,
+    deleted: Sequence[Identity],
+    moves: Dict[Identity, Tuple[int, int, int]],
+) -> List[Identity]:
+    """Move-then-delete without EntityId uses the dest Min; map it back to the source."""
+    if not deleted:
+        return []
+    index = _index_cube_blocks(root)
+    out: List[Identity] = []
+    for ident in deleted:
+        gid, mn, eid = ident
+        if eid or ident in moves or _lookup_indexed_block(ident, index) is not None:
+            out.append(ident)
+            continue
+        retarget = None
+        for src, dest in moves.items():
+            sg, _sm, se = src
+            if se:
+                continue
+            if dest != mn:
+                continue
+            if gid and sg and gid != sg:
+                continue
+            retarget = src
+            break
+        out.append(retarget or ident)
+    return out
+
+
 def apply_edits_to_tree(
     tree: ET.ElementTree,
     deleted: Iterable[Identity],
@@ -244,13 +344,15 @@ def apply_edits_to_tree(
 ) -> Tuple[int, int]:
     """Remove deleted CubeBlocks and rewrite Min for moves. Returns (deleted, moved)."""
     root = tree.getroot()
-    deleted_list = list(deleted)
+    raw_moves = dict(moves)
+    collapsed_moves = collapse_min_only_moves(root, raw_moves)
+    deleted_list = retarget_min_only_deletes(root, list(deleted), collapsed_moves)
     deleted_set = set(deleted_list)
     removed = _delete_matching_blocks(root, deleted_list)
     # Rebuild after deletes so moves never touch detached nodes or stale keys.
     index = _index_cube_blocks(root)
     moved = 0
-    for ident, nxt in moves.items():
+    for ident, nxt in collapsed_moves.items():
         if ident in deleted_set:
             continue
         hit = _lookup_indexed_block(ident, index)

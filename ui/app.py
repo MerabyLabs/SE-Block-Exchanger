@@ -27,9 +27,12 @@ from blueprint_document import (
     BlueprintDocumentCache,
     CancelledError,
     JobHub,
+    JobToken,
     catalog_completion_allowed,
     dry_run_from_counts,
     inspect_result_applies,
+    install_detection_applies,
+    scan_callback_applies,
 )
 from blueprint_scanner import BlueprintInfo, BlueprintScanner
 from mapping_profiles import ProfileManager
@@ -120,6 +123,7 @@ class TacticalCommandCenter(ctk.CTk):
         self._inspect_token = self._jobs.inspect
         self._scan_token = self._jobs.scan
         self._catalog_token = self._jobs.catalog
+        self._install_token = JobToken()
         self._document: Optional[BlueprintDocument] = None
         self._se_catalog = CubeBlockCatalog()
         self._se_meshes = MeshLibrary()
@@ -322,18 +326,32 @@ class TacticalCommandCenter(ctk.CTk):
             return
         saved = self.settings.space_engineers_install
         allow_detect = not self.settings.space_engineers_cleared
+        generation = self._install_token.begin()
 
         def task() -> None:
             status = resolve_install(saved, allow_detect=allow_detect)
-            self._ui(lambda: self._on_install_resolved(status))
+            self._ui(lambda: self._on_install_resolved(status, generation))
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _on_install_resolved(self, status) -> None:
+    def _on_install_resolved(self, status, generation=None) -> None:
         if self._closing:
+            return
+        incoming = str(status.path) if status is not None and status.path else ""
+        if generation is not None and not install_detection_applies(
+            self._install_token,
+            generation,
+            cleared=self.settings.space_engineers_cleared,
+            saved_install=self.settings.space_engineers_install or "",
+            incoming_path=incoming or None,
+        ):
             return
         if self.settings.space_engineers_cleared:
             status = resolve_install("", allow_detect=False)
+        elif self.settings.space_engineers_install:
+            saved = str(self.settings.space_engineers_install)
+            if not incoming or incoming != saved:
+                status = resolve_install(saved, allow_detect=False)
         self._se_install_status = status
         self._apply_se_install_state()
 
@@ -406,6 +424,7 @@ class TacticalCommandCenter(ctk.CTk):
             # tear down the Tk mainloop (seen after an SE2 pick on Windows).
             self.after(0, self._warn_invalid_se_folder)
             return
+        self._install_token.begin()
         self.settings.space_engineers_install = str(root)
         self.settings.space_engineers_cleared = False
         self.settings_store.save(self.settings)
@@ -428,6 +447,7 @@ class TacticalCommandCenter(ctk.CTk):
 
     def clear_space_engineers_path(self) -> None:
         self._jobs.cancel_catalog()
+        self._install_token.begin()
         self.settings.space_engineers_install = ""
         self.settings.space_engineers_cleared = True
         self.settings_store.save(self.settings)
@@ -590,18 +610,15 @@ class TacticalCommandCenter(ctk.CTk):
                     return
                 self._ui(lambda bps=blueprints, gen=generation: self._on_blueprints_loaded(bps, gen))
             except FileNotFoundError:
-                if self._scan_token.is_current(generation):
-                    self._ui(self._on_scan_not_found)
+                self._ui(lambda gen=generation: self._on_scan_not_found(gen))
             except Exception as exc:
-                if not self._scan_token.is_current(generation):
-                    return
                 error_message = str(exc)
-                self._ui(lambda msg=error_message: self._show_error(f"Scan failed: {msg}"))
+                self._ui(lambda msg=error_message, gen=generation: self._on_scan_error(msg, gen))
 
         threading.Thread(target=load_task, daemon=True).start()
 
     def _on_blueprints_loaded(self, blueprints=None, generation=None):
-        if generation is not None and not self._scan_token.is_current(generation):
+        if generation is not None and not scan_callback_applies(self._scan_token, generation):
             return
         if blueprints is not None:
             self.blueprints = blueprints
@@ -626,7 +643,9 @@ class TacticalCommandCenter(ctk.CTk):
             if not found and self.blueprints:
                 self.blueprint_panel.select_blueprint_by_name(self.blueprints[0].display_name)
 
-    def _on_scan_not_found(self):
+    def _on_scan_not_found(self, generation=None):
+        if generation is not None and not scan_callback_applies(self._scan_token, generation):
+            return
         self.blueprints = []
         self.header.set_blueprint_count(0)
         self.footer.set_status("Space Engineers folder not found")
@@ -636,6 +655,11 @@ class TacticalCommandCenter(ctk.CTk):
             "The Space Engineers Blueprints folder was not found.\n\n"
             "Use Open folder or drop a blueprint folder here.",
         )
+
+    def _on_scan_error(self, message: str, generation=None) -> None:
+        if generation is not None and not scan_callback_applies(self._scan_token, generation):
+            return
+        self._show_error(message)
 
     def browse_blueprint_dir(self):
         chosen = filedialog.askdirectory(title="Open Blueprints folder", mustexist=True)
@@ -1471,12 +1495,29 @@ class TacticalCommandCenter(ctk.CTk):
         )
         if not confirm:
             return
-        success = self.analytics_engine.apply_fix(bp_file, fix_id)
-        if success:
-            self.toasts.toast(f"Applied fix: {fix_id}", level="success")
-            self._refresh_after_inplace_edit(self.selected_blueprint)
-        else:
-            self.toasts.toast(f"Fix '{fix_id}' could not be applied.", level="warning")
+        path = Path(bp_file)
+        selected_path = self.selected_blueprint.path
+
+        def work() -> None:
+            try:
+                success = self.analytics_engine.apply_fix(path, fix_id)
+            except Exception as exc:
+                message = str(exc)
+                self._ui(lambda: self.toasts.toast(f"Fix '{fix_id}' failed: {message}", level="error"))
+                return
+
+            def done() -> None:
+                if success:
+                    self.toasts.toast(f"Applied fix: {fix_id}", level="success")
+                    current = self.selected_blueprint
+                    if current is not None and current.path == selected_path:
+                        self._refresh_after_inplace_edit(current)
+                else:
+                    self.toasts.toast(f"Fix '{fix_id}' could not be applied.", level="warning")
+
+            self._ui(done)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _refresh_after_inplace_edit(self, bp: BlueprintInfo) -> None:
         """Re-read the edited bp.sbc so Analytics / Convert / XML / Subgrids match disk."""
