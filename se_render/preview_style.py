@@ -41,6 +41,10 @@ MWM_REFINE_CHUNK = 32
 UPLOAD_BATCH_CHUNK = 8
 # Opening slice stays one batch so the first after() cannot hitch Tk.
 FIRST_UPLOAD_CHUNK = 1
+# Further slices yield if they exceed this wall time or payload.
+GL_UPLOAD_TIME_BUDGET_S = 0.008
+GL_UPLOAD_BYTE_BUDGET = 2_000_000
+GL_UPLOAD_INSTANCE_BUDGET = 512
 
 
 def format_preview_count_caption(
@@ -61,6 +65,17 @@ def format_preview_count_caption(
     if total_n > shown_n:
         return f"{shown_n:,} of {total_n:,} blocks  ·  3D preview"
     return f"{shown_n:,} blocks  ·  3D preview"
+
+
+def mwm_progress_caption(*, mesh_cached: bool, done: int, total: int) -> str:
+    """Cached library mesh vs this ship's instances patched — not the same step."""
+    done_n = max(0, int(done))
+    total_n = max(done_n, int(total))
+    if total_n <= 0:
+        return "Models"
+    if mesh_cached:
+        return f"Patched models {done_n:,} of {total_n:,}"
+    return f"Decoding models {done_n:,} of {total_n:,}"
 
 
 def should_defer_catalog_box_build(catalog, catalog_in_flight: bool) -> bool:
@@ -105,6 +120,9 @@ def staged_3d_caption(
     isolated_count: Optional[int] = None,
     refining: bool = False,
     ship_name: str = "",
+    mwm_cached: Optional[bool] = None,
+    mwm_done: int = 0,
+    mwm_total: int = 0,
 ) -> str:
     """Honest Subgrids toolbar: Indexed / Shell k of N / models / interior."""
     stage_key = (stage or "").strip().lower()
@@ -135,8 +153,16 @@ def staged_3d_caption(
             parts.append(f"Shell {n:,} of {total_n:,}")
         else:
             parts.append("Shell")
-    elif stage_key == "meshes":
-        if total_n:
+    elif stage_key == "meshes" or mwm_total:
+        if mwm_total:
+            parts.append(
+                mwm_progress_caption(
+                    mesh_cached=bool(mwm_cached),
+                    done=mwm_done,
+                    total=mwm_total,
+                )
+            )
+        elif total_n:
             parts.append(f"Models {shown_n:,} of {total_n:,}")
         else:
             parts.append("Models")

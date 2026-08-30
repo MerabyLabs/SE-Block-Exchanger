@@ -21,6 +21,8 @@ from __future__ import annotations
 from collections import deque
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+import numpy as np
+
 from se_assets.cube_catalog import CubeBlockCatalog
 from se_render.occupancy import OccupancyMap, build_occupancy, definition_size, occupied_cells
 from se_render.orientation import (
@@ -237,8 +239,13 @@ def radial_max_offsets(
 
     neighborhoods = _neighborhood_centroids(blocks, positions, cells_of, RADIAL_NEIGHBOR_RADIUS)
 
-    raw: List[Vec3] = []
     armor_flags: List[bool] = []
+    globals_off: List[Vec3] = []
+    stretches: List[Vec3] = []
+    peels: List[Vec3] = []
+    stations_off: List[Vec3] = []
+    neighs: List[Vec3] = []
+    weights: List[float] = []
     for i, block in enumerate(blocks):
         gid = block.grid_entity_id
         ctx = peel_ctx[gid]
@@ -272,13 +279,35 @@ def radial_max_offsets(
             (pos[1] - neigh[1]) * RADIAL_NEIGHBOR_STRETCH,
             (pos[2] - neigh[2]) * RADIAL_NEIGHBOR_STRETCH,
         )
-        combined = (
-            (global_off[0] + stretch[0] + peel_off[0] + station_off[0] + neigh_off[0]) * weight,
-            (global_off[1] + stretch[1] + peel_off[1] + station_off[1] + neigh_off[1]) * weight,
-            (global_off[2] + stretch[2] + peel_off[2] + station_off[2] + neigh_off[2]) * weight,
-        )
-        raw.append(combined)
+        globals_off.append(global_off)
+        stretches.append(stretch)
+        peels.append(peel_off)
+        stations_off.append(station_off)
+        neighs.append(neigh_off)
+        weights.append(weight)
+    combined = radial_combine_offsets(
+        globals_off, stretches, peels, stations_off, neighs, weights
+    )
+    raw = [(float(row[0]), float(row[1]), float(row[2])) for row in combined]
     return _share_functional_clusters(blocks, catalog, armor_flags, raw)
+
+
+def radial_combine_offsets(
+    global_off: Sequence,
+    stretch: Sequence,
+    peel_off: Sequence,
+    station_off: Sequence,
+    neigh_off: Sequence,
+    weight: Sequence,
+) -> np.ndarray:
+    """Vectorized Radial sum. Must match the Python add within 1e-6."""
+    g = np.asarray(global_off, dtype=np.float64).reshape(-1, 3)
+    s = np.asarray(stretch, dtype=np.float64).reshape(-1, 3)
+    p = np.asarray(peel_off, dtype=np.float64).reshape(-1, 3)
+    st = np.asarray(station_off, dtype=np.float64).reshape(-1, 3)
+    n = np.asarray(neigh_off, dtype=np.float64).reshape(-1, 3)
+    w = np.asarray(weight, dtype=np.float64).reshape(-1, 1)
+    return (g + s + p + st + n) * w
 
 
 def peel_max_offsets(
@@ -798,6 +827,7 @@ __all__ = [
     "grid_centroids",
     "peel_max_offsets",
     "pick_identity",
+    "radial_combine_offsets",
     "radial_max_offsets",
     "selection_caption",
     "selection_meta",

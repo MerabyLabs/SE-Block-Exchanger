@@ -155,7 +155,6 @@ class BlueprintDocument:
     stamp: FileStamp
     scene: PreviewScene
     structure: MultiGridStructure
-    voxels: List[dict]
     subtype_counts: Dict[str, int]
     grid_size: str
     display_name: str
@@ -163,10 +162,18 @@ class BlueprintDocument:
     light_armor_count: int
     heavy_armor_count: int
     thruster_forwards: Dict[str, int] = field(default_factory=dict)
+    _voxels: Optional[List[dict]] = field(default=None, repr=False, compare=False)
 
     @property
     def path(self) -> Path:
         return Path(self.stamp.path)
+
+    @property
+    def voxels(self) -> List[dict]:
+        """2D map points. Built once, and only when a caller needs them."""
+        if self._voxels is None:
+            self._voxels = voxels_from_scene(self.scene)
+        return self._voxels
 
     @classmethod
     def from_root(
@@ -186,7 +193,6 @@ class BlueprintDocument:
         structure = SubgridHierarchyParser.from_scene(scene)
         if token is not None:
             token.raise_if_stale(generation)
-        voxels = voxels_from_scene(scene)
         subtype_counts: Dict[str, int] = Counter()
         thruster_forwards: Dict[str, int] = Counter()
         light = 0
@@ -215,7 +221,6 @@ class BlueprintDocument:
             stamp=stamp or FileStamp("", 0, 0),
             scene=scene,
             structure=structure,
-            voxels=voxels,
             subtype_counts=dict(subtype_counts),
             grid_size=grid_size,
             display_name=display_name,
@@ -253,7 +258,7 @@ class BlueprintDocument:
 class BlueprintDocumentCache:
     """LRU of recently selected ships. Hit only when path + mtime + size match."""
 
-    def __init__(self, max_entries: int = 4) -> None:
+    def __init__(self, max_entries: int = 2) -> None:
         self.max_entries = max(1, int(max_entries))
         self._lock = threading.Lock()
         self._docs: Dict[str, BlueprintDocument] = {}

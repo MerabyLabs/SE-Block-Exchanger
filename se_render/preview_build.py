@@ -6,8 +6,9 @@ Safe to run on a worker thread. No OpenGL calls live here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+import threading
+from dataclasses import dataclass, field, replace
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Set
 
 import numpy as np
 
@@ -168,6 +169,116 @@ class PreviewCpuScene:
     offset_radial: Optional[np.ndarray] = None
     has_functional_mwm: bool = False
     keep_indices: Optional[List[int]] = None
+
+
+def cpu_cache_key(path, mtime_ns, catalog_gen, stage: str) -> Tuple[str, int, int, str]:
+    return (str(path or ""), int(mtime_ns or 0), int(catalog_gen or 0), str(stage or ""))
+
+
+class PreviewCpuCache:
+    """Two-entry LRU of assembled CPU scenes. clear() of the display must not drop this."""
+
+    def __init__(self, max_entries: int = 2) -> None:
+        self.max_entries = max(1, int(max_entries))
+        self._lock = threading.Lock()
+        self._items: Dict[tuple, PreviewCpuScene] = {}
+        self._order: List[tuple] = []
+
+    def get(self, key: tuple) -> Optional[PreviewCpuScene]:
+        with self._lock:
+            cpu = self._items.get(key)
+            if cpu is None:
+                return None
+            if key in self._order:
+                self._order.remove(key)
+                self._order.append(key)
+            return cpu
+
+    def get_best(
+        self,
+        path,
+        mtime_ns: int,
+        catalog_gen: int,
+        stages: Sequence[str] = (STAGE_FULL, STAGE_MESHES, STAGE_SHELL),
+    ) -> Optional[PreviewCpuScene]:
+        for stage in stages:
+            hit = self.get(cpu_cache_key(path, mtime_ns, catalog_gen, stage))
+            if hit is not None:
+                return hit
+        return None
+
+    def put(self, key: tuple, cpu: PreviewCpuScene) -> PreviewCpuScene:
+        with self._lock:
+            path, mtime_ns, catalog_gen, _stage = key
+            stale = [
+                old for old in self._order
+                if old[0] == path and old[1] == mtime_ns and old[2] == catalog_gen and old != key
+            ]
+            for old in stale:
+                self._order.remove(old)
+                self._items.pop(old, None)
+            self._items[key] = cpu
+            if key in self._order:
+                self._order.remove(key)
+            self._order.append(key)
+            while len(self._order) > self.max_entries:
+                old = self._order.pop(0)
+                self._items.pop(old, None)
+        return cpu
+
+    def invalidate(self, path=None) -> None:
+        with self._lock:
+            if path is None:
+                self._items.clear()
+                self._order.clear()
+                return
+            prefix = str(path)
+            keep = [k for k in self._order if k[0] != prefix]
+            self._items = {k: self._items[k] for k in keep}
+            self._order = keep
+
+
+def clone_cpu_batch(batch: CpuBatch) -> CpuBatch:
+    """Copy instance/offset arrays so a worker can write dissect data safely."""
+    return replace(
+        batch,
+        explode=np.array(batch.explode, copy=True),
+        explode_peel=np.array(batch.explode_peel, copy=True),
+        explode_decks=np.array(batch.explode_decks, copy=True),
+        explode_radial=np.array(batch.explode_radial, copy=True),
+        inspect=np.array(batch.inspect, copy=True),
+        instance_ids=np.array(batch.instance_ids, copy=True),
+        grid_names=list(batch.grid_names),
+        grid_entity_ids=list(batch.grid_entity_ids or []),
+    )
+
+
+def copy_cpu_for_dissect(cpu: PreviewCpuScene) -> PreviewCpuScene:
+    """Handoff object: worker never mutates the live renderer CPU scene."""
+    assembled = [clone_cpu_batch(batch) for batch in cpu.assembled]
+    if cpu.assembled_lod is cpu.assembled:
+        assembled_lod = assembled
+    else:
+        assembled_lod = [clone_cpu_batch(batch) for batch in cpu.assembled_lod]
+    exploded = [clone_cpu_batch(batch) for batch in cpu.exploded]
+    if cpu.exploded_lod is cpu.exploded:
+        exploded_lod = exploded
+    else:
+        exploded_lod = [clone_cpu_batch(batch) for batch in cpu.exploded_lod]
+    picks = [replace(rec) for rec in cpu.picks]
+    return replace(
+        cpu,
+        assembled=assembled,
+        assembled_lod=assembled_lod,
+        exploded=exploded,
+        exploded_lod=exploded_lod,
+        picks=picks,
+        dissect_modes=list(cpu.dissect_modes),
+        offset_peel=None if cpu.offset_peel is None else np.array(cpu.offset_peel, copy=True),
+        offset_decks=None if cpu.offset_decks is None else np.array(cpu.offset_decks, copy=True),
+        offset_radial=None if cpu.offset_radial is None else np.array(cpu.offset_radial, copy=True),
+        keep_indices=list(cpu.keep_indices) if cpu.keep_indices is not None else None,
+    )
 
 
 def _aabb_from_mesh(mesh: MeshData, model: Sequence[Sequence[float]]) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
@@ -851,6 +962,41 @@ def ensure_exploded_batches(
     return cpu
 
 
+@dataclass(frozen=True)
+class MwmPatchWork:
+    """One official model: library may already have the mesh; this ship may not."""
+
+    definition: object
+    mesh_cached: bool
+
+
+def pending_mwm_patches(
+    blocks: Sequence[BlockInstance],
+    catalog: Optional[CubeBlockCatalog],
+    library: MeshLibrary,
+    patched_keys: Optional[Set[str]] = None,
+) -> List[MwmPatchWork]:
+    """MWM work for this ship. Cached mesh ≠ instances already patched."""
+    seen = set()
+    out: List[MwmPatchWork] = []
+    patched = set(patched_keys or ())
+    if catalog is None:
+        return out
+    for block in blocks:
+        definition = catalog.get(block.type_id, block.subtype)
+        if not _needs_mwm(definition):
+            continue
+        key = definition.key
+        if key in seen or key in patched:
+            continue
+        seen.add(key)
+        cached = library.has_mesh(
+            definition, block.subtype, definition.size, block.grid_size, skip_mwm=False
+        )
+        out.append(MwmPatchWork(definition=definition, mesh_cached=cached))
+    return out
+
+
 def pending_mwm_definitions(
     blocks: Sequence[BlockInstance],
     catalog: Optional[CubeBlockCatalog],
@@ -963,6 +1109,45 @@ def split_upload_chunks(batches: Sequence[CpuBatch], chunk: int) -> List[List[Cp
     return [list(batches[i:i + size]) for i in range(0, len(batches), size)]
 
 
+def cpu_batch_upload_bytes(batch: CpuBatch) -> int:
+    total = 0
+    for name in (
+        "positions", "normals", "uvs", "indices", "models", "colors", "params",
+        "accents", "explode", "explode_peel", "explode_decks", "explode_radial",
+        "inspect", "instance_ids",
+    ):
+        arr = getattr(batch, name, None)
+        if arr is not None and hasattr(arr, "nbytes"):
+            total += int(arr.nbytes)
+    return total
+
+
+def split_batches_for_upload(
+    batches: Sequence[CpuBatch],
+    max_instances: int = 512,
+    max_bytes: int = 2_000_000,
+) -> List[CpuBatch]:
+    """Split huge instance groups so one GPU slice cannot hitch Tk. Counts stay honest."""
+    cap = max(1, int(max_instances))
+    byte_cap = max(1, int(max_bytes))
+    out: List[CpuBatch] = []
+    for batch in batches:
+        n = int(batch.models.shape[0]) if getattr(batch, "models", None) is not None else 0
+        payload = cpu_batch_upload_bytes(batch)
+        if n <= cap and payload <= byte_cap:
+            out.append(batch)
+            continue
+        step = cap
+        if n > 0 and payload > byte_cap:
+            step = max(1, min(step, max(1, n * byte_cap // payload)))
+        for start in range(0, max(n, 1), step):
+            keep = list(range(start, min(start + step, n)))
+            if not keep:
+                continue
+            out.append(_slice_batch(batch, keep))
+    return out
+
+
 def _merge_refined_batches(
     old: Sequence[CpuBatch],
     new: Sequence[CpuBatch],
@@ -1052,13 +1237,18 @@ def instance_count(batches: Iterable[CpuBatch]) -> int:
 __all__ = [
     "BuildGeneration",
     "CpuBatch",
+    "MwmPatchWork",
     "PickRecord",
+    "PreviewCpuCache",
     "PreviewCpuScene",
     "STAGE_FULL",
     "STAGE_MESHES",
     "STAGE_SHELL",
     "apply_dissect_mode",
     "build_preview_cpu",
+    "copy_cpu_for_dissect",
+    "cpu_batch_upload_bytes",
+    "cpu_cache_key",
     "ensure_exploded_batches",
     "explode_max_offsets",
     "explode_offset",
@@ -1067,9 +1257,11 @@ __all__ = [
     "grid_centroids",
     "instance_count",
     "pending_mwm_definitions",
+    "pending_mwm_patches",
     "pick_identity",
     "refine_mwm_cpu",
     "should_alias_lod_sets",
+    "split_batches_for_upload",
     "split_upload_chunks",
     "selection_caption",
     "selection_meta",

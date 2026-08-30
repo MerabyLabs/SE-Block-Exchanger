@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -25,8 +26,12 @@ from se_render.preview_build import (
     build_preview_cpu,
     filter_batches,
     should_alias_lod_sets,
+    split_batches_for_upload,
 )
 from se_render.preview_style import (
+    GL_UPLOAD_BYTE_BUDGET,
+    GL_UPLOAD_INSTANCE_BUDGET,
+    GL_UPLOAD_TIME_BUDGET_S,
     UPLOAD_BATCH_CHUNK,
     active_preview_set,
     format_preview_count_caption,
@@ -319,25 +324,34 @@ class GLPreviewRenderer:
                 self.camera_user_moved = False
         return bool(self._chunk_queue)
 
-    def continue_cpu_upload(self, chunk_size: int = UPLOAD_BATCH_CHUNK) -> bool:
-        """Upload the next slice of pending GPU batches. True if more remain."""
+    def continue_cpu_upload(
+        self,
+        chunk_size: int = UPLOAD_BATCH_CHUNK,
+        time_budget_s: Optional[float] = None,
+    ) -> bool:
+        """Upload slices until the time budget. True if more remain."""
         if not self.available or not self._chunk_queue:
             self._finish_lod_aliases()
             return False
         size = max(1, int(chunk_size))
-        name, batches, offset = self._chunk_queue[0]
-        nxt = offset + size
-        slice_batches = batches[offset:nxt]
-        self._upload_named(name, slice_batches, append=offset > 0)
-        if nxt >= len(batches):
-            self._chunk_queue.pop(0)
-        else:
-            self._chunk_queue[0] = (name, batches, nxt)
-        if not self._chunk_queue:
-            self._finish_lod_aliases()
-            self.upload_generation += 1
-            return False
-        return True
+        budget = GL_UPLOAD_TIME_BUDGET_S if time_budget_s is None else float(time_budget_s)
+        t0 = time.perf_counter()
+        uploaded = False
+        while self._chunk_queue:
+            if uploaded and (time.perf_counter() - t0) >= budget:
+                return True
+            name, batches, offset = self._chunk_queue[0]
+            nxt = offset + size
+            slice_batches = batches[offset:nxt]
+            self._upload_named(name, slice_batches, append=offset > 0)
+            uploaded = True
+            if nxt >= len(batches):
+                self._chunk_queue.pop(0)
+            else:
+                self._chunk_queue[0] = (name, batches, nxt)
+        self._finish_lod_aliases()
+        self.upload_generation += 1
+        return False
 
     def cancel_chunked_upload(self) -> None:
         self._chunk_queue = []
@@ -352,24 +366,48 @@ class GLPreviewRenderer:
     def _begin_set_uploads(self, cpu: PreviewCpuScene, *, defer_secondary: bool) -> bool:
         self._break_set_aliases()
         self._chunk_queue = []
-        assembled = filter_batches(cpu.assembled, self._grid_filter, self._grid_entity_id)
+        assembled = split_batches_for_upload(
+            filter_batches(cpu.assembled, self._grid_filter, self._grid_entity_id),
+            max_instances=GL_UPLOAD_INSTANCE_BUDGET,
+            max_bytes=GL_UPLOAD_BYTE_BUDGET,
+        )
         self._alias_assembled_lod = should_alias_lod_sets(cpu.assembled, cpu.assembled_lod) or not cpu.huge
         self._alias_exploded_lod = should_alias_lod_sets(cpu.exploded, cpu.exploded_lod) or not cpu.huge
         self._chunk_queue.append(("assembled", assembled, 0))
         if not self._alias_assembled_lod:
             self._chunk_queue.append(
-                ("assembled_lod", filter_batches(cpu.assembled_lod, self._grid_filter, self._grid_entity_id), 0)
+                (
+                    "assembled_lod",
+                    split_batches_for_upload(
+                        filter_batches(cpu.assembled_lod, self._grid_filter, self._grid_entity_id),
+                        max_instances=GL_UPLOAD_INSTANCE_BUDGET,
+                        max_bytes=GL_UPLOAD_BYTE_BUDGET,
+                    ),
+                    0,
+                )
             )
         if defer_secondary:
             self._sets["exploded"] = []
             self._sets["exploded_lod"] = []
             self._secondary_pending = True
         else:
-            exploded = filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id)
+            exploded = split_batches_for_upload(
+                filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id),
+                max_instances=GL_UPLOAD_INSTANCE_BUDGET,
+                max_bytes=GL_UPLOAD_BYTE_BUDGET,
+            )
             self._chunk_queue.append(("exploded", exploded, 0))
             if not self._alias_exploded_lod:
                 self._chunk_queue.append(
-                    ("exploded_lod", filter_batches(cpu.exploded_lod, self._grid_filter, self._grid_entity_id), 0)
+                    (
+                        "exploded_lod",
+                        split_batches_for_upload(
+                            filter_batches(cpu.exploded_lod, self._grid_filter, self._grid_entity_id),
+                            max_instances=GL_UPLOAD_INSTANCE_BUDGET,
+                            max_bytes=GL_UPLOAD_BYTE_BUDGET,
+                        ),
+                        0,
+                    )
                 )
             self._secondary_pending = False
         return True
