@@ -25,7 +25,6 @@ from se_render.preview_build import (
     PreviewCpuScene,
     build_preview_cpu,
     cpu_batch_upload_bytes,
-    filter_batches,
     should_alias_lod_sets,
     split_batches_for_upload,
 )
@@ -301,6 +300,7 @@ class GLPreviewRenderer:
         self._radius = cpu.radius
         self._aabb_min = cpu.aabb_min
         self._aabb_max = cpu.aabb_max
+        self._render_origin = cpu.center
         self._bounds_key = None
         self._isolate_hidden_key = None
         self._apply_visible_bounds()
@@ -374,6 +374,8 @@ class GLPreviewRenderer:
                     and bool(self._sets.get("assembled"))
                     and self._incoming_cpu is not None
                 )
+                if name == "assembled" and offset == 0 and self._incoming_cpu is not None:
+                    self._render_origin = self._incoming_cpu.center
                 self._upload_named(name, [batch], append=offset > 0)
                 if first_assembled or (
                     name == "assembled" and offset == 0 and self._incoming_cpu is not None
@@ -411,7 +413,7 @@ class GLPreviewRenderer:
         self._break_set_aliases()
         self._chunk_queue = []
         assembled = split_batches_for_upload(
-            filter_batches(cpu.assembled, self._grid_filter, self._grid_entity_id),
+            cpu.assembled,
             max_instances=GL_UPLOAD_INSTANCE_BUDGET,
             max_bytes=GL_UPLOAD_BYTE_BUDGET,
         )
@@ -423,7 +425,7 @@ class GLPreviewRenderer:
                 (
                     "assembled_lod",
                     split_batches_for_upload(
-                        filter_batches(cpu.assembled_lod, self._grid_filter, self._grid_entity_id),
+                        cpu.assembled_lod,
                         max_instances=GL_UPLOAD_INSTANCE_BUDGET,
                         max_bytes=GL_UPLOAD_BYTE_BUDGET,
                     ),
@@ -436,7 +438,7 @@ class GLPreviewRenderer:
             self._secondary_pending = True
         else:
             exploded = split_batches_for_upload(
-                filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id),
+                cpu.exploded,
                 max_instances=GL_UPLOAD_INSTANCE_BUDGET,
                 max_bytes=GL_UPLOAD_BYTE_BUDGET,
             )
@@ -446,7 +448,7 @@ class GLPreviewRenderer:
                     (
                         "exploded_lod",
                         split_batches_for_upload(
-                            filter_batches(cpu.exploded_lod, self._grid_filter, self._grid_entity_id),
+                            cpu.exploded_lod,
                             max_instances=GL_UPLOAD_INSTANCE_BUDGET,
                             max_bytes=GL_UPLOAD_BYTE_BUDGET,
                         ),
@@ -472,18 +474,19 @@ class GLPreviewRenderer:
         self.block_count = cpu.block_count
         self._break_set_aliases()
         assembled = split_batches_for_upload(
-            filter_batches(cpu.assembled, self._grid_filter, self._grid_entity_id),
+            cpu.assembled,
             max_instances=GL_UPLOAD_INSTANCE_BUDGET,
             max_bytes=GL_UPLOAD_BYTE_BUDGET,
         )
         self._queue_patch_named("assembled", assembled)
         if should_alias_lod_sets(cpu.assembled, cpu.assembled_lod) or not cpu.huge:
-            self._sets["assembled_lod"] = self._sets["assembled"]
+            self._alias_assembled_lod = True
         else:
+            self._alias_assembled_lod = False
             self._queue_patch_named(
                 "assembled_lod",
                 split_batches_for_upload(
-                    filter_batches(cpu.assembled_lod, self._grid_filter, self._grid_entity_id),
+                    cpu.assembled_lod,
                     max_instances=GL_UPLOAD_INSTANCE_BUDGET,
                     max_bytes=GL_UPLOAD_BYTE_BUDGET,
                 ),
@@ -492,13 +495,25 @@ class GLPreviewRenderer:
             self._queue_patch_named(
                 "exploded",
                 split_batches_for_upload(
-                    filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id),
+                    cpu.exploded,
                     max_instances=GL_UPLOAD_INSTANCE_BUDGET,
                     max_bytes=GL_UPLOAD_BYTE_BUDGET,
                 ),
             )
             if should_alias_lod_sets(cpu.exploded, cpu.exploded_lod) or not cpu.huge:
-                self._sets["exploded_lod"] = self._sets["exploded"]
+                self._alias_exploded_lod = True
+            else:
+                self._alias_exploded_lod = False
+                self._queue_patch_named(
+                    "exploded_lod",
+                    split_batches_for_upload(
+                        cpu.exploded_lod,
+                        max_instances=GL_UPLOAD_INSTANCE_BUDGET,
+                        max_bytes=GL_UPLOAD_BYTE_BUDGET,
+                    ),
+                )
+        if not self._chunk_queue:
+            self._finish_lod_aliases()
         self.upload_generation += 1
         self._write_inspect_hidden()
 
@@ -510,7 +525,7 @@ class GLPreviewRenderer:
         if self._sets.get("exploded_lod") is self._sets.get("exploded"):
             self._sets["exploded_lod"] = []
         exploded = split_batches_for_upload(
-            filter_batches(cpu.exploded, self._grid_filter, self._grid_entity_id),
+            cpu.exploded,
             max_instances=GL_UPLOAD_INSTANCE_BUDGET,
             max_bytes=GL_UPLOAD_BYTE_BUDGET,
         )
@@ -520,7 +535,7 @@ class GLPreviewRenderer:
             self._alias_exploded_lod = True
         else:
             lod = split_batches_for_upload(
-                filter_batches(cpu.exploded_lod, self._grid_filter, self._grid_entity_id),
+                cpu.exploded_lod,
                 max_instances=GL_UPLOAD_INSTANCE_BUDGET,
                 max_bytes=GL_UPLOAD_BYTE_BUDGET,
             )
@@ -580,6 +595,19 @@ class GLPreviewRenderer:
         if self._cpu is not None:
             self.camera.frame(self._center, self._radius, keep_orientation=True)
 
+    def adopt_cpu_metadata(self, cpu: PreviewCpuScene) -> None:
+        """Swap CPU scene identity without remeshing or dumping a full upload."""
+        self._cpu = cpu
+        self.block_count = cpu.block_count
+        self._center = cpu.center
+        self._radius = cpu.radius
+        self._aabb_min = cpu.aabb_min
+        self._aabb_max = cpu.aabb_max
+        self._bounds_key = None
+        self._isolate_hidden_key = None
+        self.upload_generation += 1
+        self._apply_visible_bounds(force=True)
+
     def isolate_grid_instances(
         self,
         grid_entity_id: Optional[str],
@@ -600,7 +628,11 @@ class GLPreviewRenderer:
             self._isolate_hidden_key = None
             self._isolate_hidden_cache = set()
             return set()
-        key = (id(self._cpu), self._grid_entity_id, self._grid_filter)
+        key = (
+            int(getattr(self._cpu, "generation", 0)),
+            self._grid_entity_id,
+            self._grid_filter,
+        )
         if key == getattr(self, "_isolate_hidden_key", None):
             return set(self._isolate_hidden_cache)
         hidden = set()
@@ -627,7 +659,11 @@ class GLPreviewRenderer:
     def _visible_bounds_key(self):
         if self._cpu is None:
             return None
-        return (id(self._cpu), self._grid_entity_id, self._grid_filter)
+        return (
+            int(getattr(self._cpu, "generation", 0)),
+            self._grid_entity_id,
+            self._grid_filter,
+        )
 
     def _apply_visible_bounds(self, *, force: bool = False) -> None:
         """AABB / origin from visible picks so clip and GPU share one center."""
@@ -653,7 +689,8 @@ class GLPreviewRenderer:
             self._aabb_min = self._cpu.aabb_min
             self._aabb_max = self._cpu.aabb_max
         self._center, self._radius = aabb_center_radius(self._aabb_min, self._aabb_max)
-        self._render_origin = self._center
+        # Isolate/fit may move the camera AABB. GPU models were already
+        # shifted by the upload-time hull origin — do not retarget it here.
         self._bounds_key = key
 
     def refit_to_visible(self) -> None:

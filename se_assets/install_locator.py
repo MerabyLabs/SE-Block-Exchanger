@@ -11,12 +11,44 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 
 SPACE_ENGINEERS_APP_ID = "244850"
 
 _LIBRARY_PATH_RE = re.compile(r'"path"\s+"([^"]+)"')
+
+# Win32 GetDriveTypeW: only walk local fixed volumes. Empty optical, missing
+# letters, USB, and UNC roots stall is_file() or raise WinError 1450.
+_DRIVE_FIXED = 3
+_DRIVE_RAMDISK = 6
+_DRIVE_READY_CACHE: Dict[str, bool] = {}
+
+
+def _volume_ready(path: Path) -> bool:
+    """False for empty CD-ROM / missing / removable letters so Locate cannot hang."""
+    if os.name != "nt":
+        return True
+    try:
+        drive = path.drive or (str(path)[:2] if len(str(path)) >= 2 and str(path)[1] == ":" else "")
+    except (TypeError, ValueError):
+        return True
+    if not drive or drive[0].isalpha() is False:
+        return True
+    key = drive[0].upper()
+    cached = _DRIVE_READY_CACHE.get(key)
+    if cached is not None:
+        return cached
+    ready = True
+    try:
+        import ctypes
+
+        dtype = int(ctypes.windll.kernel32.GetDriveTypeW(f"{key}:\\"))
+        ready = dtype in (_DRIVE_FIXED, _DRIVE_RAMDISK)
+    except Exception:
+        ready = True
+    _DRIVE_READY_CACHE[key] = ready
+    return ready
 
 
 @dataclass(frozen=True)
@@ -57,7 +89,10 @@ def validate_install(path: Optional[Path]) -> bool:
     exe = root / "Bin64" / "SpaceEngineers.exe"
     cubes = root / "Content" / "Data" / "CubeBlocks"
     models = root / "Content" / "Models"
-    return exe.is_file() and cubes.is_dir() and models.is_dir()
+    try:
+        return exe.is_file() and cubes.is_dir() and models.is_dir()
+    except OSError:
+        return False
 
 
 def _steam_library_roots() -> List[Path]:
@@ -89,17 +124,22 @@ def _steam_library_roots() -> List[Path]:
 
     drives = [f"{letter}:" for letter in "CDEFG"]
     for drive in drives:
-        add(Path(drive) / "Program Files (x86)" / "Steam")
-        add(Path(drive) / "Program Files" / "Steam")
-        add(Path(drive) / "Steam")
-        add(Path(drive) / "SteamLibrary")
+        root = Path(drive)
+        if not _volume_ready(root):
+            continue
+        add(root / "Program Files (x86)" / "Steam")
+        add(root / "Program Files" / "Steam")
+        add(root / "Steam")
+        add(root / "SteamLibrary")
 
     steam_roots = list(roots)
     for steam_root in steam_roots:
-        vdf = steam_root / "steamapps" / "libraryfolders.vdf"
-        if not vdf.is_file():
+        if not _volume_ready(steam_root):
             continue
+        vdf = steam_root / "steamapps" / "libraryfolders.vdf"
         try:
+            if not vdf.is_file():
+                continue
             text = vdf.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
@@ -130,17 +170,23 @@ def candidate_install_dirs(extra: Optional[Iterable[Path]] = None) -> List[Path]
 
     drives = [f"{letter}:" for letter in "CDEFG"]
     for drive in drives:
-        add(Path(drive) / "Program Files (x86)" / "Steam" / "steamapps" / "common" / "SpaceEngineers")
-        add(Path(drive) / "Program Files" / "Steam" / "steamapps" / "common" / "SpaceEngineers")
-        add(Path(drive) / "SteamLibrary" / "steamapps" / "common" / "SpaceEngineers")
-        add(Path(drive) / "Games" / "SpaceEngineers")
+        root = Path(drive)
+        if not _volume_ready(root):
+            continue
+        add(root / "Program Files (x86)" / "Steam" / "steamapps" / "common" / "SpaceEngineers")
+        add(root / "Program Files" / "Steam" / "steamapps" / "common" / "SpaceEngineers")
+        add(root / "SteamLibrary" / "steamapps" / "common" / "SpaceEngineers")
+        add(root / "Games" / "SpaceEngineers")
 
     return found
 
 
 def detect_install(extra: Optional[Iterable[Path]] = None) -> Optional[Path]:
     """Return the first valid auto-detected install, or None."""
-    for candidate in candidate_install_dirs(extra):
+    for item in extra or ():
+        if validate_install(item):
+            return normalize_install_root(Path(item))
+    for candidate in candidate_install_dirs():
         if validate_install(candidate):
             return normalize_install_root(candidate)
     return None

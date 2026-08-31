@@ -45,6 +45,7 @@ from se_render.preview_style import (
     gl_upload_should_yield,
     mwm_progress_caption,
     should_defer_catalog_box_build,
+    should_progressive_preview,
     stale_shell_blocks_edits,
     staged_3d_caption,
 )
@@ -166,6 +167,15 @@ class HonestCaptionTests(unittest.TestCase):
             staged_3d_caption(switching=True, mesh_ready=False, ship_name="Hull"),
             "Loading 3D…  ·  Hull",
         )
+        retained = staged_3d_caption(
+            switching=True,
+            mesh_ready=True,
+            shown=19209,
+            total=427,
+            ship_name="Drone - MSG",
+        )
+        self.assertEqual(retained, "Loading 3D…  ·  Drone - MSG")
+        self.assertNotIn("19,209", retained)
         self.assertEqual(
             staged_3d_caption(building=True, mesh_ready=False),
             "Loading 3D…  ·  Indexed",
@@ -1112,9 +1122,13 @@ class VisibleBoundsSkipTests(unittest.TestCase):
             return []
 
         renderer._visible_picks = counting
+        renderer._render_origin = (10.0, 20.0, 30.0)
+        renderer._center = (0.0, 0.0, 0.0)
+        renderer._radius = 1.0
         renderer._apply_visible_bounds()
         renderer._apply_visible_bounds()
         self.assertEqual(calls["n"], 1)
+        self.assertEqual(renderer._render_origin, (10.0, 20.0, 30.0))
         renderer._grid_filter = "Turret"
         renderer._apply_visible_bounds()
         self.assertEqual(calls["n"], 2)
@@ -1150,6 +1164,22 @@ class DeadOrphanRemovalTests(unittest.TestCase):
         begin = inspect.getsource(GLPreviewRenderer.begin_cpu_upload)
         self.assertNotIn("chunk_size", begin)
         self.assertIn("def continue_cpu_upload", viewport)
+        host = inspect.getsource(ShipPreviewHost)
+        self.assertNotIn("def _start_refine", host)
+        self.assertNotIn("def _on_refine_ready", host)
+        self.assertNotIn("def _on_wheel_global", host)
+        self.assertNotIn("def _finish_secondary_upload", host)
+        filled = inspect.getsource(ShipPreviewHost._on_interior_filled)
+        self.assertIn("adopt_cpu_metadata", filled)
+        self.assertNotIn("continue_cpu_upload(1)", host)
+        ready = inspect.getsource(ShipPreviewHost._on_dissect_ready)
+        self.assertIn("_start_dissect_prepare", ready)
+        self.assertNotIn("apply_dissect_mode", ready)
+        begin = inspect.getsource(GLPreviewRenderer._begin_set_uploads)
+        self.assertNotIn("filter_batches", begin)
+        patch = inspect.getsource(GLPreviewRenderer.patch_assembled)
+        self.assertNotIn("filter_batches", patch)
+        self.assertTrue(should_progressive_preview(80, True))
 
 
 if __name__ == "__main__":

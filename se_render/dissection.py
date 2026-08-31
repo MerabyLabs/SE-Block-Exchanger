@@ -24,7 +24,12 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import numpy as np
 
 from se_assets.cube_catalog import CubeBlockCatalog
-from se_render.occupancy import OccupancyMap, build_occupancy, definition_size, occupied_cells
+from se_render.occupancy import (
+    OccupancyMap,
+    build_occupancy,
+    definition_size,
+    occupied_cells,
+)
 from se_render.orientation import (
     cell_size_meters,
     invert_rigid_mat4,
@@ -238,6 +243,7 @@ def radial_max_offsets(
         stations[gid] = origins
 
     neighborhoods = _neighborhood_centroids(blocks, positions, cells_of, RADIAL_NEIGHBOR_RADIUS)
+    # cells_of reused below in _share_functional_clusters
 
     armor_flags: List[bool] = []
     globals_off: List[Vec3] = []
@@ -289,7 +295,9 @@ def radial_max_offsets(
         globals_off, stretches, peels, stations_off, neighs, weights
     )
     raw = [(float(row[0]), float(row[1]), float(row[2])) for row in combined]
-    return _share_functional_clusters(blocks, catalog, armor_flags, raw)
+    return _share_functional_clusters(
+        blocks, catalog, armor_flags, raw, cells_of=cells_of
+    )
 
 
 def radial_combine_offsets(
@@ -325,11 +333,13 @@ def peel_max_offsets(
     grids = _grid_peel_context(blocks, occ)
     raw: List[Vec3] = []
     armor_flags: List[bool] = []
+    cells_of: List[Tuple[Cell, ...]] = []
     for block in blocks:
         ctx = grids[block.grid_entity_id]
         cells = occupied_cells(block.local_min, definition_size(
             catalog.get(block.type_id, block.subtype) if catalog else None
         ), block.forward, block.up)
+        cells_of.append(cells)
         armor = is_armor_block(block.type_id, block.subtype)
         armor_flags.append(armor)
         direction = _peel_direction_grid(cells, ctx.occupied, ctx.exterior, ctx.com)
@@ -338,7 +348,9 @@ def peel_max_offsets(
         weight = ARMOR_EXPLODE_WEIGHT if armor else FUNCTIONAL_EXPLODE_WEIGHT
         travel = ctx.cell * PEEL_CELL_TRAVEL * weight
         raw.append((world[0] * travel, world[1] * travel, world[2] * travel))
-    return _share_functional_clusters(blocks, catalog, armor_flags, raw)
+    return _share_functional_clusters(
+        blocks, catalog, armor_flags, raw, cells_of=cells_of
+    )
 
 
 def deck_max_offsets(
@@ -448,24 +460,37 @@ def _station_index(coord: int, lo: int, hi: int, count: int) -> int:
     return min(count - 1, max(0, int(t * count)))
 
 
-def _neighborhood_centroids(
-    blocks: Sequence[BlockInstance],
+# Pack signed cell coords so hollow 16k hulls can searchsorted instead of
+# allocating a padded dense volume (Dragon AABB is ~1.5M cells).
+_CELL_PACK_BIAS = 1 << 17
+_CELL_PACK_STRIDE = 1 << 18
+
+
+def _pack_cells(pts: np.ndarray) -> np.ndarray:
+    ux = pts[:, 0].astype(np.int64) + _CELL_PACK_BIAS
+    uy = pts[:, 1].astype(np.int64) + _CELL_PACK_BIAS
+    uz = pts[:, 2].astype(np.int64) + _CELL_PACK_BIAS
+    return ux + uy * _CELL_PACK_STRIDE + uz * (_CELL_PACK_STRIDE * _CELL_PACK_STRIDE)
+
+
+def _chebyshev_offsets(radius: int) -> np.ndarray:
+    r = int(radius)
+    vals = range(-r, r + 1)
+    return np.array([(x, y, z) for x in vals for y in vals for z in vals], dtype=np.int32)
+
+
+def _neighborhood_centroids_python(
+    indices: Sequence[int],
     positions: Sequence[Vec3],
     cells_of: Sequence[Sequence[Cell]],
+    grid_owners: Dict[Cell, List[int]],
     radius: int,
-) -> List[Vec3]:
-    """Per-grid Chebyshev neighborhood COM. Ends of a stick shift off-axis from their inward neighbor."""
-    owners: Dict[str, Dict[Cell, List[int]]] = {}
-    for i, block in enumerate(blocks):
-        bucket = owners.setdefault(block.grid_entity_id, {})
-        for cell in cells_of[i]:
-            bucket.setdefault(cell, []).append(i)
-    out: List[Vec3] = [positions[i] for i in range(len(blocks))]
-    for i, block in enumerate(blocks):
+    out: List[Vec3],
+) -> None:
+    for i in indices:
         cells = cells_of[i]
         if not cells:
             continue
-        grid_owners = owners[block.grid_entity_id]
         seen: Set[int] = set()
         acc = [0.0, 0.0, 0.0]
         for x, y, z in cells:
@@ -482,6 +507,122 @@ def _neighborhood_centroids(
         if seen:
             n = float(len(seen))
             out[i] = (acc[0] / n, acc[1] / n, acc[2] / n)
+
+
+def _neighborhood_centroids_searchsorted(
+    indices: Sequence[int],
+    positions: Sequence[Vec3],
+    pos_arr: np.ndarray,
+    cells_of: Sequence[Sequence[Cell]],
+    grid_owners: Dict[Cell, List[int]],
+    radius: int,
+    out: List[Vec3],
+) -> None:
+    """Same unique-neighbor COM as the Python walk; one searchsorted for 1×1 armor."""
+    items = list(grid_owners.items())
+    if not items:
+        return
+    pts = np.array([cell for cell, _owners in items], dtype=np.int32).reshape(-1, 3)
+    if int(pts.min()) <= -_CELL_PACK_BIAS + 8 or int(pts.max()) >= _CELL_PACK_BIAS - 8:
+        _neighborhood_centroids_python(
+            indices, positions, cells_of, grid_owners, radius, out
+        )
+        return
+    owner_ids = np.fromiter(
+        (owners[0] for _cell, owners in items),
+        dtype=np.int32,
+        count=len(items),
+    )
+    keys = _pack_cells(pts)
+    order = np.argsort(keys, kind="mergesort")
+    keys_s = keys[order]
+    ids_s = owner_ids[order]
+    offsets = _chebyshev_offsets(radius)
+    npos = int(pos_arr.shape[0])
+    if npos <= 0 or keys_s.size == 0:
+        return
+
+    unit: List[int] = []
+    unit_cells: List[Cell] = []
+    rest: List[int] = []
+    for i in indices:
+        cells = cells_of[i]
+        if not cells:
+            continue
+        if len(cells) == 1:
+            unit.append(i)
+            unit_cells.append(cells[0])
+        else:
+            rest.append(i)
+
+    chunk = 4096
+    for start in range(0, len(unit), chunk):
+        sl = slice(start, start + chunk)
+        chunk_unit = unit[sl]
+        origins = np.asarray(unit_cells[sl], dtype=np.int32).reshape(-1, 3)
+        packed = _pack_cells((origins[:, None, :] + offsets[None, :, :]).reshape(-1, 3))
+        loc = np.minimum(np.searchsorted(keys_s, packed), keys_s.size - 1)
+        found = np.where(keys_s[loc] == packed, ids_s[loc], -1).reshape(len(chunk_unit), -1)
+        found.sort(axis=1)
+        first = np.ones(found.shape, dtype=bool)
+        first[:, 1:] = found[:, 1:] != found[:, :-1]
+        first &= found >= 0
+        gathered = pos_arr[np.clip(found, 0, npos - 1)]
+        weights = first.astype(np.float64)
+        sums = (gathered * weights[:, :, None]).sum(axis=1)
+        counts = weights.sum(axis=1)
+        valid = counts > 0.0
+        denom = np.where(valid, counts, 1.0)
+        means = sums / denom[:, None]
+        for k, i in enumerate(chunk_unit):
+            if valid[k]:
+                out[i] = (float(means[k, 0]), float(means[k, 1]), float(means[k, 2]))
+    if rest:
+        _neighborhood_centroids_python(
+            rest, positions, cells_of, grid_owners, radius, out
+        )
+
+
+def _neighborhood_centroids(
+    blocks: Sequence[BlockInstance],
+    positions: Sequence[Vec3],
+    cells_of: Sequence[Sequence[Cell]],
+    radius: int,
+) -> List[Vec3]:
+    """Per-grid Chebyshev neighborhood COM. Ends of a stick shift off-axis from their inward neighbor."""
+    owners: Dict[str, Dict[Cell, List[int]]] = {}
+    by_grid: Dict[str, List[int]] = {}
+    for i, block in enumerate(blocks):
+        by_grid.setdefault(block.grid_entity_id, []).append(i)
+        bucket = owners.setdefault(block.grid_entity_id, {})
+        for cell in cells_of[i]:
+            bucket.setdefault(cell, []).append(i)
+    out: List[Vec3] = [positions[i] for i in range(len(blocks))]
+    pos_arr = np.asarray(positions, dtype=np.float64)
+    for gid, indices in by_grid.items():
+        grid_owners = owners[gid]
+        if not grid_owners:
+            continue
+        multi_cells = {cell for cell, owners in grid_owners.items() if len(owners) != 1}
+        if multi_cells:
+            slow = [
+                i
+                for i in indices
+                if any(cell in multi_cells for cell in cells_of[i])
+            ]
+            fast = [i for i in indices if i not in set(slow)]
+            if slow:
+                _neighborhood_centroids_python(
+                    slow, positions, cells_of, grid_owners, radius, out
+                )
+            if fast:
+                _neighborhood_centroids_searchsorted(
+                    fast, positions, pos_arr, cells_of, grid_owners, radius, out
+                )
+            continue
+        _neighborhood_centroids_searchsorted(
+            indices, positions, pos_arr, cells_of, grid_owners, radius, out
+        )
     return out
 
 
@@ -706,15 +847,20 @@ def _share_functional_clusters(
     catalog: Optional[CubeBlockCatalog],
     armor_flags: Sequence[bool],
     offsets: Sequence[Vec3],
+    cells_of: Optional[Sequence[Sequence[Cell]]] = None,
 ) -> List[Vec3]:
     """Connected functional blocks share one offset so a conveyor run stays a run."""
     result = list(offsets)
     owners: Dict[Cell, List[int]] = {}
-    cells_of: List[Tuple[Cell, ...]] = []
+    resolved: List[Sequence[Cell]] = list(cells_of) if cells_of is not None else []
+    if cells_of is None:
+        for i, block in enumerate(blocks):
+            definition = catalog.get(block.type_id, block.subtype) if catalog else None
+            resolved.append(
+                occupied_cells(block.local_min, definition_size(definition), block.forward, block.up)
+            )
     for i, block in enumerate(blocks):
-        definition = catalog.get(block.type_id, block.subtype) if catalog else None
-        cells = occupied_cells(block.local_min, definition_size(definition), block.forward, block.up)
-        cells_of.append(cells)
+        cells = resolved[i]
         if armor_flags[i]:
             continue
         for cell in cells:
@@ -736,7 +882,7 @@ def _share_functional_clusters(
     for i, block in enumerate(blocks):
         if armor_flags[i]:
             continue
-        for cell in cells_of[i]:
+        for cell in resolved[i]:
             x, y, z = cell
             for dx, dy, dz in _SIX:
                 for other in owners.get((x + dx, y + dy, z + dz), ()):

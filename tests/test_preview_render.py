@@ -47,6 +47,7 @@ from se_render.preview_build import (
     PickRecord,
     apply_dissect_mode,
     build_preview_cpu,
+    ensure_exploded_batches,
     explode_max_offsets,
     explode_offset,
     instance_count,
@@ -63,6 +64,7 @@ from se_render.preview_style import (
     format_preview_count_caption,
     material_style,
     render_target_size,
+    should_progressive_preview,
     use_interactive_lod,
 )
 from se_render.scene_graph import BlockInstance, PreviewScene
@@ -895,6 +897,99 @@ class LargeGridHullVisibilityTests(unittest.TestCase):
         scene = PreviewScene(blocks=blocks, main_grid_name="Hull", total_blocks=len(blocks))
         cpu = build_preview_cpu(scene, catalog, stage=STAGE_SHELL)
         self.assertGreater(cpu.shown_count, 0.5 * len(blocks))
+
+
+class OfficialMeshHotPathTests(unittest.TestCase):
+    def test_flatten_matches_per_triangle_uvs_and_axes(self):
+        positions = np.array(
+            (
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (1.0, 1.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ),
+            dtype=np.float32,
+        )
+        indices = np.array((0, 1, 2, 0, 2, 3, 0, 1, 4), dtype=np.uint32)
+        mesh = flatten_indexed_mesh(positions, indices)
+        self.assertEqual(mesh.vertex_count, 9)
+        self.assertEqual(mesh.triangle_count, 3)
+        a, b, c = positions[0], positions[1], positions[2]
+        n = np.cross(b - a, c - a)
+        n = n / np.linalg.norm(n)
+        self.assertTrue(np.allclose(mesh.normals[0], n, atol=1e-5))
+        uvs = face_uvs_for_triangle(a, b, c, n)
+        self.assertTrue(np.allclose(mesh.uvs[0], uvs[0], atol=1e-5))
+        self.assertTrue(np.allclose(mesh.uvs[1], uvs[1], atol=1e-5))
+        self.assertTrue(np.allclose(mesh.uvs[2], uvs[2], atol=1e-5))
+
+    def test_plan_blocks_matches_single_block_for_rotated_armor(self):
+        from se_render.occupancy import plan_block
+
+        catalog = _catalog_with(_def("CubeBlock", "LargeBlockArmorBlock", "Box"))
+        blocks = []
+        for i in range(12):
+            block = _cube((i, 0, 0), f"id{i}")
+            block.forward = "Right" if i % 2 else "Forward"
+            block.up = "Up"
+            blocks.append(block)
+        occ = {blocks[0].grid_entity_id: {b.local_min for b in blocks}}
+        batched = plan_blocks(blocks, catalog, occupied=occ)
+        singles = [plan_block(block, occ, catalog) for block in blocks]
+        self.assertEqual([p.cull_mask for p in batched], [p.cull_mask for p in singles])
+        self.assertEqual([p.fully_enclosed for p in batched], [p.fully_enclosed for p in singles])
+
+    def test_exploded_batches_honor_keep_indices(self):
+        catalog = _catalog_with(_def("CubeBlock", "LargeBlockArmorBlock", "Box"))
+        blocks = [_cube((i, 0, 0), str(i)) for i in range(6)]
+        scene = PreviewScene(blocks=blocks, main_grid_name="Hull", total_blocks=6)
+        cpu = build_preview_cpu(scene, catalog)
+        cpu.keep_indices = [0, 2, 4]
+        cpu.exploded = []
+        ensure_exploded_batches(cpu, catalog)
+        self.assertEqual(instance_count(cpu.exploded), 3)
+
+    def test_neighborhood_searchsorted_matches_python(self):
+        from se_render.dissection import (
+            _neighborhood_centroids,
+            _neighborhood_centroids_python,
+            block_world_center,
+        )
+
+        blocks = [_cube((x, y, 0), f"{x}{y}") for x in range(8) for y in range(3)]
+        cells_of = [(block.local_min,) for block in blocks]
+        positions = [block_world_center(block) for block in blocks]
+        got = _neighborhood_centroids(blocks, positions, cells_of, 2)
+        expect = list(positions)
+        owners = {}
+        for i, cells in enumerate(cells_of):
+            for cell in cells:
+                owners.setdefault(cell, []).append(i)
+        _neighborhood_centroids_python(
+            range(len(blocks)), positions, cells_of, owners, 2, expect
+        )
+        for left, right in zip(got, expect):
+            self.assertTrue(np.allclose(left, right, atol=1e-6))
+
+    def test_progressive_and_simplified_captions(self):
+        self.assertTrue(should_progressive_preview(100, True))
+        self.assertFalse(should_progressive_preview(100, False))
+        self.assertTrue(should_progressive_preview(3000, False))
+        from se_render.preview_style import staged_3d_caption
+
+        text = staged_3d_caption(
+            stage="full",
+            shown=19209,
+            total=27124,
+            mesh_ready=True,
+            simplified=True,
+        )
+        self.assertIn("simplified", text)
+        self.assertIn("19,209", text)
+        self.assertIn("27,124", text)
+        zero = staged_3d_caption(stage="full", shown=0, total=100, mesh_ready=True)
+        self.assertIn("0 of 100", zero)
 
 
 if __name__ == "__main__":

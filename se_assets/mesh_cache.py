@@ -21,10 +21,12 @@ class MeshLibrary:
     def __init__(self, install: Optional[Path] = None) -> None:
         self.install = Path(install) if install else None
         self._meshes: Dict[str, MeshData] = {}
+        self._mwm_flat: Dict[Tuple[str, str], Optional[MeshData]] = {}
 
     def set_install(self, install: Optional[Path]) -> None:
         self.install = Path(install) if install else None
         self._meshes.clear()
+        self._mwm_flat.clear()
 
     def cache_key(
         self,
@@ -144,10 +146,20 @@ class MeshLibrary:
             return None
         if cancel is not None and cancel():
             return None
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            resolved = str(path)
+        cache_key = (resolved.lower(), quality)
+        if cache_key in self._mwm_flat:
+            return self._mwm_flat[cache_key]
         loaded = load_mwm(path, quality=quality, cancel=cancel)
         if loaded is None or not loaded.positions or not loaded.indices:
+            self._mwm_flat[cache_key] = None
             return None
         positions = np.asarray(loaded.positions, dtype=np.float32)
         indices = np.asarray(loaded.indices, dtype=np.uint32)
         # Flat-shaded unique corners so MWM faces read as planes, not a blob.
-        return flatten_indexed_mesh(positions, indices)
+        mesh = flatten_indexed_mesh(positions, indices)
+        self._mwm_flat[cache_key] = mesh
+        return mesh

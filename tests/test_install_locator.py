@@ -43,6 +43,9 @@ class InstallLocatorTests(unittest.TestCase):
             root = _fake_install(Path(tmp) / "Game")
             found = detect_install(extra=[root])
             self.assertEqual(found, root.resolve())
+            from se_assets.install_locator import _volume_ready
+
+            self.assertTrue(_volume_ready(root))
             status = resolve_install(str(root))
             self.assertTrue(status.valid)
             self.assertEqual(status.source, "saved")

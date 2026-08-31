@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from typing import Callable, List, Optional, Set, Tuple
 import tkinter as tk
@@ -47,11 +48,11 @@ from se_render.preview_build import (
 from se_render.preview_style import (
     INSPECT_CATEGORIES,
     MWM_REFINE_CHUNK,
-    PROGRESSIVE_BLOCK_THRESHOLD,
     dissect_prepare_should_spawn,
     fallback_banner_text,
     render_target_size,
     should_defer_catalog_box_build,
+    should_progressive_preview,
     stale_shell_blocks_edits,
     staged_3d_caption,
 )
@@ -164,6 +165,8 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._refine_cancelled = False
         self._gl_init_job = None
         self._pending_swap = False
+        self._last_upload_blit = 0.0
+        self._hidden_ids_cache: Optional[Set[int]] = None
         self._install_cleared = False
         self._ship_name = ""
         self._isolated_count: Optional[int] = None
@@ -617,6 +620,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._mwm_done = 0
         self._mwm_total = 0
         self._edits = GridEditSession(source_path=self._source_path)
+        self._hidden_ids_cache = None
         self._hide_armor = False
         self._hide_layers = 0
         self._hidden_categories.clear()
@@ -732,6 +736,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._hide_layers = 0
         self._hidden_categories.clear()
         self._edits = GridEditSession(source_path=self._source_path)
+        self._hidden_ids_cache = None
         if self._renderer is not None:
             self._renderer.clear_scene()
             self._renderer.select(None)
@@ -910,9 +915,23 @@ class ShipPreviewHost(ctk.CTkFrame):
             self._mesh_ready = False
         self._cpu_stage = ""
         n = len(self._scene.blocks)
-        progressive = n > PROGRESSIVE_BLOCK_THRESHOLD
         path, mtime_ns = self._source_stamp()
         cached = self._cpu_cache.get_best(path, mtime_ns, self._catalog_gen)
+        has_uncached = False
+        if (
+            cached is None
+            and not should_progressive_preview(n, False)
+            and self._catalog is not None
+            and getattr(self, "_meshes", None) is not None
+        ):
+            pending = pending_mwm_patches(
+                self._scene.blocks,
+                self._catalog,
+                self._meshes,
+                patched_keys=self._mwm_patched_keys,
+            )
+            has_uncached = any(not item.mesh_cached for item in pending)
+        progressive = should_progressive_preview(n, has_uncached)
         if cached is not None:
             self._adopt_cached_cpu_meta(cached)
             refine = progressive and cached.stage != STAGE_FULL
@@ -928,9 +947,9 @@ class ShipPreviewHost(ctk.CTkFrame):
         catalog = self._catalog
         library = self._meshes
         install = None
-        if catalog is not None and catalog.install is not None:
+        if catalog is not None and getattr(catalog, "install", None) is not None:
             install = catalog.install
-        elif library.install is not None:
+        elif getattr(library, "install", None) is not None:
             install = library.install
         if install is not None and library.install != install:
             library.set_install(install)
@@ -1032,32 +1051,6 @@ class ShipPreviewHost(ctk.CTkFrame):
                 )
             return
         self._complete_swap(generation, cpu, refine)
-
-    def _start_refine(self, generation: int, stage: str) -> None:
-        if self._refine_cancelled:
-            return
-        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
-            return
-        if self._scene is None:
-            return
-        scene = self._scene
-        catalog = self._catalog
-        library = self._meshes
-        prior = self._cpu_scene
-
-        def task() -> None:
-            try:
-                cpu = build_preview_cpu(
-                    scene, catalog, library, generation=generation, stage=stage,
-                    cancel=self._job, prior=prior,
-                )
-            except Exception as exc:
-                message = str(exc)
-                self.after(0, lambda: self._on_refine_failed(generation, message))
-                return
-            self.after(0, lambda: self._on_refine_ready(generation, cpu))
-
-        threading.Thread(target=task, daemon=True).start()
 
     def _start_mwm_refine(self, generation: int, remaining=None) -> None:
         if self._refine_cancelled:
@@ -1215,8 +1208,10 @@ class ShipPreviewHost(ctk.CTkFrame):
         if cpu is None:
             return
         self._cpu_scene = cpu
-        if self._renderer is not None and cpu.exploded and (self._explode > 1e-4 or self._hide_layers > 0):
-            self._queue_secondary_upload(generation)
+        if self._renderer is not None:
+            self._renderer.adopt_cpu_metadata(cpu)
+            if cpu.exploded and (self._explode > 1e-4 or self._hide_layers > 0):
+                self._queue_secondary_upload(generation)
         cpu.stage = STAGE_FULL
         self._cpu_stage = STAGE_FULL
         self._mwm_total = 0
@@ -1264,21 +1259,36 @@ class ShipPreviewHost(ctk.CTkFrame):
                 message = str(exc)
                 self.after(0, lambda: self._on_refine_failed(generation, message))
                 return
-            self.after(0, lambda: self._on_dissect_ready(generation, dissect_gen, wanted, working))
+            self.after(0, lambda: self._on_dissect_ready(generation, dissect_gen, wanted, working, live))
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _on_dissect_ready(self, generation: int, dissect_gen: int, mode: str, cpu: PreviewCpuScene) -> None:
+    def _on_dissect_ready(
+        self,
+        generation: int,
+        dissect_gen: int,
+        mode: str,
+        cpu: PreviewCpuScene,
+        source: Optional[PreviewCpuScene] = None,
+    ) -> None:
         if not self._dissect_job.is_current(dissect_gen):
             return
         self._dissect_preparing = False
         self._dissect_wanted = None
         if not build_ready_applies(self._job, generation, install_valid=self._install_valid) or self._renderer is None:
             return
+        current = self._cpu_scene
+        if current is not None and source is not None and current is not source:
+            if cpu.exploded and not current.exploded:
+                current.exploded = cpu.exploded
+                current.exploded_lod = cpu.exploded_lod
+            self._cpu_scene = current
+            self._start_dissect_prepare(generation, mode)
+            return
         self._cpu_scene = cpu
         self._remember_cpu(cpu)
         try:
-            self._renderer._cpu = cpu
+            self._renderer.adopt_cpu_metadata(cpu)
             if cpu.exploded:
                 self._queue_secondary_upload(generation)
             offsets = None
@@ -1307,24 +1317,6 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._toast(f"3D refine failed: {message}", "warning")
         self._refresh_status()
         self._apply_cancel_refine_chrome()
-
-    def _on_refine_ready(self, generation: int, cpu: PreviewCpuScene) -> None:
-        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
-            return
-        if self._renderer is None or not self._mesh_ready:
-            return
-        if not self._upload_cpu(cpu, refit=False):
-            self._building = False
-            return
-        self._cpu_scene = cpu
-        self._cpu_stage = cpu.stage
-        self._simplified = bool(cpu.simplified)
-        self._shown_count = int(cpu.shown_count or 0)
-        self._building = False
-        self._refresh_status()
-        self._schedule_redraw(interactive=False)
-        if cpu.huge and cpu.exploded:
-            self.after(16, lambda: self._finish_secondary_upload(generation))
 
     def _upload_cpu(
         self,
@@ -1386,16 +1378,20 @@ class ShipPreviewHost(ctk.CTkFrame):
         if self._renderer is None:
             return
         try:
-            more = self._renderer.continue_cpu_upload(1)
+            more = self._renderer.continue_cpu_upload(32)
         except Exception:
             return
         if self._pending_swap and self._shell_swapped_in():
             cpu = getattr(self, "_pending_cpu", None)
             if cpu is not None:
                 self._complete_swap(generation, cpu, bool(getattr(self, "_pending_refine", False)))
-        self._sync_user_hidden()
+        if self._edits is not None and self._edits.hidden:
+            self._sync_user_hidden()
         self._refresh_status()
-        self._schedule_redraw(interactive=False)
+        now = time.perf_counter()
+        if not more or now - self._last_upload_blit >= 0.08:
+            self._last_upload_blit = now
+            self._schedule_redraw(interactive=False)
         if more:
             self._upload_chunk_job = self.after(1, lambda: self._continue_gl_upload(generation))
 
@@ -1408,15 +1404,6 @@ class ShipPreviewHost(ctk.CTkFrame):
             return
         if more and self._upload_chunk_job is None:
             self._upload_chunk_job = self.after(1, lambda: self._continue_gl_upload(generation))
-
-    def _finish_secondary_upload(self, generation: int) -> None:
-        if not build_ready_applies(self._job, generation, install_valid=self._install_valid):
-            return
-        if self._renderer is None or not self._mesh_ready:
-            return
-        self._queue_secondary_upload(generation)
-        if self._explode > 1e-4:
-            self._schedule_redraw(interactive=False)
 
     def _cancel_gl_init_job(self) -> None:
         if self._gl_init_job is None:
@@ -1493,7 +1480,7 @@ class ShipPreviewHost(ctk.CTkFrame):
             building=self._building,
             mesh_ready=self._mesh_ready,
             stage=self._cpu_stage,
-            shown=shown or total,
+            shown=shown,
             total=total,
             uploading=uploading,
             uploaded=uploaded,
@@ -1504,6 +1491,7 @@ class ShipPreviewHost(ctk.CTkFrame):
             mwm_cached=self._mwm_mesh_cached,
             mwm_done=self._mwm_done,
             mwm_total=self._mwm_total,
+            simplified=self._simplified,
         )
         if isolated_name and self._mesh_ready and not self._building:
             text = f"{isolated_name}  ·  {self._isolated_count or 0:,} blocks"
@@ -1855,14 +1843,6 @@ class ShipPreviewHost(ctk.CTkFrame):
         for child in children:
             self._bind_widget_tree_wheel(child)
 
-    def _on_wheel_global(self, event) -> Optional[str]:
-        if self._mode != "3d":
-            return None
-        if not self._pointer_over_preview():
-            return None
-        self._apply_wheel_zoom(event)
-        return "break"
-
     def _on_wheel(self, event) -> Optional[str]:
         self._apply_wheel_zoom(event)
         return "break"
@@ -1946,9 +1926,13 @@ class ShipPreviewHost(ctk.CTkFrame):
 
     def set_blueprint_source(self, path) -> None:
         try:
-            self._source_path = resolve_blueprint_dir(Path(path)) if path else None
+            resolved = resolve_blueprint_dir(Path(path)) if path else None
         except Exception:
-            self._source_path = Path(path) if path else None
+            resolved = Path(path) if path else None
+        if resolved != self._source_path:
+            self._edits = GridEditSession(source_path=resolved)
+            self._hidden_ids_cache = None
+        self._source_path = resolved
         self._edits.source_path = self._source_path
 
     def _toast(self, message: str, level: str = "info") -> None:
@@ -1966,11 +1950,15 @@ class ShipPreviewHost(ctk.CTkFrame):
         if self._renderer is None:
             return
         hidden_ids = set()
-        if self._scene is not None:
-            for i, block in enumerate(self._scene.blocks):
-                ident = pick_identity(block)
-                if self._edits.is_inspect_hidden(ident):
-                    hidden_ids.add(i)
+        if self._edits is not None and self._edits.hidden and self._scene is not None:
+            if self._hidden_ids_cache is not None:
+                hidden_ids = set(self._hidden_ids_cache)
+            else:
+                for i, block in enumerate(self._scene.blocks):
+                    ident = pick_identity(block)
+                    if self._edits.is_inspect_hidden(ident):
+                        hidden_ids.add(i)
+                self._hidden_ids_cache = set(hidden_ids)
         self._renderer.hidden_subtypes = set(getattr(self._renderer, "hidden_subtypes", set()))
         self._renderer.isolate_grid_instances(
             self._grid_entity_id,
@@ -2033,6 +2021,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         self._isolated = False
         if self._edits is not None:
             self._edits.hidden.clear()
+        self._hidden_ids_cache = None
         if self._renderer is not None:
             self._renderer.hidden_subtypes = set()
             self._renderer.hide_armor = False
@@ -2062,6 +2051,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         if rec is None or not self._edits_live():
             return
         self._edits.hide(pick_identity(rec))
+        self._hidden_ids_cache = None
         self._sync_user_hidden()
         self._schedule_redraw(interactive=False)
 
@@ -2070,6 +2060,7 @@ class ShipPreviewHost(ctk.CTkFrame):
         if rec is None or not self._edits_live():
             return
         self._edits.delete(pick_identity(rec))
+        self._hidden_ids_cache = None
         self._sync_user_hidden()
         self._clear_selection()
         if self._renderer is not None:

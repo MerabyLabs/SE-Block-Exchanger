@@ -164,6 +164,48 @@ class MwmLoaderTests(unittest.TestCase):
             self.assertEqual(len(mesh.indices), 6)
             self.assertEqual(mesh.indices, [0, 1, 2, 0, 2, 3])
 
+    def test_mesh_library_caches_flatten_by_resolved_path(self):
+        from se_assets.cube_catalog import BlockDefinition
+        from se_assets.mesh_cache import MeshLibrary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model = root / "Content" / "Models" / "box.mwm"
+            model.parent.mkdir(parents=True)
+            model.write_bytes(_build_minimal_mwm())
+            library = MeshLibrary(root)
+            definition = BlockDefinition(
+                type_id="MyObjectBuilder_Thrust",
+                subtype_id="A",
+                cube_size="Large",
+                block_topology="TriangleMesh",
+                cube_topology="",
+                size_x=1,
+                size_y=1,
+                size_z=1,
+                model_path="Models/box.mwm",
+                model_offset=(0.0, 0.0, 0.0),
+            )
+            twin = BlockDefinition(
+                type_id="MyObjectBuilder_Thrust",
+                subtype_id="B",
+                cube_size="Large",
+                block_topology="TriangleMesh",
+                cube_topology="",
+                size_x=1,
+                size_y=1,
+                size_z=1,
+                model_path="Models/box.mwm",
+                model_offset=(0.0, 0.0, 0.0),
+            )
+            first = library.mesh_for(definition)
+            self.assertEqual(len(library._mwm_flat), 1)
+            second = library.mesh_for(twin)
+            self.assertIs(first, library._mwm_flat[next(iter(library._mwm_flat))])
+            self.assertEqual(first.vertex_count, second.vertex_count)
+            library.set_install(root)
+            self.assertEqual(len(library._mwm_flat), 0)
+
 
 class VoxelExtractTests(unittest.TestCase):
     def test_includes_keen_hsv(self):

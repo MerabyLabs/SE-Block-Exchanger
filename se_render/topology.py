@@ -92,6 +92,58 @@ def face_uvs_for_triangle(
     )
 
 
+def _face_uvs_batch(
+    a: np.ndarray,
+    b: np.ndarray,
+    c: np.ndarray,
+    normals: np.ndarray,
+) -> np.ndarray:
+    """Vectorized face_uvs_for_triangle. Returns (T, 3, 2)."""
+    n = normals
+    up = np.zeros_like(n)
+    up[:, 1] = 1.0
+    up[np.abs(n[:, 1]) > 0.9] = (1.0, 0.0, 0.0)
+    tangent = np.cross(up, n)
+    tlen = np.linalg.norm(tangent, axis=1, keepdims=True)
+    fallback = tlen[:, 0] < 1e-8
+    tangent = tangent / np.maximum(tlen, 1e-20)
+    tangent[fallback] = (1.0, 0.0, 0.0)
+    bitangent = np.cross(n, tangent)
+    pts = np.stack((a, b, c), axis=1)
+    u = np.einsum("tij,tj->ti", pts, tangent)
+    v = np.einsum("tij,tj->ti", pts, bitangent)
+    umin = u.min(axis=1, keepdims=True)
+    umax = u.max(axis=1, keepdims=True)
+    vmin = v.min(axis=1, keepdims=True)
+    vmax = v.max(axis=1, keepdims=True)
+    du = umax - umin
+    dv = vmax - vmin
+    du = np.where(du > 1e-8, du, 1.0)
+    dv = np.where(dv > 1e-8, dv, 1.0)
+    return np.stack(((u - umin) / du, (v - vmin) / dv), axis=2)
+
+
+def _triangle_face_bits_batch(
+    a: np.ndarray,
+    b: np.ndarray,
+    c: np.ndarray,
+    epsilon: float = 0.02,
+) -> np.ndarray:
+    """Vectorized triangle_face_bit. First matching plane wins."""
+    pts = np.stack((a, b, c), axis=1)
+    bits = np.zeros(a.shape[0], dtype=np.uint8)
+    unset = np.ones(a.shape[0], dtype=bool)
+    for bit, axis, value in _FACE_PLANES:
+        on_plane = np.all(np.abs(pts[:, :, axis] - value) <= epsilon, axis=1)
+        take = unset & on_plane
+        if np.any(take):
+            bits[take] = bit
+            unset &= ~take
+        if not np.any(unset):
+            break
+    return bits
+
+
 def flatten_indexed_mesh(positions: np.ndarray, indices: np.ndarray) -> MeshData:
     """Expand indexed triangles to unique corners with flat normals and face UVs."""
     pos = np.asarray(positions, dtype=np.float32)
@@ -107,33 +159,22 @@ def flatten_indexed_mesh(positions: np.ndarray, indices: np.ndarray) -> MeshData
             face_axes=np.zeros((0,), dtype=np.uint8),
         )
     idx = raw[:usable].reshape((-1, 3))
-    out_pos: List[Tuple[float, float, float]] = []
-    out_nrm: List[Tuple[float, float, float]] = []
-    out_uv: List[Tuple[float, float]] = []
-    out_idx: List[int] = []
-    out_axes: List[int] = []
-    for a_i, b_i, c_i in idx:
-        a, b, c = pos[int(a_i)], pos[int(b_i)], pos[int(c_i)]
-        n = np.cross(b - a, c - a)
-        length = float(np.linalg.norm(n))
-        if length < 1e-8:
-            n = np.array((0.0, 1.0, 0.0), dtype=np.float32)
-        else:
-            n = n / length
-        uvs = face_uvs_for_triangle(a, b, c, n)
-        base = len(out_pos)
-        for vertex, uv in ((a, uvs[0]), (b, uvs[1]), (c, uvs[2])):
-            out_pos.append((float(vertex[0]), float(vertex[1]), float(vertex[2])))
-            out_nrm.append((float(n[0]), float(n[1]), float(n[2])))
-            out_uv.append(uv)
-        out_idx.extend((base, base + 1, base + 2))
-        out_axes.append(triangle_face_bit(a, b, c))
+    a = pos[idx[:, 0]]
+    b = pos[idx[:, 1]]
+    c = pos[idx[:, 2]]
+    n = np.cross(b - a, c - a)
+    length = np.linalg.norm(n, axis=1, keepdims=True)
+    degenerate = length[:, 0] < 1e-8
+    n = n / np.maximum(length, 1e-20)
+    n[degenerate] = (0.0, 1.0, 0.0)
+    uvs = _face_uvs_batch(a, b, c, n)
+    n_tri = int(idx.shape[0])
     return MeshData(
-        positions=np.asarray(out_pos, dtype=np.float32),
-        normals=np.asarray(out_nrm, dtype=np.float32),
-        uvs=np.asarray(out_uv, dtype=np.float32),
-        indices=np.asarray(out_idx, dtype=np.uint32),
-        face_axes=np.asarray(out_axes, dtype=np.uint8),
+        positions=np.ascontiguousarray(np.stack((a, b, c), axis=1).reshape(-1, 3), dtype=np.float32),
+        normals=np.ascontiguousarray(np.repeat(n.astype(np.float32, copy=False), 3, axis=0)),
+        uvs=np.ascontiguousarray(uvs.reshape(-1, 2), dtype=np.float32),
+        indices=np.arange(n_tri * 3, dtype=np.uint32),
+        face_axes=np.ascontiguousarray(_triangle_face_bits_batch(a, b, c)),
     )
 
 

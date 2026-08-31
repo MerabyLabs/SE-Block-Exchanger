@@ -43,6 +43,11 @@ GL_UPLOAD_BYTE_BUDGET = 2_000_000
 GL_UPLOAD_INSTANCE_BUDGET = 512
 
 
+def should_progressive_preview(block_count: int, has_uncached_mwm: bool) -> bool:
+    """Shell first when the ship is large or official models still need a disk decode."""
+    return int(block_count) > PROGRESSIVE_BLOCK_THRESHOLD or bool(has_uncached_mwm)
+
+
 def format_preview_count_caption(
     shown: int,
     total: int,
@@ -169,6 +174,7 @@ def staged_3d_caption(
     mwm_cached: Optional[bool] = None,
     mwm_done: int = 0,
     mwm_total: int = 0,
+    simplified: bool = False,
 ) -> str:
     """Honest Subgrids toolbar: Indexed / Shell k of N / models / interior."""
     stage_key = (stage or "").strip().lower()
@@ -177,7 +183,7 @@ def staged_3d_caption(
     uploaded_n = max(0, int(uploaded))
     if catalog_wait:
         return "Loading 3D…  ·  indexing game files"
-    if switching and not mesh_ready:
+    if switching:
         extra = f"  ·  {ship_name}" if ship_name else ""
         return f"Loading 3D…{extra}"
     if building and not mesh_ready:
@@ -218,16 +224,18 @@ def staged_3d_caption(
         else:
             parts.append(
                 format_preview_count_caption(
-                    shown_n or total_n,
-                    total_n or shown_n,
+                    shown_n,
+                    total_n,
+                    simplified=simplified,
                     uploading=uploading,
                 )
             )
     else:
         parts.append(
             format_preview_count_caption(
-                shown_n or total_n,
-                total_n or shown_n,
+                shown_n,
+                total_n,
+                simplified=simplified,
                 uploading=uploading,
             )
         )

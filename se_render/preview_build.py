@@ -958,7 +958,7 @@ def ensure_exploded_batches(
         blocks, catalog, library, explode=True, lod=False,
         offsets_peel=peel, offsets_decks=decks, offsets_radial=radial,
         shell_layers=cpu.shell_layers, plans=cpu.plans, skip_mwm=False,
-        cheap_picks=True, keep_indices=None, columns=columns, cancel=cancel,
+        cheap_picks=True, keep_indices=cpu.keep_indices, columns=columns, cancel=cancel,
     )
     if cancel is not None and cancel():
         return cpu

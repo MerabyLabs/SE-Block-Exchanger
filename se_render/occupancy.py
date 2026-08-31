@@ -256,10 +256,11 @@ def _shell_layers_dense(occupied: Set[Cell], cancel=None) -> Dict[Cell, int]:
         layer += 1
         if layer > 1024:
             break
-    out: Dict[Cell, int] = {}
-    for i in range(pts.shape[0]):
-        out[(int(pts[i, 0]), int(pts[i, 1]), int(pts[i, 2]))] = int(layer_of[loc[i, 0], loc[i, 1], loc[i, 2]])
-    return out
+    layers = layer_of[loc[:, 0], loc[:, 1], loc[:, 2]]
+    return {
+        (int(pts[i, 0]), int(pts[i, 1]), int(pts[i, 2])): int(layers[i])
+        for i in range(pts.shape[0])
+    }
 
 
 def _flood_exterior(occupied: Set[Cell], volume_cap: int = FLOOD_VOLUME_CAP) -> Optional[Set[Cell]]:
@@ -613,23 +614,27 @@ def plan_blocks(
                     fully_enclosed=enc,
                     topology_cullable=True,
                 )
+        by_orient: Dict[Tuple[str, str], List[int]] = {}
         for i in oriented:
             block = block_list[i]
+            by_orient.setdefault((block.forward, block.up), []).append(i)
+        for (fwd, upv), group in by_orient.items():
             dirs = np.array(
-                [_local_to_grid_dir(block.forward, block.up, _FACE_LOCAL_DIR[bit]) for bit in _FACE_BITS],
+                [_local_to_grid_dir(fwd, upv, _FACE_LOCAL_DIR[bit]) for bit in _FACE_BITS],
                 dtype=np.int32,
             )
-            mins = np.array([block.local_min], dtype=np.int32)
+            mins = np.array([block_list[i].local_min for i in group], dtype=np.int32)
             mask, enclosed = index.query_unit(mins, dirs)
-            definition = definition_of(block)
-            solid = is_solid_box(definition)
-            enc = bool(enclosed[0]) and solid
-            plans[i] = BlockOccupancy(
-                cells=(block.local_min,),
-                cull_mask=FACE_ALL if enc else int(mask[0]),
-                fully_enclosed=enc,
-                topology_cullable=True,
-            )
+            for k, i in enumerate(group):
+                definition = definition_of(block_list[i])
+                solid = is_solid_box(definition)
+                enc = bool(enclosed[k]) and solid
+                plans[i] = BlockOccupancy(
+                    cells=(block_list[i].local_min,),
+                    cull_mask=FACE_ALL if enc else int(mask[k]),
+                    fully_enclosed=enc,
+                    topology_cullable=True,
+                )
 
     for n_rest, i in enumerate(rest):
         if cancel is not None and (n_rest & 255) == 0 and cancel():

@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+
 
 @dataclass
 class MwmMaterial:
@@ -228,16 +230,14 @@ def _load_vertices(buf: memoryview, loc: int, cancel=None) -> List[Tuple[float, 
     count, offset = _read_u32(buf, offset)
     if count > 2_000_000:
         raise ValueError("implausible vertex count")
-    out: List[Tuple[float, float, float]] = []
-    for i in range(count):
-        if cancel is not None and (i & 4095) == 0 and cancel():
-            return []
-        x, offset = _read_hfloat(buf, offset)
-        y, offset = _read_hfloat(buf, offset)
-        z, offset = _read_hfloat(buf, offset)
-        _w, offset = _read_hfloat(buf, offset)
-        out.append((x, y, z))
-    return out
+    if cancel is not None and cancel():
+        return []
+    nbytes = count * 8
+    if offset + nbytes > len(buf):
+        raise ValueError("truncated vertices")
+    raw = np.frombuffer(bytes(buf[offset:offset + nbytes]), dtype="<f2")
+    xyz = raw.reshape(count, 4)[:, :3].astype(np.float32, copy=False)
+    return [(float(row[0]), float(row[1]), float(row[2])) for row in xyz]
 
 
 def _load_uvs(buf: memoryview, loc: Optional[int]) -> List[Tuple[float, float]]:
@@ -245,12 +245,12 @@ def _load_uvs(buf: memoryview, loc: Optional[int]) -> List[Tuple[float, float]]:
         return []
     _section, offset = _read_string(buf, loc)
     count, offset = _read_u32(buf, offset)
-    out: List[Tuple[float, float]] = []
-    for _ in range(count):
-        u, offset = _read_hfloat(buf, offset)
-        v, offset = _read_hfloat(buf, offset)
-        out.append((u, v))
-    return out
+    nbytes = count * 4
+    if offset + nbytes > len(buf):
+        return []
+    raw = np.frombuffer(bytes(buf[offset:offset + nbytes]), dtype="<f2")
+    uv = raw.reshape(count, 2).astype(np.float32, copy=False)
+    return [(float(row[0]), float(row[1])) for row in uv]
 
 
 def _load_parts(
@@ -271,9 +271,14 @@ def _load_parts(
         count, offset = _read_u32(buf, offset)
         if count > 2_000_000:
             break
-        for _i in range(count):
-            value, offset = _read_u32(buf, offset)
-            indices.append(value)
+        if count:
+            end = offset + count * 4
+            if end > len(buf):
+                break
+            indices.extend(
+                int(v) for v in np.frombuffer(bytes(buf[offset:end]), dtype="<u4")
+            )
+            offset = end
         has_mat = bool(buf[offset])
         offset += 1
         if has_mat:
