@@ -31,8 +31,8 @@ contracts are a breaking surface change from 3.2.1.
   write `.index`, use `VR3_*` identifiers, or silently fall back to armor.
 - Both unified suites pass 328 tests on Python 3.11 and 3.12. Ruff, core/renderer
   mypy, runtime compilation/catalog validation, clean portable imports, and the
-  frozen 4.0.0 executable self-test pass. The portable archive checksum is
-  recorded in `artifacts/release-v4.0.0`.
+  frozen 4.0.0 executable self-test pass. The final portable archive checksum
+  is recorded in `artifacts/release-v4.0.0-final`.
 - An isolated copy padded to the documented 28 MiB large-ship gate parsed in
   1.879 seconds and found four grids; the source fixture was not changed.
 
@@ -57,7 +57,9 @@ contracts are a breaking surface change from 3.2.1.
 ## Evidence index
 
 See [release_acceptance.json](release_acceptance.json) for the fail-closed gate.
-The four fixture source/copy hashes are in
+The final package checksum and manifest are in
+[SE_Tactical_Command_v4.0.0_Portable.zip.sha256](artifacts/release-v4.0.0-final/SE_Tactical_Command_v4.0.0_Portable.zip.sha256)
+and the four fixture source/copy hashes are in
 [hash-verification-final.json](artifacts/live-fixture-appdata/hash-verification-final.json).
 Native serialization and diagnostics are in `artifacts/native-se2-v7`; the
 installed game log is retained outside the repository under the Space Engineers
