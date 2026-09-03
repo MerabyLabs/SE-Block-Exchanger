@@ -7,10 +7,10 @@ contracts are a breaking surface change from 3.2.1.
 ## What is complete
 
 - The v4 branch was reconciled with cumulative PR #29 on top of the latest v4
-  master line. PRs #26–#28 are represented as one integrated result; #25 is an
-  experimental duplicate; #12 is superseded by the tested CustomTkinter 6.x
-  requirement. Remote PR retarget/close/merge actions remain pending until this
-  working tree is committed and the final CI result is available.
+  master line. PR #29 is merged into `feature/v4-master-overhaul` as
+  `d3d7ac8a694120ca49b72ab510e142a73964d6cc`; PRs #26–#28, #25, and #12 are
+  closed as superseded/held. The integrated head passed CI run `33698982827`
+  (Ubuntu and Windows, Python 3.11 and 3.12).
 - SE1 baseline is installed 1.210.014 / Steam build 24675677. The catalog has
   1,503 definitions and 116 validated light/heavy armor pairs. Identity-aware
   mappings include `TypeId` plus subtype and preserve empty/default subtypes;
@@ -49,10 +49,10 @@ contracts are a breaking surface change from 3.2.1.
    3D interaction. The source app reached the missing-root state, but the
    desktop automation service exhausted its usage limit before the folder could
    be confirmed and controls exercised.
-3. Rebuild from a clean committed checkout, run the final CI matrix, then push
-   the integrated head to PR #29, retarget it to the v4 branch, merge it, and
-   close the superseded PRs. Do not create a `v4.0.0` tag until the acceptance
-   manifest changes to `APPROVED` with native SE2 evidence.
+3. Rebuild the final executable and portable archive from the committed
+   integration head after any remaining documentation-only changes. Do not
+   create a `v4.0.0` tag until the acceptance manifest changes to `APPROVED`
+   with native SE2 evidence.
 
 ## Evidence index
 
