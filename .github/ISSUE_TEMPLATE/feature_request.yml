@@ -1,5 +1,5 @@
 name: Feature Request
-description: Suggest a new capability.
+description: Describe a capability you want Meraby Labs to consider. This is not an invitation to submit patches.
 title: "[Feature]: "
 labels:
   - enhancement

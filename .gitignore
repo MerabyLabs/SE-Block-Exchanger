@@ -22,6 +22,10 @@ wheels/
 
 # Virtual Environment
 .venv/
+.venv-release/
+.venv-311/
+test_env/
+artifacts/
 venv/
 ENV/
 env/

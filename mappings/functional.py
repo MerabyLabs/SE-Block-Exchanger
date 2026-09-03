@@ -7,12 +7,12 @@ from mappings.registry import MappingCategory
 
 FUNCTIONAL_PAIRS = {
     "BasicAssembler": "LargeAssembler",
-    "BasicRefinery": "LargeRefinery",
+    "Blast Furnace": "LargeRefinery",
     "LargeBlockSmallGenerator": "LargeBlockLargeGenerator",
     "SmallBlockSmallGenerator": "SmallBlockLargeGenerator",
     "LargeBlockSmallContainer": "LargeBlockLargeContainer",
     "SmallBlockSmallContainer": "SmallBlockLargeContainer",
-    "Collector": "FlatCollector",
+    "CollectorSmall": "CollectorFlat",
 }
 
 

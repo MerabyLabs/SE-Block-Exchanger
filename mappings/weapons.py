@@ -6,11 +6,11 @@ from mappings.registry import MappingCategory
 
 
 WEAPON_PAIRS = {
-    "LargeGatlingTurret": "LargeAutocannonTurret",
+    "LargeGatlingTurret/": "LargeCalibreTurret",
     "LargeInteriorTurret": "LargeCalibreTurret",
-    "LargeMissileTurret": "LargeArtilleryTurret",
-    "SmallGatlingGun": "SmallAutocannon",
-    "SmallMissileLauncher": "SmallArtillery",
+    "LargeMissileTurret/": "LargeCalibreTurret",
+    "SmallGatlingGun/": "SmallBlockAutocannon",
+    "SmallMissileLauncher/": "SmallBlockMediumCalibreGun",
 }
 
 

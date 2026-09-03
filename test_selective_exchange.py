@@ -60,50 +60,32 @@ class TestSelectiveBlockExchanging(unittest.TestCase):
         self.assertIn("LargeBlockArmorBlock", subtypes)
 
     def test_03_custom_thruster_substitution(self):
-        """Test swapping standard thrusters for custom hydrogen thrusters selectively."""
+        """Footprint-changing ion/hydrogen swaps are rejected before copying."""
         converter = BlueprintConverter()
         source_bp = self.grids["Battleship_Vindicator"]
-
-        custom_map = {
-            "LargeBlockLargeThrust": "LargeBlockLargeHydrogenThrust",
-            "LargeBlockSmallThrust": "LargeBlockSmallHydrogenThrust",
-        }
-        selected_types = {"LargeBlockLargeThrust", "LargeBlockSmallThrust"}
-
-        dest_path, scanned, converted = converter.create_selective_converted_blueprint(
-            source_bp,
-            custom_mapping=custom_map,
-            selected_subtypes=selected_types,
-        )
-
-        self.assertEqual(converted, 2)
-        tree = safe_xml.parse(dest_path / "bp.sbc")
-        subtypes = [b.find("SubtypeName").text for b in tree.getroot().findall(".//CubeGrid/CubeBlocks/*") if b.find("SubtypeName") is not None]
-        self.assertIn("LargeBlockLargeHydrogenThrust", subtypes)
-        self.assertIn("LargeBlockSmallHydrogenThrust", subtypes)
-        self.assertNotIn("LargeBlockLargeThrust", subtypes)
+        original = (source_bp / "bp.sbc").read_bytes()
+        with self.assertRaisesRegex(ValueError, "footprint"):
+            converter.create_selective_converted_blueprint(
+                source_bp,
+                {"LargeBlockLargeThrust": "LargeBlockLargeHydrogenThrust"},
+                {"LargeBlockLargeThrust"},
+            )
+        self.assertEqual((source_bp / "bp.sbc").read_bytes(), original)
+        self.assertFalse((source_bp.parent / f"Custom_{source_bp.name}").exists())
 
     def test_04_selective_dlc_replacement(self):
-        """Test selectively converting only Industrial Assembler to standard vanilla Assembler while keeping Beacon unchanged."""
+        """Industrial assembler size changes cannot silently overlap neighbors."""
         converter = BlueprintConverter()
         source_bp = self.grids["Industrial_Excavator"]
-
-        custom_map = {
-            "LargeAssemblerIndustrial": "LargeAssembler",
-        }
-        selected_types = {"LargeAssemblerIndustrial"}
-
-        dest_path, scanned, converted = converter.create_selective_converted_blueprint(
-            source_bp,
-            custom_mapping=custom_map,
-            selected_subtypes=selected_types,
-        )
-
-        self.assertEqual(converted, 1)
-        tree = safe_xml.parse(dest_path / "bp.sbc")
-        subtypes = [b.find("SubtypeName").text for b in tree.getroot().findall(".//CubeGrid/CubeBlocks/*") if b.find("SubtypeName") is not None]
-        self.assertIn("LargeAssembler", subtypes)
-        self.assertIn("LargeSignalBeacon", subtypes)  # Beacon remained untouched
+        original = (source_bp / "bp.sbc").read_bytes()
+        with self.assertRaisesRegex(ValueError, "footprint"):
+            converter.create_selective_converted_blueprint(
+                source_bp,
+                {"LargeAssemblerIndustrial": "LargeAssembler"},
+                {"LargeAssemblerIndustrial"},
+            )
+        self.assertEqual((source_bp / "bp.sbc").read_bytes(), original)
+        self.assertFalse((source_bp.parent / f"Custom_{source_bp.name}").exists())
 
 
 if __name__ == "__main__":

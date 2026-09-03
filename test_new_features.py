@@ -48,13 +48,13 @@ class TestNewCommunityFeatures(unittest.TestCase):
         
         mapping = registry.build_mapping(enabled_categories=["dlc_substitution"])
         self.assertEqual(mapping["LargeBlockSmallThrustSciFi"], "LargeBlockSmallThrust")
-        self.assertEqual(mapping["IndustrialCockpit"], "LargeBlockCockpit")
+        self.assertEqual(mapping["LargeBlockModularBridgeCockpit"], "LargeBlockCockpit")
 
     def test_scale_grid_large_to_small(self):
         """Verify blueprint grid scaling from Large to Small results in updated tags and sizes."""
         bp_dir = self._create_blueprint_dir(
             "Large",
-            ["LargeBlockArmorBlock", "LargeBlockSmallThrustSciFi"]
+            ["LargeBlockArmorBlock", "LargeHeavyBlockArmorSlope"]
         )
         dest_dir, scanned, converted = self.converter.scale_grid_size(bp_dir, "Small")
         
@@ -71,13 +71,13 @@ class TestNewCommunityFeatures(unittest.TestCase):
         
         subtypes = [elem.text for elem in root.findall(".//SubtypeId")]
         self.assertIn("SmallBlockArmorBlock", subtypes)
-        self.assertIn("SmallBlockSmallThrustSciFi", subtypes)
+        self.assertIn("SmallHeavyBlockArmorSlope", subtypes)
 
     def test_vanillafy_blueprint(self):
         """Verify vanillafying removes DLC blocks."""
         bp_dir = self._create_blueprint_dir(
             "Large",
-            ["LargeSlopedCockpit", "LargeBatteryBank", "LargeBlockArmorBlock"]
+            ["LargeBlockOpenSlopedCockpit", "LargeBlockBatteryReskin", "LargeBlockArmorBlock"]
         )
         dest_dir, scanned, converted = self.converter.vanillafy_blueprint(bp_dir)
         self.assertEqual(scanned, 3)
@@ -90,10 +90,10 @@ class TestNewCommunityFeatures(unittest.TestCase):
         self.assertIn("LargeBlockBatteryBlock", subtypes)
 
     def test_survival_sanity_prototech(self):
-        """Verify survival sanity converts uncraftable Prototech blocks to standard craftables."""
+        """Verify the safe same-footprint Prototech gyro downgrade."""
         bp_dir = self._create_blueprint_dir(
             "Large",
-            ["LargePrototechGenerator", "LargePrototechThruster", "LargeBlockArmorBlock"]
+            ["LargeBlockPrototechGyro", "LargeBlockPrototechGyro", "LargeBlockArmorBlock"]
         )
         dest_dir, scanned, converted = self.converter.survival_sanity_prototech(bp_dir)
         self.assertEqual(scanned, 3)
@@ -102,14 +102,13 @@ class TestNewCommunityFeatures(unittest.TestCase):
         tree = ET.parse(dest_dir / "bp.sbc")
         root = tree.getroot()
         subtypes = [elem.text for elem in root.findall(".//SubtypeId")]
-        self.assertIn("LargeBlockLargeGenerator", subtypes)
-        self.assertIn("LargeBlockLargeThrust", subtypes)
+        self.assertEqual(subtypes.count("LargeBlockGyro"), 2)
 
     def test_upgrade_to_prototech(self):
         """Verify upgrading standard blocks to Prototech."""
         bp_dir = self._create_blueprint_dir(
             "Large",
-            ["LargeBlockLargeGenerator", "LargeBlockLargeThrust"]
+            ["LargeBlockGyro", "LargeBlockGyro"]
         )
         dest_dir, scanned, converted = self.converter.upgrade_to_prototech(bp_dir)
         self.assertEqual(scanned, 2)
@@ -118,8 +117,21 @@ class TestNewCommunityFeatures(unittest.TestCase):
         tree = ET.parse(dest_dir / "bp.sbc")
         root = tree.getroot()
         subtypes = [elem.text for elem in root.findall(".//SubtypeId")]
-        self.assertIn("LargePrototechGenerator", subtypes)
-        self.assertIn("LargePrototechThruster", subtypes)
+        self.assertEqual(subtypes.count("LargeBlockPrototechGyro"), 2)
+
+    def test_unsupported_type_and_footprint_changes_do_not_write(self):
+        bp_dir = self._create_blueprint_dir("Large", ["LargeBlockLargeGenerator", "LargeBlockLargeThrust"])
+        before = (bp_dir / "bp.sbc").read_bytes()
+        with self.assertRaisesRegex(ValueError, "Object-builder type|footprint"):
+            self.converter.upgrade_to_prototech(bp_dir)
+        self.assertFalse((bp_dir.parent / f"PROTOTECH_{bp_dir.name}").exists())
+        self.assertEqual((bp_dir / "bp.sbc").read_bytes(), before)
+
+    def test_functional_grid_scaling_is_explicitly_unsupported(self):
+        bp_dir = self._create_blueprint_dir("Large", ["LargeBlockCockpit"])
+        with self.assertRaisesRegex(ValueError, "Scaling blocked"):
+            self.converter.scale_grid_size(bp_dir, "Small")
+        self.assertFalse((bp_dir.parent / f"SCALED_SMALL_{bp_dir.name}").exists())
 
 
 if __name__ == "__main__":

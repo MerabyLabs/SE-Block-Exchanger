@@ -7,17 +7,34 @@ from __future__ import annotations
 import csv
 import json
 import xml.etree.ElementTree as ET
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Set
+from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 import safe_xml
+from resource_paths import resource_path
 
 
 SEVERITY_INFO = "Info"
 SEVERITY_WARNING = "Warning"
 SEVERITY_ERROR = "Error"
+
+DLC_KEYWORDS = (
+    "scifi",
+    "industrial",
+    "wasteland",
+    "warfare",
+    "reskin",
+    "decorative",
+    "desert",
+    "cab",
+    "buggy",
+    "sparks",
+    "vending",
+    "storeblock",
+)
+MECHANICAL_KEYWORDS = ("rotor", "stator", "hinge", "piston")
 
 
 @dataclass
@@ -43,6 +60,29 @@ class BlueprintAnalyticsResult:
     mass_total: float
     grid_size: str
     health_issues: List[HealthIssue] = field(default_factory=list)
+    known_block_count: int = 0
+    estimated_block_count: int = 0
+    cost_source: str = "Local cost database"
+
+    @property
+    def coverage_text(self) -> str:
+        missing = max(0, self.block_count - self.known_block_count - self.estimated_block_count)
+        return (f"{self.cost_source}: {self.known_block_count:,}/{self.block_count:,} catalog-matched; "
+                f"{self.estimated_block_count:,} estimated; {missing:,} unknown. "
+                "Ore, ingot and refining totals are estimates.")
+
+    @property
+    def is_complete(self) -> bool:
+        return self.block_count == self.known_block_count and self.block_count > 0
+
+
+@dataclass
+class SE2Readiness:
+    dlc_count: int
+    script_count: int
+    subgrid_count: int
+    score: int
+    status: str
 
 
 @dataclass
@@ -64,6 +104,7 @@ class ConversionComparison:
     before_mass: float
     after_mass: float
     mass_delta: float
+    coverage_notes: str = "Coverage not supplied; totals may be partial."
 
 
 class BlockCostDatabase:
@@ -71,18 +112,29 @@ class BlockCostDatabase:
 
     def __init__(self, file_path: Path):
         self.file_path = Path(file_path)
+        self.metadata: Dict = {}
+        self.component_to_ingot: Dict[str, Dict[str, float]] = {}
+        self.ore_yields: Dict[str, float] = {}
+        self.blocks: Dict[str, Dict] = {}
+        self._infer_cache: Dict[str, Optional[Dict]] = {}
+        if not self.file_path.exists():
+            return
         with open(self.file_path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
 
         self.metadata = data.get("metadata", {})
-        self.component_to_ingot: Dict[str, Dict[str, float]] = data.get("component_to_ingot", {})
-        self.ore_yields: Dict[str, float] = data.get("ore_yields", {})
-        self.blocks: Dict[str, Dict] = data.get("blocks", {})
+        self.component_to_ingot = data.get("component_to_ingot", {})
+        self.ore_yields = data.get("ore_yields", {})
+        self.blocks = data.get("blocks", {})
 
     def get_block(self, subtype: str) -> Optional[Dict]:
         if subtype in self.blocks:
             return self.blocks[subtype]
-        return self._infer_cost(subtype)
+        if subtype in self._infer_cache:
+            return self._infer_cache[subtype]
+        inferred = self._infer_cost(subtype)
+        self._infer_cache[subtype] = inferred
+        return inferred
 
     def known_block_ids(self) -> List[str]:
         return sorted(self.blocks.keys())
@@ -166,52 +218,189 @@ class BlockCostDatabase:
         return None
 
 
+_NEIGHBOR_DELTAS = (
+    (1, 0, 0),
+    (-1, 0, 0),
+    (0, 1, 0),
+    (0, -1, 0),
+    (0, 0, 1),
+    (0, 0, -1),
+)
+
+
+def occupied_mins_in_cube_blocks(cube_blocks: ET.Element) -> Set[Tuple[int, int, int]]:
+    """Min cells already used by cubes in this CubeBlocks list."""
+    occupied: Set[Tuple[int, int, int]] = set()
+    for block in cube_blocks:
+        min_elem = block.find("Min")
+        if min_elem is None:
+            min_elem = block.find("{*}Min")
+        if min_elem is None:
+            occupied.add((0, 0, 0))
+            continue
+        occupied.add(
+            (
+                int(float(min_elem.attrib.get("x", 0))),
+                int(float(min_elem.attrib.get("y", 0))),
+                int(float(min_elem.attrib.get("z", 0))),
+            )
+        )
+    return occupied
+
+
+def first_free_min(occupied: Iterable[Tuple[int, int, int]]) -> Tuple[int, int, int]:
+    """Prefer origin; otherwise the first empty neighbor of the occupied blob."""
+    taken = {(int(x), int(y), int(z)) for x, y, z in occupied}
+    origin = (0, 0, 0)
+    if origin not in taken:
+        return origin
+    seen = {origin}
+    queue = deque([origin])
+    while queue:
+        x, y, z = queue.popleft()
+        for dx, dy, dz in _NEIGHBOR_DELTAS:
+            nxt = (x + dx, y + dy, z + dz)
+            if nxt in seen:
+                continue
+            if nxt not in taken:
+                return nxt
+            seen.add(nxt)
+            queue.append(nxt)
+    return (1, 0, 0)
+
+
 class BlueprintAnalyticsEngine:
     """Performs analytics, health audits, and conversion cost comparisons."""
 
-    def __init__(self, cost_db_path: Path = Path("data") / "block_costs.json"):
-        self.db = BlockCostDatabase(cost_db_path)
+    def __init__(self, cost_db_path: Optional[Path] = None):
+        self.db = BlockCostDatabase(cost_db_path or resource_path("data", "block_costs.json"))
+        self.cost_source = "Local cost database"
+        if cost_db_path is None:
+            self._load_catalog_costs()
+
+    def _load_catalog_costs(self) -> None:
+        from se_assets.compatibility import baseline_catalog
+        catalog = baseline_catalog()
+        payload = json.loads(resource_path("data", "se1_catalog.json").read_text(encoding="utf-8"))
+        masses = payload["component_masses"]
+        self.cost_source = f"SE1 {payload['version']} catalog"
+        for definition in catalog.definitions.values():
+            token = definition.subtype_id or definition.key
+            previous = self.db.get_block(token) or {}
+            category = previous.get("category", "utility")
+            if "Armor" in token:
+                category = "armor"
+            self.db.blocks[token] = {
+                "pcu": definition.pcu,
+                "mass": sum(masses.get(c, 0.0) * n for c, n in definition.components.items()),
+                "components": definition.components,
+                "category": category,
+                "catalog_verified": all(c in masses for c in definition.components),
+            }
 
     def analyze_blueprint(self, blueprint_file: Path) -> BlueprintAnalyticsResult:
         tree = safe_xml.parse(blueprint_file)
-        root = tree.getroot()
-        grid_size = self._detect_grid_size(root)
+        return self.analyze_root(
+            tree.getroot(),
+            blueprint_name=Path(blueprint_file).parent.name,
+        )
 
-        blocks = root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock")
+    def analyze_root(self, root: ET.Element, *, blueprint_name: str) -> BlueprintAnalyticsResult:
+        grid_size = self._detect_grid_size(root)
         subtype_counts: Dict[str, int] = Counter()
+        thruster_forwards: Dict[str, int] = Counter()
+        raw_count = 0
+        grids = safe_xml.iter_cube_grids(root)
+        if grids:
+            blocks = []
+            for grid in grids:
+                blocks.extend(safe_xml.iter_blocks_in_grid(grid))
+        else:
+            blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock") or root.findall(
+                ".//MyObjectBuilder_CubeBlock"
+            )
+        for block in blocks:
+            raw_count += 1
+            subtype = self._get_block_subtype(block)
+            if not subtype:
+                continue
+            subtype_counts[subtype] += 1
+            if "thrust" in subtype.lower():
+                orientation = block.find("BlockOrientation")
+                if orientation is not None:
+                    forward = orientation.attrib.get("Forward")
+                    if forward:
+                        thruster_forwards[forward] += 1
+        return self.analyze_counts(
+            subtype_counts,
+            blueprint_name=blueprint_name,
+            grid_size=grid_size,
+            thruster_forwards=thruster_forwards,
+            block_count=raw_count,
+        )
+
+    def analyze_counts(
+        self,
+        subtype_counts: Mapping[str, int],
+        *,
+        blueprint_name: str,
+        grid_size: str = "Unknown",
+        thruster_forwards: Optional[Mapping[str, int]] = None,
+        thruster_count: Optional[int] = None,
+        block_count: Optional[int] = None,
+    ) -> BlueprintAnalyticsResult:
         component_totals: Dict[str, int] = defaultdict(int)
         category_totals: Dict[str, int] = defaultdict(int)
         unknown_subtypes: Set[str] = set()
         pcu_total = 0
         mass_total = 0.0
+        counted: Dict[str, int] = {}
+        known = estimated = 0
 
-        for block in blocks:
-            subtype = self._get_block_subtype(block)
-            if not subtype:
+        for subtype, raw_count in subtype_counts.items():
+            count = int(raw_count)
+            if count <= 0 or not subtype:
                 continue
-            subtype_counts[subtype] += 1
-
+            counted[subtype] = counted.get(subtype, 0) + count
             block_cost = self.db.get_block(subtype)
             if not block_cost:
                 unknown_subtypes.add(subtype)
-                category_totals["unknown"] += 1
+                category_totals["unknown"] += count
                 continue
-
             category = block_cost.get("category", "utility")
-            category_totals[category] += 1
-            pcu_total += int(block_cost.get("pcu", 0))
-            mass_total += float(block_cost.get("mass", 0.0))
+            if block_cost.get("catalog_verified", subtype in self.db.blocks):
+                known += count
+            else:
+                estimated += count
+            category_totals[category] += count
+            pcu_total += int(block_cost.get("pcu", 0)) * count
+            mass_total += float(block_cost.get("mass", 0.0)) * count
             for component, qty in block_cost.get("components", {}).items():
-                component_totals[component] += int(qty)
+                component_totals[component] += int(qty) * count
 
         ingot_totals = self.db.component_to_ingot_totals(component_totals)
         ore_totals = self.db.ingot_to_ore_totals(ingot_totals)
-        issues = self._run_health_audit(root, subtype_counts, sorted(unknown_subtypes))
+        issues = self._run_health_audit(
+            None,
+            counted,
+            sorted(unknown_subtypes),
+            thruster_forwards=thruster_forwards,
+            thruster_count=thruster_count,
+        )
 
+        named_total = sum(counted.values())
+        total_blocks = named_total if block_count is None else max(int(block_count), named_total)
+        unnamed = max(0, total_blocks - named_total)
+        if unnamed:
+            category_totals["unknown"] += unnamed
+        if known < total_blocks:
+            issues.append(HealthIssue(SEVERITY_WARNING, "partial_cost_coverage",
+                f"Costs are partial: {known:,}/{total_blocks:,} blocks have catalog costs.",
+                "Unknown blocks are excluded; inferred values are estimates. Check coverage before ordering materials."))
         return BlueprintAnalyticsResult(
-            blueprint_name=Path(blueprint_file).parent.name,
-            block_count=sum(subtype_counts.values()),
-            block_counts=dict(sorted(subtype_counts.items())),
+            blueprint_name=blueprint_name,
+            block_count=total_blocks,
+            block_counts=dict(sorted(counted.items())),
             category_counts=dict(sorted(category_totals.items())),
             unknown_subtypes=sorted(unknown_subtypes),
             component_totals=dict(sorted(component_totals.items())),
@@ -221,6 +410,9 @@ class BlueprintAnalyticsEngine:
             mass_total=round(mass_total, 2),
             grid_size=grid_size,
             health_issues=issues,
+            known_block_count=known,
+            estimated_block_count=estimated,
+            cost_source=self.cost_source,
         )
 
     def compare_conversion_cost(
@@ -229,12 +421,23 @@ class BlueprintAnalyticsEngine:
         mapping: Dict[str, str],
         mode: str,
     ) -> ConversionComparison:
-        result = self.analyze_blueprint(blueprint_file)
+        return self.compare_conversion_cost_from_result(
+            self.analyze_blueprint(blueprint_file),
+            mapping,
+            mode,
+        )
 
+    def compare_conversion_cost_from_result(
+        self,
+        result: BlueprintAnalyticsResult,
+        mapping: Dict[str, str],
+        mode: str,
+    ) -> ConversionComparison:
         after_components: Dict[str, int] = defaultdict(int)
         after_pcu = 0
         after_mass = 0.0
         block_changes: Dict[str, int] = {}
+        after_known = 0
 
         for subtype, count in result.block_counts.items():
             target_subtype = mapping.get(subtype, subtype)
@@ -244,6 +447,8 @@ class BlueprintAnalyticsEngine:
             block_cost = self.db.get_block(target_subtype)
             if not block_cost:
                 continue
+            if block_cost.get("catalog_verified"):
+                after_known += count
             after_pcu += int(block_cost.get("pcu", 0)) * count
             after_mass += float(block_cost.get("mass", 0.0)) * count
             for component, qty in block_cost.get("components", {}).items():
@@ -278,6 +483,8 @@ class BlueprintAnalyticsEngine:
             before_mass=result.mass_total,
             after_mass=round(after_mass, 2),
             mass_delta=round(after_mass - result.mass_total, 2),
+            coverage_notes=(result.coverage_text + f" After conversion: {after_known:,}/{result.block_count:,} catalog-matched. "
+                            "Deltas exclude unknown costs; ore and ingot figures are estimates."),
         )
 
     @staticmethod
@@ -286,6 +493,7 @@ class BlueprintAnalyticsEngine:
         destination.parent.mkdir(parents=True, exist_ok=True)
         with open(destination, "w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
+            writer.writerow(["Coverage", comparison.coverage_notes])
             writer.writerow(["Metric", "Before", "After", "Delta"])
             writer.writerow(["PCU", comparison.before_pcu, comparison.after_pcu, comparison.pcu_delta])
             writer.writerow(["Mass", comparison.before_mass, comparison.after_mass, comparison.mass_delta])
@@ -330,6 +538,7 @@ class BlueprintAnalyticsEngine:
         destination.parent.mkdir(parents=True, exist_ok=True)
         lines: List[str] = []
         lines.append(f"Mode: {comparison.mode}")
+        lines.append(comparison.coverage_notes)
         lines.append(f"PCU: {comparison.before_pcu} -> {comparison.after_pcu} (delta {comparison.pcu_delta:+d})")
         lines.append(
             f"Mass: {comparison.before_mass:.2f} -> {comparison.after_mass:.2f} "
@@ -359,7 +568,7 @@ class BlueprintAnalyticsEngine:
     def apply_fix(self, blueprint_file: Path, fix_id: str) -> bool:
         tree = safe_xml.parse(blueprint_file)
         root = tree.getroot()
-        cube_blocks = root.find(".//CubeGrid/CubeBlocks")
+        cube_blocks = root.find(".//CubeBlocks")
         if cube_blocks is None:
             return False
 
@@ -371,50 +580,16 @@ class BlueprintAnalyticsEngine:
         elif fix_id in ("add_power_block", "add_power"):
             subtype = "LargeBlockBatteryBlock" if grid_size == "Large" else "SmallBlockBatteryBlock"
             block_type = "MyObjectBuilder_BatteryBlock"
-        elif fix_id == "survival_sanity_prototech":
-            from mappings.prototech import get_survival_sanity_mapping
-            sanity_map = get_survival_sanity_mapping()
-            converted = 0
-            for block in root.findall(".//CubeGrid/CubeBlocks/*"):
-                st = self._get_block_subtype(block)
-                if st and st in sanity_map:
-                    target = sanity_map[st]
-                    sub_name = block.find("SubtypeName")
-                    if sub_name is not None:
-                        sub_name.text = target
-                    sub_id = block.find("SubtypeId")
-                    if sub_id is not None:
-                        sub_id.text = target
-                    converted += 1
-            if converted > 0:
-                safe_xml.safe_write(tree, blueprint_file)
-                return True
-            return False
-        elif fix_id == "vanillafy_dlc":
-            from mappings.dlc_substitution import DLC_TO_BASE_PAIRS
-            converted = 0
-            for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
-                st = self._get_block_subtype(block)
-                if st and st in DLC_TO_BASE_PAIRS:
-                    target = DLC_TO_BASE_PAIRS[st]
-                    sub_name = block.find("SubtypeName")
-                    if sub_name is not None:
-                        sub_name.text = target
-                    sub_id = block.find("SubtypeId")
-                    if sub_id is not None:
-                        sub_id.text = target
-                    converted += 1
-            if converted > 0:
-                safe_xml.safe_write(tree, blueprint_file)
-                return True
-            return False
         else:
             return False
 
+        free = first_free_min(occupied_mins_in_cube_blocks(cube_blocks))
         new_block = ET.SubElement(cube_blocks, "MyObjectBuilder_CubeBlock")
         new_block.set("{http://www.w3.org/2001/XMLSchema-instance}type", block_type)
         ET.SubElement(new_block, "SubtypeName").text = subtype
-        ET.SubElement(new_block, "Min").attrib.update({"x": "0", "y": "0", "z": "0"})
+        ET.SubElement(new_block, "Min").attrib.update(
+            {"x": str(free[0]), "y": str(free[1]), "z": str(free[2])}
+        )
         ET.SubElement(new_block, "BlockOrientation").attrib.update(
             {"Forward": "Forward", "Up": "Up"}
         )
@@ -423,13 +598,9 @@ class BlueprintAnalyticsEngine:
 
     @staticmethod
     def _get_block_subtype(block: ET.Element) -> Optional[str]:
-        subtype_name = block.find("SubtypeName")
-        if subtype_name is not None and subtype_name.text:
-            return subtype_name.text.strip()
-        subtype_id = block.find("SubtypeId")
-        if subtype_id is not None and subtype_id.text:
-            return subtype_id.text.strip()
-        return None
+        from se_assets.block_identity import BlockIdentity
+        identity = BlockIdentity.from_block(block)
+        return identity.token if identity.subtype_id or identity.type_id != "CubeBlock" else None
 
     @staticmethod
     def _detect_grid_size(root: ET.Element) -> str:
@@ -450,9 +621,11 @@ class BlueprintAnalyticsEngine:
 
     def _run_health_audit(
         self,
-        root: ET.Element,
+        root: Optional[ET.Element],
         subtype_counts: Dict[str, int],
         unknown_subtypes: List[str],
+        thruster_forwards: Optional[Mapping[str, int]] = None,
+        thruster_count: Optional[int] = None,
     ) -> List[HealthIssue]:
         issues: List[HealthIssue] = []
         subtype_keys = list(subtype_counts.keys())
@@ -491,51 +664,24 @@ class BlueprintAnalyticsEngine:
                 )
             )
 
-        # Prototech survival sanity check
-        from mappings.prototech import PROTOTECH_SUBTYPES
-        prototech_found = [s for s in subtype_keys if s in PROTOTECH_SUBTYPES or "prototech" in s.lower()]
-        if prototech_found:
-            issues.append(
-                HealthIssue(
-                    severity=SEVERITY_WARNING,
-                    code="prototech_survival_warning",
-                    message=f"Detected {len(prototech_found)} uncraftable Prototech block type(s). Projection in standard survival will stall.",
-                    suggestion="Click Fix to downgrade Prototech blocks to survival-craftable equivalents.",
-                    fix_id="survival_sanity_prototech",
-                )
+        inferred_thrusters = sum(
+            int(count) for subtype, count in subtype_counts.items() if "thrust" in subtype.lower()
+        )
+        if thruster_forwards is not None:
+            oriented = sum(int(v) for v in thruster_forwards.values())
+            n_blocks = max(inferred_thrusters, oriented)
+            if thruster_count is not None:
+                n_blocks = max(n_blocks, int(thruster_count))
+            thruster_balance = self._thruster_balance_from_dirs(
+                Counter(thruster_forwards),
+                n_blocks,
             )
-
-        # DLC check
-        from mappings.dlc_substitution import DLC_TO_BASE_PAIRS
-        dlc_found = [s for s in subtype_keys if s in DLC_TO_BASE_PAIRS]
-        if dlc_found:
-            issues.append(
-                HealthIssue(
-                    severity=SEVERITY_INFO,
-                    code="dlc_blocks_present",
-                    message=f"Blueprint uses {len(dlc_found)} paid DLC block type(s).",
-                    suggestion="Use Vanillafyer to convert all DLC blocks into standard base-game blocks.",
-                    fix_id="vanillafy_dlc",
-                )
-            )
-
-        # PB Script Doctor audit
-        from pb_doctor import PBScriptExtractor, PBScriptValidator
-        scripts = PBScriptExtractor.extract_from_element(root)
-        for s in scripts:
-            report = PBScriptValidator.validate_script(s.custom_name, s.program_code)
-            if not report.is_valid:
-                error_msgs = [d.message for d in report.diagnostics if d.severity == "Error"]
-                issues.append(
-                    HealthIssue(
-                        severity=SEVERITY_ERROR,
-                        code="pb_script_error",
-                        message=f"PB Script '{s.custom_name}' has compiler errors: {'; '.join(error_msgs[:2])}",
-                        suggestion="Open PB Script Doctor tab to inspect diagnostics and fix compliance.",
-                    )
-                )
-
-        thruster_balance = self._thruster_balance(root)
+        elif root is not None:
+            thruster_balance = self._thruster_balance(root)
+        elif inferred_thrusters >= 6:
+            thruster_balance = self._thruster_balance_from_dirs({}, inferred_thrusters)
+        else:
+            thruster_balance = None
         if thruster_balance:
             issues.append(
                 HealthIssue(
@@ -574,20 +720,26 @@ class BlueprintAnalyticsEngine:
             forward = orientation.attrib.get("Forward")
             if forward:
                 directions[forward] += 1
+        return self._thruster_balance_from_dirs(directions, thruster_blocks)
 
+    @staticmethod
+    def _thruster_balance_from_dirs(directions: Mapping[str, int], thruster_blocks: int) -> Optional[str]:
         if thruster_blocks < 6:
             return None
-
-        missing = [direction for direction in ("Forward", "Backward", "Up", "Down", "Left", "Right") if directions[direction] == 0]
+        missing = [
+            direction
+            for direction in ("Forward", "Backward", "Up", "Down", "Left", "Right")
+            if int(directions.get(direction, 0)) == 0
+        ]
         if missing:
             return f"Thrusters are missing in direction(s): {', '.join(missing)}."
-
-        counts = [directions[d] for d in ("Forward", "Backward", "Up", "Down", "Left", "Right")]
+        counts = [int(directions.get(d, 0)) for d in ("Forward", "Backward", "Up", "Down", "Left", "Right")]
         if min(counts) == 0:
             return None
         if max(counts) / min(counts) >= 2.5:
             return "Thruster distribution appears heavily unbalanced across directions."
         return None
+
 
     @staticmethod
     def calculate_refining_time(ore_totals: Dict[str, float], refinery_speed_mult: float = 1.0) -> Dict[str, float]:
@@ -670,3 +822,13 @@ class BlueprintAnalyticsEngine:
             lines.append(f"| {comp} | **{qty:,}** |")
 
         return "\n".join(lines)
+
+def compute_se2_readiness(block_counts: Dict[str, int]) -> SE2Readiness:
+    """Legacy summary API. Counts cannot certify native engine compatibility."""
+    return SE2Readiness(
+        dlc_count=sum(n for s, n in block_counts.items() if any(k in s.lower() for k in DLC_KEYWORDS)),
+        script_count=sum(n for s, n in block_counts.items() if "programmable" in s.lower()),
+        subgrid_count=sum(n for s, n in block_counts.items() if any(k in s.lower() for k in MECHANICAL_KEYWORDS)),
+        score=0,
+        status="NOT_VALIDATED",
+    )

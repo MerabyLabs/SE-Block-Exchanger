@@ -25,9 +25,9 @@ class TestPrototech(unittest.TestCase):
             self.assertEqual(sanity_map[proto_block], v_block)
 
     def test_subtypes_contain_generators_and_thrusters(self):
-        self.assertIn("LargePrototechGenerator", PROTOTECH_SUBTYPES)
-        self.assertIn("LargePrototechThruster", PROTOTECH_SUBTYPES)
-        self.assertIn("LargePrototechO2H2", PROTOTECH_SUBTYPES)
+        self.assertIn("LargePrototechReactor", PROTOTECH_SUBTYPES)
+        self.assertIn("LargeBlockPrototechThruster", PROTOTECH_SUBTYPES)
+        self.assertIn("LargeBlockPrototechOxygenGenerator", PROTOTECH_SUBTYPES)
 
 
 if __name__ == "__main__":

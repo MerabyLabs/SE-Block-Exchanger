@@ -1,91 +1,79 @@
-﻿# Space Engineers Tactical Command (SEBX) — Installation & Setup Guide
+# Install SE Tactical Command v4.0.0
 
-Welcome to **Space Engineers Tactical Command**! This guide covers everything you need to get up and running in under 60 seconds.
+This v4 build is a **release candidate**. Read [COMPATIBILITY](COMPATIBILITY.md)
+before using experimental SE2 migration. Do not tag/publish until native acceptance passes.
 
----
+## Windows portable executable
 
-## ⚡ Option 1: Standalone Windows App (Recommended for Gamers)
+When a verified build is available, extract `SE_Tactical_Command_v4.0.0_Portable.zip`
+to a writable folder and run `SE_Tactical_Command_v4.0.0.exe`. Python is not required
+for the executable. Never run an executable directly from inside its ZIP archive.
 
-No Python or developer tools required.
+Check the archive/executable hash against the accompanying `SHA256SUMS.txt` or
+`.sha256` file with `Get-FileHash -Algorithm SHA256`. The portable archive also has
+`BUILD-MANIFEST.json` with the checksums of its runtime files.
 
-1. **Download**:
-   - Go to [GitHub Releases](https://github.com/MerabyLabs/SE-Block-Exchanger/releases).
-   - Download the latest `SE_Tactical_Command_v4.0.0.exe` or `SE_Tactical_Command_v4.0.0_Portable.zip`.
-2. **Launch**:
-   - If you downloaded the portable zip, extract it to any folder (e.g. `D:\Games\SE-Block-Exchanger`).
-   - Double-click **`SE Tactical Command.bat`** or `SE_Tactical_Command_v4.0.0.exe`.
-3. **Pin to Desktop**:
-   - Double-click **`Create Desktop Shortcut.bat`** in the folder.
-   - A shortcut with the custom Space Engineers armor icon will immediately appear on your Windows Desktop!
+`Create Desktop Shortcut.bat` creates the standard Desktop shortcut. To test or use
+a separate shortcut without replacing an existing one:
 
----
-
-## 🐍 Option 2: Running from Source (Modders & Developers)
-
-If you want to run from source or customize mapping profiles:
-
-### Prerequisites:
-- Python 3.10, 3.11, 3.12, or 3.13 installed ([python.org](https://www.python.org/downloads/)).
-- Git ([git-scm.com](https://git-scm.com/)).
-
-### Steps:
 ```powershell
-# 1. Clone the repository
-git clone https://github.com/MerabyLabs/SE-Block-Exchanger.git
-cd SE-Block-Exchanger
-
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Create desktop shortcut (optional)
-powershell -ExecutionPolicy Bypass -File create_desktop_shortcut.ps1
-
-# 4. Launch the application
-python main.py
+powershell -ExecutionPolicy Bypass -File create_desktop_shortcut.ps1 -TargetFolder "D:\Apps\SEBX" -TargetPath "D:\Apps\SEBX\SE_Tactical_Command_v4.0.0.exe" -ShortcutPath "D:\Apps\SEBX\SEBX v4 Test.lnk"
 ```
 
----
+## Source installation
 
-## 📁 Blueprint Folder Configuration
+Python **3.11 and 3.12** are the validated release targets. Other Python versions
+are not part of this release's acceptance matrix.
 
-By default, SEBX automatically discovers your local Space Engineers blueprint directory:
-- **Default Path**: `%APPDATA%\SpaceEngineers\Blueprints\local`
-- **Workshop Cache**: `%APPDATA%\SpaceEngineers\Blueprints\workshop`
+```powershell
+git clone https://github.com/MerabyLabs/SE-Block-Exchanger.git
+cd SE-Block-Exchanger
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe gui_standalone.py
+```
 
-### Custom Blueprint Directory:
-If your Space Engineers blueprints are stored on a different drive or dedicated server folder:
-1. Open the application.
-2. Click **Browse Directory** in the top header or press `Ctrl + O`.
-3. Select your custom folder. SEBX will remember this path in your recent directories list.
+Dependencies include CustomTkinter `>=6,<7`, NumPy, ModernGL, Pillow and defusedxml.
+The accelerated 3D preview needs an OpenGL 3.3-capable driver. On Linux, Tk and a
+working display are required; CI uses Xvfb for UI tests.
 
----
+## Blueprint and game locations
 
-## 🛠️ Features Overview & How-To
+- SE1 input root: `%APPDATA%\SpaceEngineers\Blueprints\local`.
+- Native SE2 blueprint root: `%APPDATA%\SpaceEngineers2\AppData\Blueprints`.
+- Choose a different SE1 root with Browse or `Ctrl+O`; recent roots are retained.
+- Locate the SE1 installation in the app for game asset previews and runtime catalog
+  validation. SE2 validation requires an installed game; `SEBX_SE2_INSTALL` can
+  supply its root. No game assets are shipped in SEBX.
 
-### 🎯 Selective Block Exchanging (Pick & Choose)
-1. Select any blueprint in the left panel.
-2. Click the **SELECTIVE EXCHANGE** tab in the center panel.
-3. Check the specific blocks you want to replace.
-4. (Optional) Customize the target replacement block in the text box.
-5. Click **EXCHANGE SELECTED BLOCKS >>**. A new prefixed blueprint will appear in your blueprints list ready to paste in game!
+Missing blueprint folders do not block startup. Create a blueprint in the game or
+choose a folder containing blueprint subfolders with `bp.sbc` files.
 
-### 🚀 Space Engineers 2 (VRAGE3) Export
-1. Select your blueprint.
-2. Click the **SE2 TRANSITION** tab.
-3. Review your ship's transition score, script complexity, and subgrid density.
-4. Click **EXPORT TO SPACE ENGINEERS 2 (VRAGE3 JSON)**.
+## Safe conversion
 
-### 🩺 Programmable Block (PB) Doctor
-1. Click the **PB DOCTOR** tab.
-2. Review syntax compliance, banned namespace checks (`System.IO`), and estimated instruction counts per tick.
+Inspect the blueprint, select categories or open Selective Exchange, and create a
+new converted copy. Existing output names are refused. Keep backups; undo is only
+for unchanged copies made by the current SEBX session. Files subsequently edited
+by the game or another program are retained.
 
----
+Grid rescaling supports single armor grids only. Prototech and DLC operations do
+not convert every named block: unsupported builder types and footprints are excluded.
+Native SE2 conversion currently supports a small armor subset, not functional ships.
+An installed-catalog pass is not an in-game acceptance pass.
 
-## ❓ Troubleshooting
+## Diagnostics and building
 
-- **Error: "No module named customtkinter"**:
-  Run `pip install -r requirements.txt` in your command line.
-- **Can't find bp.sbc**:
-  Ensure you selected a valid Space Engineers blueprint folder. Blueprint folders contain a `bp.sbc` file and optionally a `thumb.png`.
-- **Projector won't weld Prototech**:
-  Open the blueprint in SEBX, switch to the **SE2 TRANSITION** tab, and click **SURVIVAL SANITY (STRIP PROTOTECH)**.
+```powershell
+python gui_standalone.py --version
+python gui_standalone.py --self-test artifacts/runtime-selftest.json
+python tools/check_runtime.py
+python -m pytest -q
+python tools/check_package.py
+python -m PyInstaller --noconfirm --clean SE_Tactical_Command.spec
+python package_release.py
+```
+
+The self-test checks bundled data, imports and shader compilation without opening
+user blueprints. It is also available on the packaged executable. Build from a
+clean checkout and use a fresh output directory; packaging never overwrites an
+existing archive. `python tools/check_release_gate.py` must pass before publication.

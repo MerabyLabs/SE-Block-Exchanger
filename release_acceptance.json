@@ -1,0 +1,17 @@
+{
+  "version": "4.0.0",
+  "status": "HOLD",
+  "se1_baseline": "1.210.014 / Steam 24675677",
+  "se2_baseline": "2.4.0.95 / Steam 24993846",
+  "checks": {
+    "unified_python311": {"status": "PASS", "evidence": ["artifacts/pytest311-final.xml: 328 passed"]},
+    "unified_python312": {"status": "PASS", "evidence": ["artifacts/pytest312-final.xml: 328 passed"]},
+    "catalog_validation": {"status": "PASS", "evidence": ["tools/check_runtime.py: 79 files compiled; 1,503 SE1 definitions; enabled mappings validated", "artifacts/runtime-selftest-final.json: shader compile passed"]},
+    "live_app_and_3d": {"status": "PENDING", "evidence": ["Restarted source app showed nonblocking missing-root empty state", "artifacts/runtime-selftest-final.json: OpenGL 3.3/NVIDIA renderer and shader compile passed", "artifacts/live-fixture-appdata/large-xml-final.json: isolated 28 MiB XML parsed with four grids in 1.879 seconds", "Desktop interaction sweep was interrupted by the computer-use usage limit; no full live interaction claim"]},
+    "source_blueprint_hashes": {"status": "PASS", "evidence": ["artifacts/live-fixture-appdata/hash-verification-final.json: four source/copy SHA-256 pairs unchanged"]},
+    "clean_windows_package": {"status": "PASS", "evidence": ["artifacts/frozen-selftest-package-v4.json: packaged executable self-test passed with 4.0.0 metadata", "artifacts/release-v4.0.0/SE_Tactical_Command_v4.0.0_Portable.zip.sha256: checksum recorded", "tools/check_package.py: clean extracted imports passed"]},
+    "se2_single_grid_open_save_reopen": {"status": "BLOCKED", "evidence": ["artifacts/native-se2-v7/evidence/serialization-report.json: authentic EntityBundle/snapshot serialization passed; in_game_acceptance=NOT_RUN", "SpaceEngineers2_260902_182312_271_34396.log: prior Current fixture failed snapshot validation; corrected V7 fixture was not opened because desktop automation hit its usage limit"]},
+    "se2_subgrid_diagnostics": {"status": "PASS", "evidence": ["artifacts/native-se2-v7/subgrid-diagnostics.json: MSGhome and SKP - SPACE DOCK 1 fail closed with one-grid/subgrid and unsupported-block diagnostics"]}
+  },
+  "blockers": ["Native SE2 single-grid open/place/save/reopen acceptance has not passed. Do not tag or publish.", "Full live UI interaction sweep (including 3D controls and conversion/undo) is not certified because desktop automation hit its usage limit."]
+}

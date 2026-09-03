@@ -10,34 +10,57 @@ import sys
 import threading
 import webbrowser
 from pathlib import Path
+from queue import Empty, SimpleQueue
 from typing import Dict, List, Optional, Set
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
 from app_settings import AppSettings, SettingsStore
-from blueprint_analytics import BlueprintAnalyticsEngine
+from se_assets.cube_catalog import CubeBlockCatalog
+from se_assets.install_locator import resolve_install, validate_install, normalize_install_root
+from se_assets.mesh_cache import MeshLibrary
+from blueprint_analytics import BlueprintAnalyticsEngine, compute_se2_readiness
 from blueprint_converter import BlueprintConverter
+from blueprint_document import (
+    BlueprintDocument,
+    BlueprintDocumentCache,
+    CancelledError,
+    JobHub,
+    JobToken,
+    catalog_completion_allowed,
+    dry_run_from_counts,
+    inspect_result_applies,
+    install_detection_applies,
+    scan_callback_applies,
+)
 from blueprint_scanner import BlueprintInfo, BlueprintScanner
 from mapping_profiles import ProfileManager
 from mappings import build_registry
-from se_armor_replacer import ArmorBlockReplacer
 from ui.blueprint_panel import BlueprintPanel
 from ui.control_panel import ControlPanel
 from ui.dragdrop_windows import WindowsFileDropTarget
 from ui.footer import Footer
 from ui.header import Header
-from ui.preview_panel import PreviewPanel
+from ui.labels import category_label, conversion_target_phrase, convertible_total
+from ui.preview_panel import PreviewPanel, subgrids_map_payload
 from ui.profile_editor import ProfileEditorDialog
+from ui.selective_exchange_panel import SelectiveExchangePanel
 from ui.theme import TacticalTheme
 from ui.widgets.toast import ToastManager
+from resource_paths import (
+    bundled_profiles_dir,
+    is_frozen,
+    project_root,
+    resource_path,
+    writable_profiles_dir,
+)
 from update_checker import UpdateChecker, UpdateInfo
 from version import __version__
 
 
 def get_resource_path(relative_path: str) -> str:
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(base, relative_path)
+    return str(resource_path(relative_path))
 
 
 class TacticalCommandCenter(ctk.CTk):
@@ -46,16 +69,24 @@ class TacticalCommandCenter(ctk.CTk):
     def __init__(self):
         self.settings_store = SettingsStore()
         self.settings: AppSettings = self.settings_store.load()
+        self._apply_subgrids_session_prefs()
         TacticalTheme.apply(self.settings.appearance_mode)
         super().__init__()
+        TacticalTheme.resolve_fonts()
 
-        self.title("SE BLOCK EXCHANGER // TACTICAL COMMAND CENTER")
+        self.title("SE Block Exchanger")
         self.geometry("1360x900")
         self.configure(fg_color=TacticalTheme.BG_DARK)
         self.minsize(1080, 700)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._set_icon()
 
-        self.profile_manager = ProfileManager(Path("profiles"))
+        extra_profile_dirs = []
+        bundled = bundled_profiles_dir()
+        writable = writable_profiles_dir()
+        if bundled.resolve() != writable.resolve():
+            extra_profile_dirs.append(bundled)
+        self.profile_manager = ProfileManager(writable, extra_read_dirs=extra_profile_dirs)
         self.profile_manager.load_all()
         self.registry = build_registry(include_builtin=True)
         self.profile_manager.register_profile_categories(self.registry)
@@ -63,7 +94,11 @@ class TacticalCommandCenter(ctk.CTk):
         self.enabled_categories = self._resolve_enabled_categories(self.settings.enabled_categories)
         self.conversion_mode = "light_to_heavy"
 
-        self.scanner = BlueprintScanner(registry=self.registry, enabled_categories=self.enabled_categories)
+        self.scanner = BlueprintScanner(
+            registry=self.registry,
+            enabled_categories=self.enabled_categories,
+            reverse=False,
+        )
         self.converter = self._build_converter()
         self.analytics_engine = BlueprintAnalyticsEngine()
         self.update_checker = UpdateChecker(cache_hours=self.settings.cache_hours)
@@ -74,10 +109,27 @@ class TacticalCommandCenter(ctk.CTk):
         self._converted_count = 0
         self._pending_select_name: Optional[str] = None
         self._undo_stack: List[Path] = []
+        self._undo_fingerprints: Dict[Path, str] = {}
         self._latest_analytics = None
         self._latest_comparison = None
         self._latest_update: Optional[UpdateInfo] = None
         self._profile_editor: Optional[ProfileEditorDialog] = None
+        self._rescan_after_id = None
+        self._preview_after_id = None
+        self._preview_convert_count = None
+        self._instant_tabs_stale = False
+        self._closing = False
+        self._ui_queue: SimpleQueue = SimpleQueue()
+        self._documents = BlueprintDocumentCache()
+        self._jobs = JobHub()
+        self._inspect_token = self._jobs.inspect
+        self._scan_token = self._jobs.scan
+        self._catalog_token = self._jobs.catalog
+        self._install_token = JobToken()
+        self._document: Optional[BlueprintDocument] = None
+        self._se_catalog = CubeBlockCatalog()
+        self._se_meshes = MeshLibrary()
+        self._se_install_status = None
 
         self._build_ui()
         self.toasts = ToastManager(self)
@@ -85,6 +137,7 @@ class TacticalCommandCenter(ctk.CTk):
         self._bind_shortcuts()
         self._setup_drag_drop()
         self._center_window()
+        self.after(16, self._pump_ui_queue)
 
         self.header.set_blueprint_count(0)
         self.header.set_recent_dirs(self.settings.recent_blueprint_dirs)
@@ -95,17 +148,10 @@ class TacticalCommandCenter(ctk.CTk):
             self.enabled_categories,
         )
 
+        self.after(0, self._detect_install_after_paint)
         self.after(200, self.load_blueprints_async)
         if self.settings.auto_check_updates:
             self.after(900, self._check_updates_async)
-
-    def _safe_after(self, ms: int, func, *args):
-        try:
-            if not self.winfo_exists():
-                return
-            self.after(ms, func, *args)
-        except Exception:
-            pass  # Tk is already torn down
 
     # ------------------------------------------------------------------
     # Bootstrapping
@@ -116,8 +162,8 @@ class TacticalCommandCenter(ctk.CTk):
             verbose=False,
             reverse=(self.conversion_mode == "heavy_to_light"),
             enabled_categories=self.enabled_categories,
-            include_profiles=True,
-            profile_dir=Path("profiles"),
+            include_profiles=False,
+            registry=self.registry,
         )
 
     def _resolve_enabled_categories(self, requested: List[str]) -> List[str]:
@@ -157,17 +203,23 @@ class TacticalCommandCenter(ctk.CTk):
 
         content = ctk.CTkFrame(self, fg_color="transparent")
         content.pack(fill="both", expand=True, padx=10, pady=0)
-        content.columnconfigure(0, weight=0, minsize=330)
+        content.columnconfigure(0, weight=0, minsize=300)
         content.columnconfigure(1, weight=1, minsize=420)
-        content.columnconfigure(2, weight=0, minsize=340)
         content.rowconfigure(0, weight=1)
 
+        self.sidebar_tabs = ctk.CTkTabview(content, width=300)
+        self.sidebar_tabs.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        self.sidebar_tabs.grid_propagate(False)
+        library_tab = self.sidebar_tabs.add("Blueprints")
+        convert_tab = self.sidebar_tabs.add("Convert")
+
         self.blueprint_panel = BlueprintPanel(
-            content,
+            library_tab,
             on_select=self.on_blueprint_select,
             on_recent_select=self._on_recent_blueprint_pick,
+            on_browse=self.browse_blueprint_dir,
         )
-        self.blueprint_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
+        self.blueprint_panel.pack(fill="both", expand=True)
 
         self.preview_panel = PreviewPanel(
             content,
@@ -177,27 +229,23 @@ class TacticalCommandCenter(ctk.CTk):
             on_apply_fix=self.apply_health_fix,
             on_vanillafy=self.vanillafy_blueprint,
             on_scale_grid=self.scale_grid_choice,
-            on_survival_sanity=self.survival_sanity_blueprint,
-            on_upgrade_prototech=self.upgrade_prototech_blueprint,
-            on_workshop_sync=self.import_workshop_blueprint,
-            on_selective_convert=self.selective_convert_blueprint,
-            on_migrate_se2=self.migrate_se2_blueprint,
-            on_split_subgrids=self.split_active_blueprint_subgrids,
-            on_apply_skin_palette=self.apply_active_skin_palette,
-            on_harden_armor=self.harden_active_armor,
-            on_lightweight_armor=self.lightweight_active_armor,
+            on_locate_space_engineers=self.locate_space_engineers,
+            on_need_subgrids=self._ensure_subgrids_document,
+            on_need_tab_data=self._fill_hidden_preview_tabs,
+            on_validate_se2=self.validate_se2_blueprint,
+            on_toast=lambda msg, level="info": self.toasts.toast(msg, level=level),
         )
         self.preview_panel.grid(row=0, column=1, sticky="nsew", padx=3)
 
         self.control_panel = ControlPanel(
-            content,
+            convert_tab,
             on_convert=self.convert_blueprint,
             on_batch_convert=self.batch_convert,
             on_mode_change=self.set_conversion_mode,
             on_categories_change=self.set_enabled_categories,
             on_undo=self.undo_last_conversion,
         )
-        self.control_panel.grid(row=0, column=2, sticky="nsew", padx=(3, 0))
+        self.control_panel.pack(fill="both", expand=True)
 
         self.footer = Footer(self, on_update_click=self.open_latest_release)
         self.footer.pack(fill="x", padx=10, pady=(6, 10))
@@ -206,19 +254,39 @@ class TacticalCommandCenter(ctk.CTk):
         import tkinter as tk
 
         menubar = tk.Menu(self)
-
-        # File menu
         file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Open Blueprint Directory (Ctrl+O)", command=self.browse_blueprint_dir)
-        file_menu.add_command(label="Import Workshop / Mod.io Blueprint...", command=self.import_workshop_blueprint)
-        file_menu.add_command(label="Refresh Blueprints (F5)", command=self.load_blueprints_async)
+        file_menu.add_command(label="Open folder…", command=self.browse_blueprint_dir, accelerator="Ctrl+O")
+        file_menu.add_command(
+            label="Import Workshop / Mod.io blueprint…",
+            command=self.import_workshop_blueprint,
+        )
+        file_menu.add_command(label="Refresh blueprints", command=self.load_blueprints_async, accelerator="F5")
         file_menu.add_separator()
-        file_menu.add_command(label="Create Desktop Shortcut", command=self.create_desktop_shortcut)
+        file_menu.add_command(label="Create desktop shortcut", command=self.create_desktop_shortcut)
         file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.destroy)
+        file_menu.add_command(label="Locate Space Engineers…", command=self.locate_space_engineers)
+        file_menu.add_command(label="Clear Space Engineers path", command=self.clear_space_engineers_path)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close, accelerator="Alt+F4")
         menubar.add_cascade(label="File", menu=file_menu)
 
-        # Help menu
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        tools_menu.add_command(label="Selective block exchange…", command=self.open_selective_exchange)
+        tools_menu.add_command(label="PB Doctor…", command=self.open_pb_doctor)
+        tools_menu.add_command(label="Split into projector subgrids", command=self.split_active_blueprint_subgrids)
+        tools_menu.add_separator()
+        tools_menu.add_command(
+            label="Survival Sanity (Prototech → vanilla)",
+            command=self.survival_sanity_blueprint,
+        )
+        tools_menu.add_command(label="Upgrade to Prototech", command=self.upgrade_prototech_blueprint)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Harden armor around cores…", command=self.harden_active_armor)
+        tools_menu.add_command(label="Lightweight outer hull…", command=self.lightweight_active_armor)
+        tools_menu.add_command(label="Export native SE2 armor blueprint…", command=self.export_se2_blueprint)
+        tools_menu.add_command(label="Import native SE2 armor blueprint…", command=self.import_se2_blueprint)
+        menubar.add_cascade(label="Tools", menu=tools_menu)
+
         help_menu = tk.Menu(menubar, tearoff=0)
         self._auto_update_var = tk.BooleanVar(value=self.settings.auto_check_updates)
         help_menu.add_checkbutton(
@@ -228,7 +296,7 @@ class TacticalCommandCenter(ctk.CTk):
         )
         help_menu.add_separator()
         help_menu.add_command(label="View Changelog", command=self.show_changelog_window)
-        help_menu.add_command(label="Discord Community", command=lambda: webbrowser.open("https://discord.com/"))
+        help_menu.add_command(label="Discord", command=lambda: webbrowser.open("https://discord.com/"))
         help_menu.add_command(
             label="Report an Issue",
             command=lambda: webbrowser.open("https://github.com/MerabyLabs/SE-Block-Exchanger/issues"),
@@ -236,45 +304,224 @@ class TacticalCommandCenter(ctk.CTk):
         menubar.add_cascade(label="Help", menu=help_menu)
         self.configure(menu=menubar)
 
+    def _apply_subgrids_session_prefs(self) -> None:
+        from se_render.dissection import DISSECT_MODES, DISSECT_PEEL
+        from ui.widgets.ship_canvas import ShipCanvas
+        from ui.widgets.ship_preview import ShipPreviewHost
+
+        projection = str(self.settings.subgrids_projection or "Top")
+        if projection in ShipCanvas.PROJECTIONS:
+            ShipCanvas._session_projection = projection
+        mode = str(self.settings.subgrids_dissect_mode or DISSECT_PEEL)
+        if mode in DISSECT_MODES:
+            ShipPreviewHost._session_dissect_mode = mode
+        ShipPreviewHost._on_session_prefs = self._persist_subgrids_session_prefs
+        ShipCanvas._on_session_prefs = self._persist_subgrids_session_prefs
+
+    def _persist_subgrids_session_prefs(self) -> None:
+        from ui.widgets.ship_canvas import ShipCanvas
+        from ui.widgets.ship_preview import ShipPreviewHost
+
+        self.settings.subgrids_projection = ShipCanvas._session_projection
+        self.settings.subgrids_dissect_mode = ShipPreviewHost._session_dissect_mode
+        self.settings_store.save(self.settings)
+
     def _toggle_auto_update_checks(self):
         self.settings.auto_check_updates = bool(self._auto_update_var.get())
         self.settings_store.save(self.settings)
         state = "enabled" if self.settings.auto_check_updates else "disabled"
-        self.footer.set_status(f"AUTO UPDATE CHECKS {state.upper()}")
+        self.footer.set_status(f"Auto-check updates {state}")
 
     def _bind_shortcuts(self):
         self.bind_all("<Control-o>", lambda event: self.browse_blueprint_dir())
         self.bind_all("<Control-r>", lambda event: self.convert_blueprint())
         self.bind_all("<Control-z>", lambda event: self.undo_last_conversion())
         self.bind_all("<F5>", lambda event: self.load_blueprints_async())
+        self.bind_all("<Alt-F4>", lambda event: self._on_close())
 
     def _setup_drag_drop(self):
         self._drop_target = WindowsFileDropTarget(self, self._handle_dropped_paths)
         try:
             enabled = self._drop_target.enable()
             if enabled:
-                self.footer.set_status("DRAG & DROP ENABLED")
+                self.footer.set_status("Drop a blueprint folder to open it")
         except Exception:
-            self.footer.set_status("DRAG & DROP UNAVAILABLE")
+            self.footer.set_status("Drag and drop unavailable")
 
     # ------------------------------------------------------------------
     # Settings and appearance
     # ------------------------------------------------------------------
+
+    def _detect_install_after_paint(self) -> None:
+        """First layout/paint happens before Steam-library install detection."""
+        if self._closing:
+            return
+        saved = self.settings.space_engineers_install
+        allow_detect = not self.settings.space_engineers_cleared
+        generation = self._install_token.begin()
+
+        def task() -> None:
+            status = resolve_install(saved, allow_detect=allow_detect)
+            self._ui(lambda: self._on_install_resolved(status, generation))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_install_resolved(self, status, generation=None) -> None:
+        if self._closing:
+            return
+        incoming = str(status.path) if status is not None and status.path else ""
+        if generation is not None and not install_detection_applies(
+            self._install_token,
+            generation,
+            cleared=self.settings.space_engineers_cleared,
+            saved_install=self.settings.space_engineers_install or "",
+            incoming_path=incoming or None,
+        ):
+            return
+        if self.settings.space_engineers_cleared:
+            status = resolve_install("", allow_detect=False)
+        elif self.settings.space_engineers_install:
+            saved = str(self.settings.space_engineers_install)
+            if not incoming or incoming != saved:
+                status = resolve_install(saved, allow_detect=False)
+        self._se_install_status = status
+        self._apply_se_install_state()
+
+    def _apply_se_install_state(self) -> None:
+        status = self._se_install_status
+        if status is None:
+            return
+        path_text = str(status.path) if status.path else ""
+        self.preview_panel.set_se_preview_state(
+            status.valid,
+            path_text,
+            status.reason,
+            cleared=self.settings.space_engineers_cleared,
+        )
+        if status.valid and status.path is not None and not self.settings.space_engineers_cleared:
+            if str(status.path) != self.settings.space_engineers_install:
+                self.settings.space_engineers_install = str(status.path)
+                self.settings_store.save(self.settings)
+            self._load_se_catalog_async(status.path)
+            self.after_idle(self._retry_prewarm_gl)
+
+    def _retry_prewarm_gl(self) -> None:
+        """List-load prewarm can run before install is valid; retry once apply/locate lands."""
+        if self._closing or self.settings.space_engineers_cleared:
+            return
+        status = self._se_install_status
+        if status is None or not getattr(status, "valid", False):
+            return
+        self.preview_panel.prewarm_gl()
+
+    def _load_se_catalog_async(self, install) -> None:
+        generation = self._catalog_token.begin()
+        self.preview_panel.set_catalog_in_flight(True)
+
+        def task():
+            try:
+                catalog = CubeBlockCatalog()
+                catalog.load(install)
+                meshes = MeshLibrary(install)
+                self._ui(lambda: self._on_se_catalog_ready(catalog, meshes, generation))
+            except Exception as exc:
+                message = str(exc)
+
+                def _fail() -> None:
+                    if not catalog_completion_allowed(
+                        self._catalog_token,
+                        generation,
+                        cleared=self.settings.space_engineers_cleared,
+                    ):
+                        return
+                    self.preview_panel.set_catalog_in_flight(False, failed=True)
+                    self.toasts.toast(f"Block catalog failed: {message}", level="warning")
+
+                self._ui(_fail)
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_se_catalog_ready(self, catalog: CubeBlockCatalog, meshes: MeshLibrary, generation: int) -> None:
+        if self._closing:
+            return
+        if not catalog_completion_allowed(
+            self._catalog_token,
+            generation,
+            cleared=self.settings.space_engineers_cleared,
+        ):
+            return
+        self._se_catalog = catalog
+        self._se_meshes = meshes
+        self._rebuild_registry()
+        self.preview_panel.set_catalog_in_flight(False)
+        self.preview_panel.set_se_catalog(catalog, meshes)
+        if catalog:
+            self.footer.set_status(f"Loaded {len(catalog):,} CubeBlocks definitions")
+
+    def locate_space_engineers(self) -> None:
+        try:
+            chosen = filedialog.askdirectory(title="Select the Space Engineers install folder")
+        except Exception:
+            return
+        if not chosen:
+            return
+        try:
+            root = normalize_install_root(Path(chosen))
+        except Exception:
+            self.after(0, self._warn_invalid_se_folder)
+            return
+        if not validate_install(root):
+            # Defer the warning so dismissing the folder dialog cannot
+            # tear down the Tk mainloop (seen after an SE2 pick on Windows).
+            self.after(0, self._warn_invalid_se_folder)
+            return
+        self._install_token.begin()
+        self.settings.space_engineers_install = str(root)
+        self.settings.space_engineers_cleared = False
+        self.settings_store.save(self.settings)
+        self._se_install_status = resolve_install(str(root), allow_detect=False)
+        self._apply_se_install_state()
+        self.toasts.toast("Space Engineers folder saved. 3D preview will use official models.", level="success")
+
+    def _warn_invalid_se_folder(self) -> None:
+        if self._closing:
+            return
+        try:
+            messagebox.showwarning(
+                "Not a Space Engineers folder",
+                "That folder needs Bin64\\SpaceEngineers.exe, Content\\Data\\CubeBlocks, and Content\\Models.\n\n"
+                "The 2D map stays available until a valid install is selected.",
+                parent=self,
+            )
+        except Exception:
+            pass
+
+    def clear_space_engineers_path(self) -> None:
+        self._jobs.cancel_catalog()
+        self._install_token.begin()
+        self.settings.space_engineers_install = ""
+        self.settings.space_engineers_cleared = True
+        self.settings_store.save(self.settings)
+        self._se_install_status = resolve_install("", allow_detect=False)
+        self._apply_se_install_state()
+        self.preview_panel.set_catalog_in_flight(False)
+        self.preview_panel.set_se_catalog(None)
+        self.toasts.toast("Cleared the Space Engineers path. Using the 2D map.", level="info")
 
     def set_appearance_mode(self, mode: str):
         normalized = TacticalTheme.normalize_appearance_mode(mode)
         ctk.set_appearance_mode(normalized)
         self.settings.appearance_mode = normalized
         self.settings_store.save(self.settings)
-        self.footer.set_status(f"APPEARANCE: {normalized.upper()}")
+        self.footer.set_status(f"Appearance: {normalized}")
 
     def _select_recent_dir(self, directory: str):
         self.custom_blueprint_dir = directory
-        self.footer.set_status(f"DIR: {directory}")
+        self.footer.set_status(f"Folder: {directory}")
         self.load_blueprints_async()
 
     def _on_recent_blueprint_pick(self, name: str):
-        self.footer.set_status(f"RECENT BLUEPRINT: {name}")
+        self.footer.set_status(f"Recent: {name}")
 
     # ------------------------------------------------------------------
     # Registry / profiles
@@ -282,10 +529,14 @@ class TacticalCommandCenter(ctk.CTk):
 
     def _rebuild_registry(self):
         self.profile_manager.load_all()
-        self.registry = build_registry(include_builtin=True)
+        self.registry = build_registry(include_builtin=True, catalog=self._se_catalog)
         self.profile_manager.register_profile_categories(self.registry)
         self.enabled_categories = self._resolve_enabled_categories(self.enabled_categories)
-        self.scanner = BlueprintScanner(registry=self.registry, enabled_categories=self.enabled_categories)
+        self.scanner = BlueprintScanner(
+            registry=self.registry,
+            enabled_categories=self.enabled_categories,
+            reverse=(self.conversion_mode == "heavy_to_light"),
+        )
         self.converter = self._build_converter()
         self.control_panel.set_category_options(self.registry.list_categories(), self.enabled_categories)
         self.settings.enabled_categories = list(self.enabled_categories)
@@ -316,7 +567,7 @@ class TacticalCommandCenter(ctk.CTk):
         def task():
             try:
                 info = self.update_checker.check_for_updates(force=False)
-                self.after(0, lambda: self._on_update_checked(info))
+                self._ui(lambda: self._on_update_checked(info))
             except Exception:
                 pass  # offline / GitHub rate-limit: skip the update badge silently
 
@@ -360,7 +611,7 @@ class TacticalCommandCenter(ctk.CTk):
 
         self.settings_store.add_recent_dir(self.settings, self.custom_blueprint_dir)
         self.header.set_recent_dirs(self.settings.recent_blueprint_dirs)
-        self.footer.set_status(f"DROPPED: {raw_path}")
+        self.footer.set_status(f"Opened: {raw_path.name}")
         self.load_blueprints_async()
 
     # ------------------------------------------------------------------
@@ -377,9 +628,14 @@ class TacticalCommandCenter(ctk.CTk):
             self.settings.enabled_categories = list(categories)
             self.settings_store.save(self.settings)
             self.converter = self._build_converter()
-            self.footer.set_status(f"CATEGORIES: {', '.join(categories)}")
+            self._invalidate_preview_counts()
+            self.footer.set_status(
+                "Categories: " + ", ".join(category_label(name) for name in categories)
+            )
+            self._remap_scanned_blueprints()
             if self.selected_blueprint:
-                self.refresh_analytics_async()
+                self._apply_instant_inspect(self.selected_blueprint)
+            self._schedule_rescan()
         except Exception as exc:
             self.scanner.set_enabled_categories(previous)
             self.enabled_categories = previous
@@ -391,54 +647,77 @@ class TacticalCommandCenter(ctk.CTk):
     # ------------------------------------------------------------------
 
     def load_blueprints_async(self):
-        self.footer.set_status("SCANNING BLUEPRINTS...")
+        self.footer.set_status("Scanning blueprints…")
+
+        generation = self._scan_token.begin()
 
         def load_task():
             try:
                 scan_dir = self.custom_blueprint_dir or None
-                results = self.scanner.scan_blueprints(scan_dir)
-                self.after(0, lambda res=results: self._on_blueprints_loaded(res))
+                blueprints = self.scanner.scan_blueprints(
+                    scan_dir,
+                    cancel=lambda: not self._scan_token.is_current(generation),
+                )
+                if not self._scan_token.is_current(generation):
+                    return
+                self._ui(lambda bps=blueprints, gen=generation: self._on_blueprints_loaded(bps, gen))
             except FileNotFoundError:
-                self.after(0, self._on_scan_not_found)
+                self._ui(lambda gen=generation: self._on_scan_not_found(gen))
             except Exception as exc:
                 error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._show_error(f"Scan failed: {msg}"))
+                self._ui(lambda msg=error_message, gen=generation: self._on_scan_error(msg, gen))
 
         threading.Thread(target=load_task, daemon=True).start()
 
-    def _on_blueprints_loaded(self, results):
-        self.blueprints = list(results)
+    def _on_blueprints_loaded(self, blueprints=None, generation=None):
+        if generation is not None and not scan_callback_applies(self._scan_token, generation):
+            return
+        if blueprints is not None:
+            self.blueprints = blueprints
         count = len(self.blueprints)
         self.header.set_blueprint_count(count)
-        self.footer.set_status("BLUEPRINTS LOADED")
+        self.footer.set_status(f"{count} blueprint{'s' if count != 1 else ''} loaded")
         self.footer.set_scanned(count)
         self.blueprint_panel.set_blueprints(self.blueprints)
         self.blueprint_panel.set_recent_blueprints(self.settings.recent_blueprints)
+        self.after_idle(self.preview_panel.prewarm_subgrids)
 
-        if self._pending_select_name:
-            found = self.blueprint_panel.select_blueprint_by_name(self._pending_select_name)
-            self._pending_select_name = None
-            if not found:
-                self.toasts.toast("Dropped blueprint was not found in scanned directory.", level="warning")
+        target = self._pending_select_name
+        dropped = self._pending_select_name is not None
+        self._pending_select_name = None
+        if not target and self.selected_blueprint:
+            target = self.selected_blueprint.display_name
+        if not target and self.blueprints:
+            target = self.blueprints[0].display_name
+        if target:
+            found = self.blueprint_panel.select_blueprint_by_name(target)
+            if not found and dropped:
+                self.toasts.toast("That blueprint was not in the scanned folder.", level="warning")
+            if not found and self.blueprints:
+                self.blueprint_panel.select_blueprint_by_name(self.blueprints[0].display_name)
 
-    def _on_scan_not_found(self):
+    def _on_scan_not_found(self, generation=None):
+        if generation is not None and not scan_callback_applies(self._scan_token, generation):
+            return
         self.blueprints = []
         self.header.set_blueprint_count(0)
-        self.footer.set_status("NO SE INSTALL DETECTED")
+        self.footer.set_status("Space Engineers folder not found")
         self.blueprint_panel.set_blueprints([])
-        messagebox.showwarning(
-            "Blueprint Directory Not Found",
-            "Space Engineers blueprint directory was not found.\n\n"
-            "Use BROWSE or drag/drop a blueprint folder.",
-        )
+        self.toasts.toast("No blueprint folder found. Use Open folder or drop a blueprint folder here.",
+                          level="warning")
+
+    def _on_scan_error(self, message: str, generation=None) -> None:
+        if generation is not None and not scan_callback_applies(self._scan_token, generation):
+            return
+        self._show_error(message)
 
     def browse_blueprint_dir(self):
-        chosen = filedialog.askdirectory(title="Select Blueprint Directory", mustexist=True)
+        chosen = filedialog.askdirectory(title="Open Blueprints folder", mustexist=True)
         if chosen:
             self.custom_blueprint_dir = chosen
             self.settings_store.add_recent_dir(self.settings, chosen)
             self.header.set_recent_dirs(self.settings.recent_blueprint_dirs)
-            self.footer.set_status(f"DIR: {chosen}")
+            self.footer.set_status(f"Folder: {chosen}")
             self.load_blueprints_async()
 
     # ------------------------------------------------------------------
@@ -446,16 +725,23 @@ class TacticalCommandCenter(ctk.CTk):
     # ------------------------------------------------------------------
 
     def on_blueprint_select(self, bp: BlueprintInfo):
+        self._inspect_token.cancel()
+        if self._preview_after_id is not None:
+            self.after_cancel(self._preview_after_id)
+            self._preview_after_id = None
         self.selected_blueprint = bp
         self.settings_store.add_recent_blueprint(self.settings, bp.display_name)
         self.blueprint_panel.set_recent_blueprints(self.settings.recent_blueprints)
 
         self.control_panel.update_details(bp)
+        self.preview_panel.begin_blueprint_switch(bp.path, bp.display_name)
+        cached = self._documents.get(bp.path)
+        self._document = cached
+        if self.preview_panel.current_tab() == "Subgrids":
+            self._ensure_subgrids_document()
         self.preview_panel.update_intel(bp, self.conversion_mode)
-        self.preview_panel.load_xml(bp.path / "bp.sbc", f"SOURCE: {bp.name}")
-        self._update_convert_state()
-        self.footer.set_status(f"SELECTED: {bp.display_name}")
-        self.refresh_analytics_async()
+        self._apply_instant_inspect(bp)
+        self.footer.set_status(f"Selected: {bp.display_name}")
 
     def _get_selected_blueprint_file(self) -> Optional[str]:
         if not self.selected_blueprint:
@@ -468,27 +754,197 @@ class TacticalCommandCenter(ctk.CTk):
 
     def set_conversion_mode(self, mode: str):
         self.conversion_mode = mode
+        self.scanner.set_reverse(mode == "heavy_to_light")
         self.converter = self._build_converter()
-        self._update_convert_state()
+        self._invalidate_preview_counts()
+        self._remap_scanned_blueprints()
         if self.selected_blueprint:
             self.preview_panel.update_intel(self.selected_blueprint, mode)
-            self.refresh_analytics_async()
-        self.footer.set_status(f"MODE: {mode.replace('_', ' ').upper()}")
-
-    def _update_convert_state(self):
-        if not self.selected_blueprint:
-            self.control_panel.set_convert_enabled(False)
-            return
-
-        bp = self.selected_blueprint
-        if self.conversion_mode == "light_to_heavy":
-            has_source = bp.light_armor_count > 0
+            self._apply_instant_inspect(self.selected_blueprint)
         else:
-            has_source = bp.heavy_armor_count > 0
+            self._update_convert_state()
+        self.footer.set_status("Heavy → Light" if mode == "heavy_to_light" else "Light → Heavy")
 
-        if any(category.lower() != "armor" for category in self.enabled_categories):
-            has_source = has_source or any(bp.category_counts.get(name, 0) > 0 for name in self.enabled_categories)
-        self.control_panel.set_convert_enabled(has_source)
+    def _invalidate_preview_counts(self):
+        """Freeze Convert until instant inspect rematerializes counts for the new mapping."""
+        self._preview_convert_count = None
+        self.control_panel.mark_counts_stale()
+
+    def _update_convert_state(self, count: Optional[int] = None):
+        if not self.selected_blueprint:
+            self._preview_convert_count = None
+            self.control_panel.set_convert_ready(
+                enabled=False,
+                count=0,
+                reverse=(self.conversion_mode == "heavy_to_light"),
+                has_blueprint=False,
+            )
+            return
+        if count is None:
+            count = convertible_total(self.selected_blueprint)
+        self._preview_convert_count = count
+        self.control_panel.set_convert_ready(
+            enabled=count > 0,
+            count=count,
+            reverse=(self.conversion_mode == "heavy_to_light"),
+            has_blueprint=True,
+        )
+
+    def _schedule_rescan(self):
+        if self._rescan_after_id is not None:
+            self.after_cancel(self._rescan_after_id)
+        self._rescan_after_id = self.after(800, self._run_scheduled_rescan)
+
+    def _run_scheduled_rescan(self):
+        self._rescan_after_id = None
+        if self.selected_blueprint:
+            self._pending_select_name = self.selected_blueprint.display_name
+        self.load_blueprints_async()
+
+    def _remap_scanned_blueprints(self) -> None:
+        if not getattr(self.scanner, "_records", None):
+            return
+        remapped = self.scanner.remap_cached()
+        self.blueprints = remapped
+        selected_name = self.selected_blueprint.display_name if self.selected_blueprint else None
+        self.blueprint_panel.set_blueprints(remapped)
+        if selected_name:
+            found = next((bp for bp in remapped if bp.display_name == selected_name), None)
+            if found is not None:
+                self.selected_blueprint = found
+                self.blueprint_panel.select_blueprint_by_name(selected_name, notify=False)
+
+    def _apply_instant_inspect(self, bp: BlueprintInfo, *, force_tabs: bool = False) -> None:
+        """Fill Convert from scan counts. Overview / Preview / Analytics / SE2 stay off Tk on Subgrids."""
+        mapping = self.converter.replacer.mapping
+        on_subgrids = (not force_tabs) and self.preview_panel.current_tab() == "Subgrids"
+        if on_subgrids:
+            preview_count = convertible_total(bp)
+            self.preview_panel.load_xml(bp.path / "bp.sbc", f"Source: {bp.name}")
+            self._update_convert_state(preview_count)
+            self.control_panel.set_pending_change_count(preview_count)
+            self._instant_tabs_stale = True
+            return
+        before_counts, after_counts, report, preview_count = dry_run_from_counts(
+            bp.subtype_counts or {},
+            mapping,
+        )
+        analytics = self.analytics_engine.analyze_counts(
+            bp.subtype_counts or {},
+            blueprint_name=bp.name,
+            grid_size=bp.grid_size,
+            thruster_forwards=getattr(bp, "thruster_forwards", None),
+            thruster_count=getattr(bp, "thruster_count", None),
+            block_count=bp.block_count,
+        )
+        comparison = self.analytics_engine.compare_conversion_cost_from_result(
+            analytics,
+            mapping,
+            self.conversion_mode,
+        )
+        self._latest_analytics = analytics
+        self._latest_comparison = comparison
+        self.preview_panel.show_preview_diff(before_counts, after_counts, report, switch_tab=False)
+        self.preview_panel.update_analytics(analytics, comparison)
+        self.preview_panel.update_se2_transition(bp, compute_se2_readiness(analytics.block_counts))
+        self.preview_panel.load_xml(bp.path / "bp.sbc", f"Source: {bp.name}")
+        self._update_convert_state(preview_count)
+        self.control_panel.set_pending_change_count(preview_count)
+        self._instant_tabs_stale = False
+
+    def _fill_hidden_preview_tabs(self) -> None:
+        if not self._instant_tabs_stale or not self.selected_blueprint:
+            return
+        self._apply_instant_inspect(self.selected_blueprint, force_tabs=True)
+
+    def _subgrids_will_show_3d(self) -> bool:
+        preview = getattr(self.preview_panel, "ship_preview", None)
+        return bool(preview is not None and preview.will_show_3d())
+
+    def _publish_subgrids_document(self, doc: BlueprintDocument) -> None:
+        voxels, blocks = subgrids_map_payload(self._subgrids_will_show_3d(), doc)
+        self.preview_panel.update_subgrids(
+            doc.structure,
+            voxels=voxels,
+            blocks=blocks,
+            scene=doc.scene,
+            path=doc.path.parent,
+            generation=self.preview_panel.subgrids_generation,
+            ship_name=doc.display_name,
+        )
+
+    def _ensure_subgrids_document(self) -> None:
+        if not self.selected_blueprint or self._closing:
+            return
+        if self.preview_panel.subgrids_generation == 0:
+            self.preview_panel.begin_blueprint_switch(
+                self.selected_blueprint.path,
+                self.selected_blueprint.display_name,
+            )
+        cached = self._documents.get(self.selected_blueprint.path)
+        if cached is not None:
+            self._document = cached
+            if cached._map_blocks is None:
+                self._inspect_blueprint_async(immediate=True)
+                if not self._subgrids_will_show_3d():
+                    return
+            try:
+                self._publish_subgrids_document(cached)
+            except Exception as exc:
+                self.toasts.toast(f"Map view failed: {exc}", level="warning")
+            return
+        self._inspect_blueprint_async(immediate=True)
+
+    def _inspect_blueprint_async(self, immediate: bool = False):
+        if not self.selected_blueprint or self._closing:
+            return
+        if self._preview_after_id is not None:
+            self.after_cancel(self._preview_after_id)
+        delay = 16 if immediate or self.preview_panel.current_tab() == "Subgrids" else 90
+        self._preview_after_id = self.after(delay, self._run_inspect_now)
+
+    def _run_inspect_now(self):
+        self._preview_after_id = None
+        if not self.selected_blueprint or self._closing:
+            return
+        generation = self._inspect_token.begin()
+        bp = self.selected_blueprint
+
+        def task():
+            try:
+                doc = self._documents.get_or_load(bp.path, token=self._inspect_token, generation=generation)
+                from ui.widgets.ship_canvas import voxels_to_blocks
+
+                doc.ensure_map_blocks(voxels_to_blocks)
+                self._ui(lambda: self._on_document_ready(generation, bp, doc))
+            except CancelledError:
+                return
+            except Exception as exc:
+                error_message = str(exc)
+                self._ui(lambda msg=error_message, ship=bp: self._on_inspect_error(generation, ship, msg))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_document_ready(self, generation: int, bp: BlueprintInfo, doc: BlueprintDocument):
+        if self._closing:
+            return
+        selected = self.selected_blueprint.path if self.selected_blueprint else None
+        if not inspect_result_applies(self._inspect_token, generation, selected, bp.path):
+            return
+        self._document = doc
+        try:
+            self._publish_subgrids_document(doc)
+        except Exception as exc:
+            self.toasts.toast(f"Map view failed: {exc}", level="warning")
+
+    def _on_inspect_error(self, generation: int, bp: BlueprintInfo, message: str):
+        if self._closing:
+            return
+        selected = self.selected_blueprint.path if self.selected_blueprint else None
+        if not inspect_result_applies(self._inspect_token, generation, selected, bp.path):
+            return
+        self._show_error(f"Preview failed: {message}")
+        self._update_convert_state()
 
     # ------------------------------------------------------------------
     # Conversion operations
@@ -497,56 +953,66 @@ class TacticalCommandCenter(ctk.CTk):
     def convert_blueprint(self):
         if not self.selected_blueprint:
             return
+        if self.control_panel.counts_are_stale:
+            return
         bp = self.selected_blueprint
-        mode_name = "reverse" if self.conversion_mode == "heavy_to_light" else "forward"
-        category_text = ", ".join(self.enabled_categories)
+        count = self._preview_convert_count
+        if count is None:
+            count = convertible_total(bp)
+        target = conversion_target_phrase(
+            self.conversion_mode == "heavy_to_light",
+            self.enabled_categories,
+        )
+        category_text = ", ".join(category_label(name) for name in self.enabled_categories)
 
         confirm = messagebox.askyesno(
-            "Confirm Conversion",
-            f"Convert blueprint '{bp.display_name}'?\n\n"
-            f"Mode: {mode_name}\n"
-            f"Categories: {category_text}\n\n"
-            f"This creates a new prefixed blueprint folder.",
-            icon="warning",
+            "Create a converted copy?",
+            f"Create a new copy of '{bp.display_name}' with {count} block(s) converted to {target}?\n\n"
+            f"Included: {category_text}\n\n"
+            "The original blueprint is not changed. Undo removes the new copy.",
         )
         if not confirm:
             return
 
         self.control_panel.set_convert_enabled(False)
         self.control_panel.progress.start_indeterminate("Converting blueprint...")
-        self.footer.set_status("CONVERTING...")
+        self.footer.set_status("Converting…")
 
         def task():
             try:
                 dest, scanned, converted = self.converter.create_converted_blueprint(bp.path)
-                self.after(0, lambda: self._on_conversion_complete(dest, scanned, converted))
+                self._ui(lambda: self._on_conversion_complete(dest, scanned, converted))
             except Exception as exc:
                 error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
+                self._ui(lambda msg=error_message: self._on_conversion_error(msg))
 
         threading.Thread(target=task, daemon=True).start()
 
     def _on_conversion_complete(self, dest_path: Path, scanned: int, converted: int):
         self.control_panel.progress.stop()
         self._converted_count += converted
-        self._undo_stack.append(dest_path)
+        self._remember_output(dest_path)
         self.footer.set_scanned(scanned)
         self.footer.set_converted(self._converted_count)
-        self.footer.set_status("CONVERSION COMPLETE")
+        self.footer.set_status("Copy created")
         self._update_convert_state()
 
-        self.preview_panel.load_xml(dest_path / "bp.sbc", f"CONVERTED: {dest_path.name}")
-        self.preview_panel.switch_to_xml()
+        preview_file = dest_path / "bp.sbc"
+        if not preview_file.exists():
+            preview_file = dest_path / "grid.json"
+        if preview_file.exists():
+            self.preview_panel.load_xml(preview_file, f"Converted: {dest_path.name}")
         self.toasts.toast(
-            f"Converted {converted} block(s) using {', '.join(self.enabled_categories)}.",
+            f"Created {dest_path.name} with {converted} block(s) converted.",
             level="success",
         )
+        self._pending_select_name = dest_path.name
         self.load_blueprints_async()
 
     def _on_conversion_error(self, error_msg: str):
         self.control_panel.progress.stop()
         self._update_convert_state()
-        self.footer.set_status("ERROR", TacticalTheme.RED_PRIMARY)
+        self.footer.set_status("Error", TacticalTheme.RED_PRIMARY)
         self.toasts.toast(f"Conversion failed: {error_msg}", level="error", duration=5000)
 
     def vanillafy_blueprint(self):
@@ -556,8 +1022,8 @@ class TacticalCommandCenter(ctk.CTk):
 
         confirm = messagebox.askyesno(
             "Vanilla-fy Blueprint",
-            f"Replace all premium DLC blocks in '{bp.display_name}' with their base game (Vanilla) counterparts?\n\n"
-            f"This will create a new prefixed blueprint folder (e.g. CONVERTED_{bp.name}).",
+            f"Replace paid DLC blocks in '{bp.display_name}' with vanilla equivalents?\n\n"
+            "This creates a new copy (original stays untouched).",
             icon="question",
         )
         if not confirm:
@@ -565,42 +1031,42 @@ class TacticalCommandCenter(ctk.CTk):
 
         self.control_panel.set_convert_enabled(False)
         self.control_panel.progress.start_indeterminate("Converting DLC blocks to base...")
-        self.footer.set_status("VANILLA-FYING...")
+        self.footer.set_status("Replacing DLC blocks…")
 
         # Build a temporary converter specifically for DLC substitution
         dlc_converter = BlueprintConverter(
             verbose=False,
             reverse=False,
             enabled_categories=["dlc_substitution"],
-            include_profiles=True,
-            profile_dir=Path("profiles"),
+            include_profiles=False,
+            registry=self.registry,
         )
 
         def task():
             try:
                 dest, scanned, converted = dlc_converter.create_converted_blueprint(bp.path)
-                self.after(0, lambda: self._on_vanillafy_complete(dest, scanned, converted))
+                self._ui(lambda: self._on_vanillafy_complete(dest, scanned, converted))
             except Exception as exc:
                 error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
+                self._ui(lambda msg=error_message: self._on_conversion_error(msg))
 
         threading.Thread(target=task, daemon=True).start()
 
     def _on_vanillafy_complete(self, dest_path: Path, scanned: int, converted: int):
         self.control_panel.progress.stop()
         self._converted_count += converted
-        self._undo_stack.append(dest_path)
+        self._remember_output(dest_path)
         self.footer.set_scanned(scanned)
         self.footer.set_converted(self._converted_count)
-        self.footer.set_status("DLC CONVERT COMPLETE")
+        self.footer.set_status("DLC replaced")
         self._update_convert_state()
 
-        self.preview_panel.load_xml(dest_path / "bp.sbc", f"VANILLA-FIED: {dest_path.name}")
-        self.preview_panel.switch_to_xml()
+        self.preview_panel.load_xml(dest_path / "bp.sbc", f"Vanilla copy: {dest_path.name}")
         self.toasts.toast(
-            f"Vanilla-fied {converted} DLC block(s) successfully.",
+            f"Created {dest_path.name} with {converted} DLC block(s) replaced.",
             level="success",
         )
+        self._pending_select_name = dest_path.name
         self.load_blueprints_async()
 
     def scale_grid_choice(self):
@@ -613,8 +1079,9 @@ class TacticalCommandCenter(ctk.CTk):
         
         confirm = messagebox.askyesno(
             "Rescale Grid Size",
-            f"Would you like to auto-scale grid size for '{bp.display_name}' from {current_grid} Grid to {suggested_grid} Grid?\n\n"
-            f"This transfers all block subtypes and dimensions to {suggested_grid} equivalents and sets the grid property.",
+            f"Create a {suggested_grid.lower()}-grid copy of '{bp.display_name}'?\n\n"
+            f"Single-grid armor only: changes cell size from {current_grid} to {suggested_grid} while keeping connected cell coordinates. "
+            "Functional blocks and mechanical subgrids are unsupported. The original blueprint is not changed.",
             icon="question",
         )
         if not confirm:
@@ -622,237 +1089,46 @@ class TacticalCommandCenter(ctk.CTk):
 
         self.control_panel.set_convert_enabled(False)
         self.control_panel.progress.start_indeterminate(f"Rescaling grid to {suggested_grid}...")
-        self.footer.set_status("RESCALING...")
+        self.footer.set_status(f"Scaling to {suggested_grid}…")
 
         def task():
             try:
                 dest, scanned, converted = self.converter.scale_grid_size(bp.path, suggested_grid)
-                self.after(0, lambda: self._on_scale_complete(dest, scanned, converted, suggested_grid))
+                self._ui(lambda: self._on_scale_complete(dest, scanned, converted, suggested_grid))
             except Exception as exc:
                 error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
+                self._ui(lambda msg=error_message: self._on_conversion_error(msg))
 
         threading.Thread(target=task, daemon=True).start()
 
     def _on_scale_complete(self, dest_path: Path, scanned: int, converted: int, target_grid: str):
         self.control_panel.progress.stop()
         self._converted_count += converted
-        self._undo_stack.append(dest_path)
+        self._remember_output(dest_path)
         self.footer.set_scanned(scanned)
         self.footer.set_converted(self._converted_count)
-        self.footer.set_status(f"SCALED TO {target_grid.upper()}")
+        self.footer.set_status(f"Scaled to {target_grid}")
         self._update_convert_state()
 
-        self.preview_panel.load_xml(dest_path / "bp.sbc", f"SCALED: {dest_path.name}")
-        self.preview_panel.switch_to_xml()
+        self.preview_panel.load_xml(dest_path / "bp.sbc", f"Scaled: {dest_path.name}")
         self.toasts.toast(
-            f"Successfully scaled entire blueprint grid size to {target_grid} with {converted} blocks updated.",
+            f"Created a {target_grid}-grid copy with {converted} blocks updated.",
             level="success",
         )
+        self._pending_select_name = dest_path.name
         self.load_blueprints_async()
-
-    def survival_sanity_blueprint(self):
-        if not self.selected_blueprint:
-            return
-        bp = self.selected_blueprint
-        confirm = messagebox.askyesno(
-            "Survival Sanity (Strip Prototech)",
-            f"Replace all uncraftable Prototech blocks in '{bp.display_name}' with standard survival-craftable counterparts?\n\n"
-            f"This ensures the blueprint can be projected and built in standard survival games.",
-            icon="question",
-        )
-        if not confirm:
-            return
-
-        self.control_panel.set_convert_enabled(False)
-        self.control_panel.progress.start_indeterminate("Stripping Prototech blocks for survival...")
-        self.footer.set_status("SURVIVAL SANITY...")
-
-        def task():
-            try:
-                dest, scanned, converted = self.converter.survival_sanity_prototech(bp.path)
-                self.after(0, lambda: self._on_survival_sanity_complete(dest, scanned, converted))
-            except Exception as exc:
-                error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
-
-        threading.Thread(target=task, daemon=True).start()
-
-    def _on_survival_sanity_complete(self, dest_path: Path, scanned: int, converted: int):
-        self.control_panel.progress.stop()
-        self._converted_count += converted
-        self._undo_stack.append(dest_path)
-        self.footer.set_scanned(scanned)
-        self.footer.set_converted(self._converted_count)
-        self.footer.set_status("SURVIVAL READY")
-        self._update_convert_state()
-
-        self.preview_panel.load_xml(dest_path / "bp.sbc", f"SURVIVAL-READY: {dest_path.name}")
-        self.preview_panel.switch_to_xml()
-        self.toasts.toast(
-            f"Successfully converted {converted} Prototech block(s) to survival-craftable equivalents.",
-            level="success",
-        )
-        self.load_blueprints_async()
-
-    def upgrade_prototech_blueprint(self):
-        if not self.selected_blueprint:
-            return
-        bp = self.selected_blueprint
-        confirm = messagebox.askyesno(
-            "Upgrade to Prototech (Factorum)",
-            f"Upgrade standard vanilla blocks in '{bp.display_name}' to endgame Factorum Prototech equivalents?\n\n"
-            f"This equips maximum-tier reactors, thrusters, jump drives, and weapons.",
-            icon="question",
-        )
-        if not confirm:
-            return
-
-        self.control_panel.set_convert_enabled(False)
-        self.control_panel.progress.start_indeterminate("Upgrading to Prototech tier...")
-        self.footer.set_status("PROTOTECH UPGRADE...")
-
-        def task():
-            try:
-                dest, scanned, converted = self.converter.upgrade_to_prototech(bp.path)
-                self.after(0, lambda: self._on_prototech_complete(dest, scanned, converted))
-            except Exception as exc:
-                error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
-
-        threading.Thread(target=task, daemon=True).start()
-
-    def _on_prototech_complete(self, dest_path: Path, scanned: int, converted: int):
-        self.control_panel.progress.stop()
-        self._converted_count += converted
-        self._undo_stack.append(dest_path)
-        self.footer.set_scanned(scanned)
-        self.footer.set_converted(self._converted_count)
-        self.footer.set_status("PROTOTECH COMPLETE")
-        self._update_convert_state()
-
-        self.preview_panel.load_xml(dest_path / "bp.sbc", f"PROTOTECH: {dest_path.name}")
-        self.preview_panel.switch_to_xml()
-        self.toasts.toast(
-            f"Successfully upgraded {converted} block(s) to Prototech tier.",
-            level="success",
-        )
-        self.load_blueprints_async()
-
-    def selective_convert_blueprint(self, custom_mapping: Dict[str, str], selected_subtypes: Set[str]):
-        if not self.selected_blueprint:
-            self.toasts.toast("Select a blueprint first.", level="warning")
-            return
-
-        bp = self.selected_blueprint
-        self.control_panel.set_convert_enabled(False)
-        self.control_panel.progress.start_indeterminate(f"Converting {len(selected_subtypes)} selective block type(s)...")
-        self.footer.set_status("SELECTIVE CONVERTING...")
-
-        def task():
-            try:
-                dest, scanned, converted = self.converter.create_selective_converted_blueprint(
-                    bp.path,
-                    custom_mapping=custom_mapping,
-                    selected_subtypes=selected_subtypes,
-                )
-                self.after(0, lambda: self._on_selective_convert_complete(dest, scanned, converted))
-            except Exception as exc:
-                error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
-
-        threading.Thread(target=task, daemon=True).start()
-
-    def _on_selective_convert_complete(self, dest_path: Path, scanned: int, converted: int):
-        self.control_panel.progress.stop()
-        self._converted_count += converted
-        self._undo_stack.append(dest_path)
-        self.footer.set_scanned(scanned)
-        self.footer.set_converted(self._converted_count)
-        self.footer.set_status("SELECTIVE CONVERT COMPLETE")
-        self._update_convert_state()
-
-        self.preview_panel.load_xml(dest_path / "bp.sbc", f"CUSTOM: {dest_path.name}")
-        self.preview_panel.switch_to_xml()
-        self.toasts.toast(
-            f"Successfully exchanged {converted} selected block(s) into Custom blueprint.",
-            level="success",
-        )
-        self.load_blueprints_async()
-
-    def migrate_se2_blueprint(self):
-        if not self.selected_blueprint:
-            self.toasts.toast("Select a blueprint first.", level="warning")
-            return
-
-        bp = self.selected_blueprint
-        confirm = messagebox.askyesno(
-            "Export to Space Engineers 2 (VRage3)",
-            f"Export '{bp.display_name}' to the new VRage3 (SE2) JSON blueprint structure?\n\n"
-            f"This creates a forward-compatible SE2 blueprint with translated block subtypes and coordinates.",
-            icon="question",
-        )
-        if not confirm:
-            return
-
-        self.control_panel.set_convert_enabled(False)
-        self.control_panel.progress.start_indeterminate("Exporting to VRage3 (SE2) format...")
-        self.footer.set_status("SE2 EXPORT...")
-
-        def task():
-            try:
-                from engine_compat import SE2MigrationBridge
-                dest, scanned, converted = SE2MigrationBridge.migrate_se1_to_se2(bp.path)
-                self.after(0, lambda: self._on_se2_migration_complete(dest, scanned, converted))
-            except Exception as exc:
-                error_message = str(exc)
-                self.after(0, lambda msg=error_message: self._on_conversion_error(msg))
-
-        threading.Thread(target=task, daemon=True).start()
-
-    def _on_se2_migration_complete(self, dest_path: Path, scanned: int, converted: int):
-        self.control_panel.progress.stop()
-        self.footer.set_scanned(scanned)
-        self.footer.set_status("SE2 EXPORT COMPLETE")
-        self._update_convert_state()
-
-        json_file = dest_path / "blueprint.json"
-        if json_file.exists():
-            self.preview_panel.load_xml(json_file, f"VRAGE3 (SE2): {dest_path.name}")
-            self.preview_panel.switch_to_xml()
-
-        self.toasts.toast(
-            f"Exported {scanned} blocks to Space Engineers 2 format: {dest_path.name}",
-            level="success",
-        )
-        self.load_blueprints_async()
-
-    def create_desktop_shortcut(self):
-        try:
-            import subprocess
-            ps_script = Path(get_resource_path("create_desktop_shortcut.ps1"))
-            if ps_script.exists():
-                subprocess.run(
-                    ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(ps_script)],
-                    check=True,
-                    capture_output=True,
-                )
-                self.toasts.toast("Desktop shortcut created successfully!", level="success")
-            else:
-                self.toasts.toast("Shortcut script not found.", level="error")
-        except Exception as exc:
-            self.toasts.toast(f"Could not create desktop shortcut: {exc}", level="error")
 
     def import_workshop_blueprint(self):
         dialog = ctk.CTkInputDialog(
-            text="Enter Steam Workshop URL/ID or Mod.io URL:",
-            title="Import Blueprint from Workshop / Mod.io",
+            text="Enter a Steam Workshop URL/ID or a Mod.io URL:",
+            title="Import Workshop / Mod.io blueprint",
         )
         url_or_id = dialog.get_input()
         if not url_or_id:
             return
 
         from workshop_sync import SteamWorkshopFetcher, ModioFetcher
+
         wid = SteamWorkshopFetcher.parse_workshop_id(url_or_id)
         if wid:
             self.footer.set_status("Looking up workshop cache…")
@@ -862,32 +1138,30 @@ class TacticalCommandCenter(ctk.CTk):
                     cached_items = SteamWorkshopFetcher.list_cached_workshop_items()
                     matched = [item for item in cached_items if item.workshop_id == wid]
                     if not matched:
-                        self.after(
-                            0,
+                        self._ui(
                             lambda: self.toasts.toast(
-                                f"Workshop ID {wid} parsed. (Ensure item is downloaded in Steam workshop cache)",
+                                f"Workshop ID {wid} parsed. Download the item in Steam first, then retry.",
                                 level="info",
                                 duration=5000,
-                            ),
+                            )
                         )
                         return
                     imported_path = SteamWorkshopFetcher.import_to_local_blueprints(matched[0])
-                    self.after(
-                        0,
+                    self._ui(
                         lambda path=imported_path: (
                             self.toasts.toast(f"Imported Workshop blueprint: {path.name}", level="success"),
                             self.load_blueprints_async(),
-                        ),
+                        )
                     )
                 except Exception as exc:
-                    self.after(0, lambda msg=str(exc): self.toasts.toast(f"Import failed: {msg}", level="error"))
+                    self._ui(lambda msg=str(exc): self.toasts.toast(f"Import failed: {msg}", level="error"))
 
             threading.Thread(target=task, daemon=True).start()
             return
 
         mod_slug = ModioFetcher.parse_modio_url(url_or_id)
         if mod_slug:
-            self.toasts.toast(f"Mod.io item '{mod_slug}' detected.", level="info")
+            self.toasts.toast(f"Mod.io item '{mod_slug}' detected. Choose the downloaded zip.", level="info")
             zip_path = filedialog.askopenfilename(
                 title=f"Select the downloaded Mod.io zip for '{mod_slug}'",
                 filetypes=[("Zip archives", "*.zip"), ("All files", "*.*")],
@@ -909,19 +1183,309 @@ class TacticalCommandCenter(ctk.CTk):
                 self.toasts.toast(f"Mod.io import failed: {exc}", level="error")
             return
 
-        self.toasts.toast("Could not parse Workshop ID or Mod.io URL.", level="warning")
+        self.toasts.toast("Could not parse a Workshop ID or Mod.io URL.", level="warning")
+
+    def create_desktop_shortcut(self):
+        try:
+            import subprocess
+
+            if is_frozen():
+                target = Path(sys.executable)
+                workdir = target.parent
+                icon = f"{target},0"
+            else:
+                root = project_root()
+                exe_hits = sorted(root.glob("SE_Tactical_Command*.exe"))
+                if exe_hits:
+                    target = exe_hits[-1]
+                    icon = f"{target},0"
+                else:
+                    launcher = root / "launch.bat"
+                    target = launcher if launcher.exists() else root / "launch_gui.bat"
+                    icon_file = root / "app_icon.ico"
+                    icon = f"{icon_file},0" if icon_file.exists() else f"{target},0"
+                workdir = root
+
+            ps_dir = (
+                "[Environment]::GetFolderPath('Desktop')"
+            )
+            target_lit = str(target).replace("'", "''")
+            work_lit = str(workdir).replace("'", "''")
+            icon_lit = icon.replace("'", "''")
+            script = (
+                f"$Desktop = {ps_dir}; "
+                f"$Shortcut = Join-Path $Desktop 'SE Tactical Command.lnk'; "
+                "$Wsh = New-Object -ComObject WScript.Shell; "
+                "$Link = $Wsh.CreateShortcut($Shortcut); "
+                f"$Link.TargetPath = '{target_lit}'; "
+                f"$Link.WorkingDirectory = '{work_lit}'; "
+                f"$Link.IconLocation = '{icon_lit}'; "
+                "$Link.Description = 'Space Engineers Tactical Command'; "
+                "$Link.Save()"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.toasts.toast("Desktop shortcut created.", level="success")
+        except Exception as exc:
+            self.toasts.toast(f"Could not create desktop shortcut: {exc}", level="error")
+
+    def open_selective_exchange(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        win = ctk.CTkToplevel(self)
+        win.title(f"Selective exchange — {self.selected_blueprint.display_name}")
+        win.geometry("1120x740")
+        win.configure(fg_color=TacticalTheme.BG_DARK)
+        panel = SelectiveExchangePanel(
+            win,
+            on_selective_convert=lambda mapping, selected: self._run_selective_convert(mapping, selected),
+        )
+        panel.pack(fill="both", expand=True)
+        panel.load_blueprint(self.selected_blueprint)
+
+    def _run_selective_convert(self, mapping: Dict[str, str], selected: Set[str]):
+        if not self.selected_blueprint:
+            return
+        bp = self.selected_blueprint
+        self.control_panel.set_convert_enabled(False)
+        self.control_panel.progress.start_indeterminate("Selective conversion...")
+        self.footer.set_status("Selective convert…")
+
+        def task():
+            try:
+                dest, scanned, converted = self.converter.create_selective_converted_blueprint(
+                    bp.path,
+                    custom_mapping=mapping,
+                    selected_subtypes=selected,
+                )
+                self._ui(lambda: self._on_conversion_complete(dest, scanned, converted))
+            except Exception as exc:
+                error_message = str(exc)
+                self._ui(lambda msg=error_message: self._on_conversion_error(msg))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def open_pb_doctor(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        from pb_doctor import PBScriptExtractor, PBScriptValidator
+
+        bp_file = self.selected_blueprint.path / "bp.sbc"
+        scripts = PBScriptExtractor.extract_from_file(bp_file)
+        reports = [PBScriptValidator.validate_script(s.custom_name, s.program_code) for s in scripts]
+
+        win = ctk.CTkToplevel(self)
+        win.title(f"PB Doctor — {self.selected_blueprint.display_name}")
+        win.geometry("920x640")
+        win.configure(fg_color=TacticalTheme.BG_DARK)
+        textbox = ctk.CTkTextbox(
+            win,
+            font=TacticalTheme.FONT_MONO_SMALL,
+            text_color=TacticalTheme.TEXT_CYAN,
+            fg_color="#0c1220",
+            border_color=TacticalTheme.BG_MEDIUM,
+            border_width=1,
+            corner_radius=6,
+        )
+        textbox.pack(fill="both", expand=True, padx=10, pady=10)
+        if not scripts:
+            content = "No programmable-block scripts found in this blueprint."
+        else:
+            lines = [f"Found {len(scripts)} programmable block(s).\n"]
+            for script, report in zip(scripts, reports):
+                lines.append(f"=== {script.custom_name} ({script.subtype_name}) ===")
+                lines.append(f"Characters: {script.character_count}  Lines: {script.line_count}")
+                lines.append(
+                    f"Valid: {report.is_valid}  Score: {report.compliance_score}  Errors: {report.error_count}"
+                )
+                for diag in report.diagnostics:
+                    loc = f"L{diag.line_number} " if diag.line_number else ""
+                    lines.append(f"  [{diag.severity}] {loc}{diag.message}")
+                lines.append("")
+            content = "\n".join(lines)
+        textbox.insert("end", content)
+        textbox.configure(state="disabled")
+
+    def split_active_blueprint_subgrids(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a multi-grid blueprint first.", level="warning")
+            return
+
+        from subgrid_engine import ProjectorSplitter
+
+        result = ProjectorSplitter.split_blueprint(self.selected_blueprint.path)
+        if not result.success:
+            self.toasts.toast(f"Split failed: {result.error_message}", level="error")
+            return
+        if result.total_subgrids <= 1:
+            self.toasts.toast("Single grid detected. Nothing to split.", level="info")
+            return
+        self._remember_output(result.output_directory)
+        self.toasts.toast(
+            f"Created {result.total_subgrids} printable sub-blueprints in {result.output_directory.name}.",
+            level="success",
+            duration=5000,
+        )
+        self.load_blueprints_async()
+
+    def survival_sanity_blueprint(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        bp = self.selected_blueprint
+        confirm = messagebox.askyesno(
+            "Survival Sanity",
+            f"Create a survival-craftable copy of '{bp.display_name}' by replacing Prototech blocks with vanilla equivalents?\n\n"
+            "The original blueprint is not changed.",
+        )
+        if not confirm:
+            return
+        self._start_named_conversion(
+            "Replacing Prototech blocks…",
+            lambda: self.converter.survival_sanity_prototech(bp.path),
+        )
+
+    def upgrade_prototech_blueprint(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        bp = self.selected_blueprint
+        confirm = messagebox.askyesno(
+            "Upgrade to Prototech",
+            f"Create a Prototech copy of '{bp.display_name}'?\n\nThe original blueprint is not changed.",
+        )
+        if not confirm:
+            return
+        self._start_named_conversion(
+            "Upgrading to Prototech…",
+            lambda: self.converter.upgrade_to_prototech(bp.path),
+        )
+
+    def harden_active_armor(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        dialog = ctk.CTkInputDialog(
+            text="Radius around reactors, tanks, and cockpits (blocks):",
+            title="Harden vital cores",
+        )
+        raw = dialog.get_input()
+        if raw is None:
+            return
+        try:
+            radius = int(raw.strip() or "2")
+        except ValueError:
+            self.toasts.toast("Radius must be a whole number.", level="warning")
+            return
+        bp = self.selected_blueprint
+
+        def worker():
+            from mappings.armor_hardening import ArmorHardeningEngine
+
+            res = ArmorHardeningEngine.harden_vital_cores(bp.path, reinforce_radius=radius)
+            return res.output_path, res.total_blocks_scanned, res.armor_blocks_hardened
+
+        self._start_named_conversion("Hardening armor…", worker)
+
+    def lightweight_active_armor(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        dialog = ctk.CTkInputDialog(
+            text="Keep heavy armor within this radius of vital cores (blocks):",
+            title="Lightweight outer hull",
+        )
+        raw = dialog.get_input()
+        if raw is None:
+            return
+        try:
+            radius = int(raw.strip() or "1")
+        except ValueError:
+            self.toasts.toast("Radius must be a whole number.", level="warning")
+            return
+        bp = self.selected_blueprint
+
+        def worker():
+            from mappings.armor_hardening import ArmorHardeningEngine
+
+            res = ArmorHardeningEngine.lightweight_outer_hull(bp.path, preserve_radius=radius)
+            return res.output_path, res.total_blocks_scanned, res.armor_blocks_lightened
+
+        self._start_named_conversion("Lightening outer hull…", worker)
+
+    def export_se2_blueprint(self):
+        if not self.selected_blueprint:
+            self.toasts.toast("Select a blueprint first.", level="warning")
+            return
+        bp = self.selected_blueprint
+
+        def worker():
+            from engine_compat import SE2MigrationBridge
+
+            return SE2MigrationBridge.migrate_se1_to_se2(bp.path)
+
+        self._start_named_conversion("Exporting native SE2 blueprint…", worker)
+
+    def validate_se2_blueprint(self):
+        bp = self.selected_blueprint
+        if bp is None:
+            return
+        self.preview_panel.se2_status_title.configure(text="Checking installed SE2 definitions…")
+        def task():
+            from engine_compat import EngineVersionDetector
+            report = EngineVersionDetector.inspect_compatibility(bp.path)
+            def apply():
+                if self.selected_blueprint is not None and self.selected_blueprint.path == bp.path:
+                    self.preview_panel.show_native_se2_report(report)
+            self._ui(apply)
+        threading.Thread(target=task, daemon=True).start()
+
+    def import_se2_blueprint(self):
+        from se_assets.se2_catalog import blueprint_root
+        source = filedialog.askopenfilename(title="Open native SE2 grid.json", initialdir=str(blueprint_root()),
+                                           filetypes=[("Native SE2 blueprint", "grid.json")])
+        if not source:
+            return
+        parent = filedialog.askdirectory(title="Choose the SE1 Blueprint folder for a new copy")
+        if not parent:
+            return
+        def worker():
+            from engine_compat import SE2MigrationBridge
+            return SE2MigrationBridge.migrate_se2_to_se1(Path(source), Path(parent) / f"SE1_{Path(source).parent.name}")
+        self._start_named_conversion("Importing native SE2 armor…", worker)
+
+    def _start_named_conversion(self, status: str, worker):
+        self.control_panel.set_convert_enabled(False)
+        self.control_panel.progress.start_indeterminate(status)
+        self.footer.set_status(status)
+
+        def task():
+            try:
+                dest, scanned, converted = worker()
+                self._ui(lambda: self._on_conversion_complete(dest, scanned, converted))
+            except Exception as exc:
+                error_message = str(exc)
+                self._ui(lambda msg=error_message: self._on_conversion_error(msg))
+
+        threading.Thread(target=task, daemon=True).start()
 
     def batch_convert(self):
         selected_bps = self.blueprint_panel.get_selected_blueprints()
         if not selected_bps:
-            self.toasts.toast("Select one or more blueprints first.", level="warning")
+            self.toasts.toast("Select one or more blueprints first (Ctrl+click).", level="warning")
             return
 
         confirm = messagebox.askyesno(
-            "Batch Conversion",
-            f"Convert {len(selected_bps)} blueprint(s) with categories "
-            f"{', '.join(self.enabled_categories)}?",
-            icon="warning",
+            "Convert the selected ships?",
+            f"Create converted copies of {len(selected_bps)} blueprint(s)?\n\n"
+            f"Included: {', '.join(category_label(name) for name in self.enabled_categories)}\n\n"
+            "Originals stay untouched.",
         )
         if not confirm:
             return
@@ -929,7 +1493,7 @@ class TacticalCommandCenter(ctk.CTk):
         self.control_panel.set_convert_enabled(False)
         total = len(selected_bps)
         self.control_panel.progress.start_indeterminate(f"Batch converting {total} blueprints...")
-        self.footer.set_status("BATCH CONVERTING...")
+        self.footer.set_status("Converting selected ships…")
 
         def batch_task():
             total_scanned = 0
@@ -938,8 +1502,7 @@ class TacticalCommandCenter(ctk.CTk):
             created: List[Path] = []
 
             for index, bp in enumerate(selected_bps):
-                self.after(
-                    0,
+                self._ui(
                     lambda idx=index: self.control_panel.progress.set_progress(
                         (idx + 1) / total,
                         f"Converting {idx + 1}/{total}",
@@ -950,8 +1513,8 @@ class TacticalCommandCenter(ctk.CTk):
                         verbose=False,
                         reverse=(self.conversion_mode == "heavy_to_light"),
                         enabled_categories=self.enabled_categories,
-                        include_profiles=True,
-                        profile_dir=Path("profiles"),
+                        include_profiles=False,
+                        registry=self.registry,
                     )
                     dest, scanned, converted = converter.create_converted_blueprint(bp.path)
                     created.append(dest)
@@ -960,8 +1523,7 @@ class TacticalCommandCenter(ctk.CTk):
                 except Exception as exc:
                     errors.append(f"{bp.display_name}: {exc}")
 
-            self.after(
-                0,
+            self._ui(
                 lambda: self._on_batch_complete(total, total_scanned, total_converted, errors, created),
             )
 
@@ -970,13 +1532,14 @@ class TacticalCommandCenter(ctk.CTk):
     def _on_batch_complete(self, count, scanned, converted, errors, created_paths: List[Path]):
         self.control_panel.progress.stop()
         self._converted_count += converted
-        self._undo_stack.extend(created_paths)
+        for output in created_paths:
+            self._remember_output(output)
         self.footer.set_scanned(scanned)
         self.footer.set_converted(self._converted_count)
-        self.footer.set_status("BATCH COMPLETE")
+        self.footer.set_status("Batch complete")
         self._update_convert_state()
 
-        message = f"Batch converted {count} blueprint(s): {converted} block(s) changed."
+        message = f"Created copies for {count} blueprint(s): {converted} block(s) changed."
         if errors:
             message += f" ({len(errors)} error(s))"
             self.toasts.toast(message, level="warning", duration=6000)
@@ -984,20 +1547,35 @@ class TacticalCommandCenter(ctk.CTk):
             self.toasts.toast(message, level="success")
         self.load_blueprints_async()
 
+    def _remember_output(self, output: Path):
+        output = Path(output).resolve()
+        try:
+            self._undo_fingerprints[output] = BlueprintConverter._output_fingerprint(output)
+        except (OSError, ValueError):
+            self.toasts.toast("Copy created, but undo is unavailable because the output could not be verified.", level="warning")
+            return
+        self._undo_stack.append(output)
+
     def undo_last_conversion(self):
         if not self._undo_stack:
             self.toasts.toast("Nothing to undo.", level="info")
             return
-        last = self._undo_stack.pop()
+        last = self._undo_stack[-1]
         try:
             if last.exists() and last.is_dir():
                 import shutil
 
+                expected = self._undo_fingerprints.get(last)
+                if expected is None or expected != BlueprintConverter._output_fingerprint(last):
+                    raise ValueError("The converted copy has changed. It was kept to protect your edits.")
                 shutil.rmtree(last)
+                self._undo_stack.pop()
+                self._undo_fingerprints.pop(last, None)
                 self.toasts.toast(f"Removed {last.name}", level="success")
-                self.footer.set_status("UNDO COMPLETE")
+                self.footer.set_status("Copy removed")
                 self.load_blueprints_async()
             else:
+                self._undo_stack.pop()
                 self.toasts.toast("Last converted folder no longer exists.", level="warning")
         except Exception as exc:
             self.toasts.toast(f"Undo failed: {exc}", level="error")
@@ -1010,202 +1588,11 @@ class TacticalCommandCenter(ctk.CTk):
         if not self.selected_blueprint:
             self.toasts.toast("Select a blueprint first.", level="warning")
             return
-        bp_file = self.selected_blueprint.path / "bp.sbc"
-
-        try:
-            replacer = ArmorBlockReplacer(
-                verbose=False,
-                reverse=(self.conversion_mode == "heavy_to_light"),
-                enabled_categories=self.enabled_categories,
-                include_profiles=True,
-                profile_dir=Path("profiles"),
-            )
-            replacer.process_blueprint(str(bp_file), create_backup=False, dry_run=True)
-
-            before_counts: Dict[str, int] = {}
-            after_counts: Dict[str, int] = {}
-            for source, target in replacer.change_log:
-                before_counts[source] = before_counts.get(source, 0) + 1
-                after_counts[target] = after_counts.get(target, 0) + 1
-
-            report = replacer.get_dry_run_report()
-            self.preview_panel.show_preview_diff(before_counts, after_counts, report)
-
-            self._latest_analytics = self.analytics_engine.analyze_blueprint(bp_file)
-            self._latest_comparison = self.analytics_engine.compare_conversion_cost(
-                bp_file,
-                replacer.mapping,
-                self.conversion_mode,
-            )
-            self.preview_panel.update_analytics(self._latest_analytics, self._latest_comparison)
-        except Exception as exc:
-            self.toasts.toast(f"Dry-run failed: {exc}", level="error", duration=5000)
+        self._apply_instant_inspect(self.selected_blueprint)
 
     def refresh_analytics_async(self):
-        if not self.selected_blueprint:
-            return
-        bp_file = self.selected_blueprint.path / "bp.sbc"
-
-        def task():
-            try:
-                replacer = ArmorBlockReplacer(
-                    verbose=False,
-                    reverse=(self.conversion_mode == "heavy_to_light"),
-                    enabled_categories=self.enabled_categories,
-                    include_profiles=True,
-                    profile_dir=Path("profiles"),
-                )
-                analytics = self.analytics_engine.analyze_blueprint(bp_file)
-                comparison = self.analytics_engine.compare_conversion_cost(
-                    bp_file,
-                    replacer.mapping,
-                    self.conversion_mode,
-                )
-                self._safe_after(0, lambda: self._on_analytics_ready(analytics, comparison))
-            except Exception as exc:
-                error_message = str(exc)
-                self._safe_after(0, lambda msg=error_message: self._show_error(f"Analytics failed: {msg}"))
-
-        threading.Thread(target=task, daemon=True).start()
-
-    def _on_analytics_ready(self, analytics, comparison):
-        self._latest_analytics = analytics
-        self._latest_comparison = comparison
-        self.preview_panel.update_analytics(analytics, comparison)
-
-        # Compute SE2 Readiness metrics
-        dlc_keywords = ["scifi", "industrial", "wasteland", "warfare", "reskin", "decorative", "desert", "cab", "buggy", "sparks", "vending", "storeblock"]
-        dlc_count = 0
-        script_count = 0
-        subgrid_count = 0
-        
-        for subtype, qty in analytics.block_counts.items():
-            subtype_lower = subtype.lower()
-            if any(kw in subtype_lower for kw in dlc_keywords):
-                dlc_count += qty
-            if "programmable" in subtype_lower:
-                script_count += qty
-            if any(kw in subtype_lower for kw in ["rotor", "stator", "hinge", "piston"]):
-                subgrid_count += qty
-                
-        self.preview_panel.update_se2_transition(self.selected_blueprint, dlc_count, script_count, subgrid_count)
-
-        # PB Script Doctor & Subgrid Engine updates
-        try:
-            if self.selected_blueprint:
-                bp_file = self.selected_blueprint.path / "bp.sbc"
-                from pb_doctor import PBScriptExtractor, PBScriptValidator
-                scripts = PBScriptExtractor.extract_from_file(bp_file)
-                reports = [PBScriptValidator.validate_script(s.custom_name, s.program_code) for s in scripts]
-                self.preview_panel.update_pb_doctor(scripts, reports)
-
-                from subgrid_engine import SubgridHierarchyParser, GridMatrixVisualizer
-                structure = SubgridHierarchyParser.parse_file(bp_file)
-                matrix = GridMatrixVisualizer.analyze_grid_matrix(bp_file)
-                voxels = GridMatrixVisualizer.extract_all_voxels(bp_file)
-                self.preview_panel.update_subgrids(structure, matrix, voxels=voxels)
-                self.preview_panel.update_survival_bom(analytics, structure)
-        except Exception as exc:
-            self.toasts.toast(f"PB Doctor / subgrid update failed: {exc}", level="warning", duration=4000)
-
-    def split_active_blueprint_subgrids(self):
-        """Splits the active multi-grid blueprint into individual printable sub-blueprints."""
-        if not self.selected_blueprint:
-            self.toasts.toast("Select a multi-grid blueprint first.", level="warning")
-            return
-
-        from subgrid_engine import ProjectorSplitter
-        bp_path = self.selected_blueprint.path
-        result = ProjectorSplitter.split_blueprint(bp_path)
-
-        if not result.success:
-            self.toasts.toast(f"Split Error: {result.error_message}", level="error")
-            return
-
-        if result.total_subgrids <= 1:
-            self.toasts.toast("Single grid detected. No subgrid splitting required.", level="info")
-            return
-
-        self.toasts.toast(
-            f"Successfully generated {result.total_subgrids} printable sub-blueprints!",
-            level="success",
-            duration=5000,
-        )
-
-        # Update preview textbox with assembly guide
-        if hasattr(self.preview_panel, "survival_splitter_textbox"):
-            self.preview_panel._set_textbox_content(
-                self.preview_panel.survival_splitter_textbox,
-                result.assembly_guide_text,
-            )
-
-        # Refresh blueprint library to discover new sub-blueprints
-        self.load_blueprints_async()
-
-    def apply_active_skin_palette(self, skin_id: str, primary_hex: str, secondary_hex: str, armor_only: bool):
-        """Batch applies armor texture skin and HSV color palette across the vessel."""
-        if not self.selected_blueprint:
-            self.toasts.toast("Select a blueprint first.", level="warning")
-            return
-
-        from mappings.skin_palette_engine import SkinPaletteEngine
-        bp_path = self.selected_blueprint.path
-
-        try:
-            reskinned, recolored = SkinPaletteEngine.apply_skin_and_palette(
-                source_bp_path=bp_path,
-                skin_id=skin_id if skin_id != "None" else None,
-                primary_hex=primary_hex,
-                armor_only=armor_only,
-            )
-            self.toasts.toast(
-                f"Reskinned {reskinned:,} blocks, Recolored {recolored:,} blocks!",
-                level="success",
-            )
-            self.load_blueprints_async()
-            self.refresh_analytics_async()
-        except Exception as exc:
-            self.toasts.toast(f"Reskin error: {exc}", level="error")
-
-    def harden_active_armor(self, radius: int):
-        """Reinforces armor surrounding vital reactor/jump/tank cores."""
-        if not self.selected_blueprint:
-            self.toasts.toast("Select a blueprint first.", level="warning")
-            return
-
-        from mappings.armor_hardening import ArmorHardeningEngine
-        bp_path = self.selected_blueprint.path
-
-        try:
-            res = ArmorHardeningEngine.harden_vital_cores(bp_path, reinforce_radius=radius)
-            self.toasts.toast(
-                f"Hardened {res.armor_blocks_hardened:,} armor blocks around {res.critical_cores_found} critical cores!",
-                level="success",
-            )
-            self.load_blueprints_async()
-            self.refresh_analytics_async()
-        except Exception as exc:
-            self.toasts.toast(f"Hardening error: {exc}", level="error")
-
-    def lightweight_active_armor(self, preserve_radius: int):
-        """Lightweights peripheral non-vital armor to maximize jump range and acceleration."""
-        if not self.selected_blueprint:
-            self.toasts.toast("Select a blueprint first.", level="warning")
-            return
-
-        from mappings.armor_hardening import ArmorHardeningEngine
-        bp_path = self.selected_blueprint.path
-
-        try:
-            res = ArmorHardeningEngine.lightweight_outer_hull(bp_path, preserve_radius=preserve_radius)
-            self.toasts.toast(
-                f"Lightened {res.armor_blocks_lightened:,} non-vital armor blocks!",
-                level="success",
-            )
-            self.load_blueprints_async()
-            self.refresh_analytics_async()
-        except Exception as exc:
-            self.toasts.toast(f"Lightweight error: {exc}", level="error")
+        if self.selected_blueprint:
+            self._apply_instant_inspect(self.selected_blueprint)
 
     def export_comparison_csv(self):
         if not self._latest_comparison:
@@ -1240,19 +1627,74 @@ class TacticalCommandCenter(ctk.CTk):
             return
         bp_file = self.selected_blueprint.path / "bp.sbc"
         confirm = messagebox.askyesno(
-            "Apply Suggested Fix",
-            f"Apply fix '{fix_id}' to blueprint '{self.selected_blueprint.display_name}'?",
-            icon="question",
+            "Apply suggested fix?",
+            f"Apply this repair to '{self.selected_blueprint.display_name}'?\n\n"
+            "This edits the selected blueprint (not a copy).",
         )
         if not confirm:
             return
-        success = self.analytics_engine.apply_fix(bp_file, fix_id)
-        if success:
-            self.toasts.toast(f"Applied fix: {fix_id}", level="success")
-            self.refresh_analytics_async()
-            self.preview_panel.load_xml(bp_file, f"SOURCE: {self.selected_blueprint.name}")
-        else:
-            self.toasts.toast(f"Fix '{fix_id}' could not be applied.", level="warning")
+        path = Path(bp_file)
+        selected_path = self.selected_blueprint.path
+
+        def work() -> None:
+            try:
+                success = self.analytics_engine.apply_fix(path, fix_id)
+            except Exception as exc:
+                message = str(exc)
+                self._ui(lambda: self.toasts.toast(f"Fix '{fix_id}' failed: {message}", level="error"))
+                return
+
+            def done() -> None:
+                if success:
+                    self.toasts.toast(f"Applied fix: {fix_id}", level="success")
+                    current = self.selected_blueprint
+                    if current is not None and current.path == selected_path:
+                        self._refresh_after_inplace_edit(current)
+                else:
+                    self.toasts.toast(f"Fix '{fix_id}' could not be applied.", level="warning")
+
+            self._ui(done)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _refresh_after_inplace_edit(self, bp: BlueprintInfo) -> None:
+        """Re-read the edited bp.sbc so Analytics / Convert / XML / Subgrids match disk."""
+        path = bp.path
+        display = bp.display_name
+        self._documents.invalidate(path)
+        self._document = None
+        self.preview_panel.invalidate_xml(path / "bp.sbc")
+        generation = self._inspect_token.begin()
+
+        def work() -> None:
+            try:
+                refreshed = self.scanner.refresh_path(path)
+            except Exception as exc:
+                message = str(exc)
+                self._ui(lambda: self.toasts.toast(f"Reload after fix failed: {message}", level="warning"))
+                return
+            self._ui(lambda: self._on_inplace_refreshed(path, display, refreshed, generation))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_inplace_refreshed(self, path, display, refreshed, generation) -> None:
+        if self._closing:
+            return
+        selected = self.selected_blueprint.path if self.selected_blueprint else None
+        if not inspect_result_applies(self._inspect_token, generation, selected, path):
+            return
+        if refreshed is not None:
+            self.selected_blueprint = refreshed
+            remapped = self.scanner.remap_cached()
+            self.blueprints = remapped
+            self.blueprint_panel.set_blueprints(remapped)
+            self.blueprint_panel.select_blueprint_by_name(refreshed.display_name or display, notify=False)
+            self.control_panel.update_details(refreshed)
+            self.preview_panel.update_intel(refreshed, self.conversion_mode)
+        if self.selected_blueprint:
+            self._apply_instant_inspect(self.selected_blueprint)
+        if self.preview_panel.current_tab() == "Subgrids":
+            self._inspect_blueprint_async()
 
     # ------------------------------------------------------------------
     # Changelog / utilities
@@ -1266,7 +1708,7 @@ class TacticalCommandCenter(ctk.CTk):
 
         textbox = ctk.CTkTextbox(
             win,
-            font=("Consolas", 10),
+            font=TacticalTheme.code_font(16),
             text_color=TacticalTheme.TEXT_CYAN,
             fg_color="#0c1220",
             border_color=TacticalTheme.BG_MEDIUM,
@@ -1287,24 +1729,111 @@ class TacticalCommandCenter(ctk.CTk):
                 f"URL: {self._latest_update.release_url}\n\n"
             )
             return heading + self._latest_update.changelog
+        notes = resource_path("RELEASE_NOTES.md")
         try:
-            with open("RELEASE_NOTES.md", "r", encoding="utf-8") as handle:
-                return handle.read()
+            return notes.read_text(encoding="utf-8")
         except Exception as exc:
             return f"Could not load release notes: {exc}"
 
     def _show_error(self, message: str):
-        self.footer.set_status("ERROR", TacticalTheme.RED_PRIMARY)
+        self.footer.set_status("Error", TacticalTheme.RED_PRIMARY)
         self.toasts.toast(message, level="error", duration=5000)
+
+    def _ui(self, callback) -> None:
+        """Queue a callback for the Tk main thread. Safe to call from workers."""
+        if self._closing:
+            return
+        self._ui_queue.put(callback)
+
+    def _pump_ui_queue(self) -> None:
+        if self._closing:
+            return
+        try:
+            while True:
+                callback = self._ui_queue.get_nowait()
+                try:
+                    if not self._closing:
+                        callback()
+                except Exception:
+                    pass  # callback raced with shutdown or a destroyed widget
+        except Empty:
+            pass  # queue drained
+        try:
+            self.after(16, self._pump_ui_queue)
+        except Exception:
+            pass  # Tk is already torn down
+
+    def _on_close(self):
+        import tkinter as tk
+
+        if self._closing:
+            os._exit(0)
+        self._closing = True
+        try:
+            self._jobs.cancel_stale()
+        except Exception:
+            pass
+        for attr in ("_rescan_after_id", "_preview_after_id"):
+            job = getattr(self, attr, None)
+            if job is not None:
+                try:
+                    self.after_cancel(job)
+                except Exception:
+                    pass  # after id already fired or Tk is gone
+                setattr(self, attr, None)
+        try:
+            self.control_panel.progress.stop()
+        except Exception:
+            pass  # progress widget may already be destroyed
+        try:
+            self.toasts.dismiss_all()
+        except Exception:
+            pass  # toast overlay may already be destroyed
+        try:
+            if self._profile_editor is not None and self._profile_editor.winfo_exists():
+                self._profile_editor.grab_release()
+                self._profile_editor.destroy()
+        except Exception:
+            pass  # profile editor may already be closed
+        try:
+            for widget in list(self.winfo_children()):
+                if isinstance(widget, (ctk.CTkToplevel, tk.Toplevel)):
+                    try:
+                        widget.destroy()
+                    except Exception:
+                        pass  # child toplevel already destroyed
+        except Exception:
+            pass  # winfo_children can fail after partial teardown
+        try:
+            self._drop_target.disable()
+        except Exception:
+            pass  # drag-drop subclass may already be restored
+        try:
+            self.destroy()
+        except Exception:
+            pass  # destroy is best-effort before os._exit
+        os._exit(0)
 
 
 def main():
+    app = None
     try:
         app = TacticalCommandCenter()
         app.mainloop()
     except Exception as exc:
-        messagebox.showerror("Fatal Error", f"Application failed to start:\n{exc}")
-        sys.exit(1)
+        try:
+            messagebox.showerror("Fatal Error", f"Application failed to start:\n{exc}")
+        except Exception:
+            pass  # Tk may not be initialized enough to show a dialog
+        os._exit(1)
+    finally:
+        if app is not None:
+            try:
+                if not getattr(app, "_closing", False):
+                    app.destroy()
+            except Exception:
+                pass  # mainloop already destroyed the window
+        os._exit(0)
 
 if __name__ == "__main__":
     main()

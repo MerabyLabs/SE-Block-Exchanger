@@ -4,7 +4,7 @@ Mapping category registry and validation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
@@ -32,6 +32,7 @@ class MappingCategory:
     source: str = "built-in"
     enabled_by_default: bool = True
     tags: Tuple[str, ...] = field(default_factory=tuple)
+    validation_issues: Tuple[str, ...] = field(default_factory=tuple)
 
     def reverse_pairs(self) -> Dict[str, str]:
         return {target: source for source, target in self.pairs.items()}
@@ -153,12 +154,12 @@ class MappingRegistry:
             raise MappingValidationError("Category name cannot be empty")
         if not category.description or not category.description.strip():
             raise MappingValidationError(f"Category '{category.name}' is missing a description")
-        if not isinstance(category.pairs, dict) or not category.pairs:
+        if not isinstance(category.pairs, dict) or (not category.pairs and not category.validation_issues):
             raise MappingValidationError(f"Category '{category.name}' has no mapping pairs")
         cls.validate_pairs(category.pairs)
 
 
-def build_registry(include_builtin: bool = True) -> MappingRegistry:
+def build_registry(include_builtin: bool = True, catalog=None) -> MappingRegistry:
     """
     Build a registry with built-in categories.
     """
@@ -169,6 +170,12 @@ def build_registry(include_builtin: bool = True) -> MappingRegistry:
         from mappings.thrusters import get_category as get_thrusters
         from mappings.weapons import get_category as get_weapons
         from mappings.dlc_substitution import get_category as get_dlc_sub
+        from mappings.prototech import (
+            CATEGORY_DESCRIPTION as PROTOTECH_DESCRIPTION,
+            CATEGORY_NAME as PROTOTECH_NAME,
+            CATEGORY_TAGS as PROTOTECH_TAGS,
+            VANILLA_TO_PROTOTECH_PAIRS,
+        )
 
         for category in (
             get_armor(),
@@ -178,5 +185,25 @@ def build_registry(include_builtin: bool = True) -> MappingRegistry:
             get_dlc_sub(),
         ):
             registry.register(category)
+
+        # Built here so mappings.prototech never imports this module.
+        registry.register(
+            MappingCategory(
+                name=PROTOTECH_NAME,
+                description=PROTOTECH_DESCRIPTION,
+                pairs=VANILLA_TO_PROTOTECH_PAIRS,
+                grid_sizes=("Large", "Small"),
+                source="endgame",
+                enabled_by_default=False,
+                tags=PROTOTECH_TAGS,
+            )
+        )
+        from se_assets.compatibility import baseline_catalog, validate_mapping
+        checked_catalog = catalog if catalog is not None else baseline_catalog()
+        for category in registry.list_categories():
+            valid, issues = validate_mapping(category.pairs, checked_catalog)
+            registry.register(replace(category, pairs=valid,
+                enabled_by_default=category.enabled_by_default and bool(valid),
+                validation_issues=tuple(f"{i.source} -> {i.target}: {i.reason}" for i in issues)), overwrite=True)
     return registry
 

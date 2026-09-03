@@ -2,41 +2,43 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main, feature/v4-master-overhaul, 'codex/v4-*']
   pull_request:
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  check:
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
-
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11', '3.12']
+    env:
+      SEBX_SE1_CATALOG: baseline
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest ruff mypy
-
-      - name: Lint (ruff)
-        run: ruff check . --select F,E9
-
-      - name: Type check (mypy)
-        run: mypy se_armor_replacer.py blueprint_converter.py blueprint_scanner.py mapping_profiles.py blueprint_analytics.py update_checker.py --ignore-missing-imports
-
-      - name: Run tests
-        run: pytest -q
-
+        run: python -m pip install -r requirements.txt pytest ruff mypy
+      - name: Lint
+        run: python -m ruff check .
+      - name: Type check core and renderer
+        run: python -m mypy se_armor_replacer.py blueprint_converter.py blueprint_scanner.py mapping_profiles.py blueprint_analytics.py update_checker.py engine_compat.py se_assets se_render --ignore-missing-imports
+      - name: Import, compile and catalog validation
+        run: python tools/check_runtime.py
+      - name: Install virtual display
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk libgl1-mesa-dri
+      - name: Complete unified regression suite (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest -q --junitxml=artifacts/pytest.xml
+      - name: Complete unified regression suite (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pytest -q --junitxml=artifacts/pytest.xml
+      - name: Clean portable-source integrity
+        run: python tools/check_package.py

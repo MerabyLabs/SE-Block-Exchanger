@@ -9,13 +9,16 @@ import argparse
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import safe_xml
 from mapping_profiles import ProfileManager
 from mappings import MappingRegistry, build_registry
 from mappings.armor import ARMOR_PAIRS
+from resource_paths import bundled_profiles_dir
 from version import __version__
+from se_assets.block_identity import BlockIdentity, XSI_TYPE
+from se_assets.compatibility import baseline_catalog, compile_mapping, conversion_catalog, resolve_token
 
 
 class ArmorBlockReplacer:
@@ -38,16 +41,20 @@ class ArmorBlockReplacer:
         enabled_categories: Optional[Sequence[str]] = None,
         registry: Optional[MappingRegistry] = None,
         include_profiles: bool = True,
-        profile_dir: Path = Path("profiles"),
+        profile_dir: Optional[Path] = None,
+        catalog=None,
     ):
         self.verbose = verbose
         self.reverse = reverse
         self.replacements_made = 0
         self.blocks_scanned = 0
         self.change_log: List[Tuple[str, str]] = []
+        self.catalog = catalog or baseline_catalog()
+        self._catalog_override = catalog
+        self.validation_issues: List[str] = []
 
         self.registry = registry if registry else build_registry(include_builtin=True)
-        self.profile_manager = ProfileManager(profile_dir)
+        self.profile_manager = ProfileManager(profile_dir or bundled_profiles_dir())
         if include_profiles:
             self._load_profiles()
 
@@ -73,7 +80,14 @@ class ArmorBlockReplacer:
             return ["armor"]
 
         if len(normalized) == 1 and normalized[0] == "all":
-            return [category.name for category in self.registry.list_categories()]
+            # Built-in categories only. Bundled mod profiles often share
+            # sources (e.g. SmallGatlingGun) and cannot be merged together.
+            builtin = [
+                category.name
+                for category in self.registry.list_categories()
+                if category.source == "built-in"
+            ]
+            return builtin or [category.name for category in self.registry.list_categories()]
 
         resolved: List[str] = []
         for name in normalized:
@@ -108,16 +122,20 @@ class ArmorBlockReplacer:
             print(message)
 
     def find_blueprint_file(self, path: Path) -> Path:
-        """Find bp.sbc in file/folder input."""
-        if path.is_file() and path.name == "bp.sbc":
+        """Find a blueprint .sbc file from a file or folder input."""
+        if path.is_file() and path.suffix.lower() == ".sbc":
             return path
         if path.is_dir():
             bp_file = path / "bp.sbc"
             if bp_file.exists():
                 return bp_file
-            for item in path.rglob("bp.sbc"):
-                return item
-        raise FileNotFoundError(f"Could not find bp.sbc in {path}")
+            nested_bp = sorted(path.rglob("bp.sbc"))
+            if nested_bp:
+                return nested_bp[0]
+            nested_sbc = sorted(path.rglob("*.sbc"))
+            if nested_sbc:
+                return nested_sbc[0]
+        raise FileNotFoundError(f"Could not find bp.sbc (or any .sbc file) in {path}")
 
     def backup_file(self, file_path: Path) -> Path:
         backup_path = file_path.with_suffix(".sbc.backup")
@@ -142,11 +160,12 @@ class ArmorBlockReplacer:
         tree: ET.ElementTree[ET.Element],
         dry_run: bool = False,
         custom_mapping: Optional[Dict[str, str]] = None,
-        selected_subtypes: Optional[Sequence[str] | Set[str]] = None,
+        selected_subtypes: Optional[Iterable[str]] = None,
     ) -> int:
         """
-        Replace block subtype IDs according to the active mapping or custom overrides.
-        Supports selective block-by-block conversion via selected_subtypes.
+        Replace block subtype IDs according to the active mapping.
+        Optional custom_mapping overrides/extends the category map.
+        When selected_subtypes is set, only those source subtypes are rewritten.
         """
         root = tree.getroot()
         if root is None:
@@ -160,39 +179,38 @@ class ArmorBlockReplacer:
 
         selected_set = set(selected_subtypes) if selected_subtypes is not None else None
 
-        for cube_blocks in root.findall(".//CubeBlocks"):
-            for block in cube_blocks.findall("*"):
+        compiled, issues = compile_mapping(effective_mapping, self.catalog)
+        invalid = {issue.source: issue.reason for issue in issues}
+        self.validation_issues = []
+        planned = []
+        for cube_blocks in root.findall(".//{*}CubeBlocks"):
+            for block in list(cube_blocks):
                 self.blocks_scanned += 1
-                subtype_name = block.find("SubtypeName")
-                subtype_id = block.find("SubtypeId")
-
-                current_subtype = None
-                if subtype_name is not None and subtype_name.text:
-                    candidate = subtype_name.text.strip()
-                    if candidate in effective_mapping:
-                        current_subtype = candidate
-                if current_subtype is None and subtype_id is not None and subtype_id.text:
-                    candidate = subtype_id.text.strip()
-                    if candidate in effective_mapping:
-                        current_subtype = candidate
-
-                if current_subtype is None:
+                identity = BlockIdentity.from_block(block)
+                if XSI_TYPE not in block.attrib and identity.type_id == "CubeBlock" and identity.subtype_id:
+                    inferred = resolve_token(identity.subtype_id, self.catalog)
+                    if inferred:
+                        identity = BlockIdentity(inferred.type_id, inferred.subtype_id)
+                token = identity.token
+                if selected_set is not None and not {token, identity.key}.intersection(selected_set):
                     continue
-
-                if selected_set is not None and current_subtype not in selected_set:
+                if token in invalid or identity.key in invalid:
+                    self.validation_issues.append(f"{identity.key}: {invalid.get(token, invalid.get(identity.key))}")
                     continue
-
-                new_subtype = effective_mapping[current_subtype]
-                self.change_log.append((current_subtype, new_subtype))
-                self.log(f"[MAP] {current_subtype} -> {new_subtype}")
-
-                if not dry_run:
-                    if subtype_name is not None and subtype_name.text:
-                        subtype_name.text = new_subtype
-                    if subtype_id is not None and subtype_id.text:
-                        subtype_id.text = new_subtype
-                replacements += 1
-
+                target = compiled.get(identity)
+                if target is None:
+                    if token in effective_mapping or identity.key in effective_mapping:
+                        self.validation_issues.append(f"{identity.key}: source object-builder type does not match the catalog")
+                    continue
+                planned.append((block, identity, target))
+        if self.validation_issues:
+            raise ValueError("Unsupported mappings:\n" + "\n".join(sorted(set(self.validation_issues))))
+        for block, identity, target in planned:
+            self.change_log.append((identity.token, target.token))
+            self.log(f"[MAP] {identity.key} -> {target.key}")
+            if not dry_run:
+                target.apply(block)
+            replacements += 1
         return replacements
 
     def process_blueprint(
@@ -202,10 +220,10 @@ class ArmorBlockReplacer:
         create_backup: bool = True,
         dry_run: bool = False,
         custom_mapping: Optional[Dict[str, str]] = None,
-        selected_subtypes: Optional[Sequence[str] | Set[str]] = None,
+        selected_subtypes: Optional[Iterable[str]] = None,
     ) -> Tuple[int, int]:
         """
-        Process blueprint file and apply active mappings or selective replacements.
+        Process blueprint file and apply active mappings.
         """
         input_file = self.find_blueprint_file(Path(input_path))
         self.log(f"[INFO] Processing blueprint: {input_file}")
@@ -214,9 +232,11 @@ class ArmorBlockReplacer:
         self.replacements_made = 0
         self.change_log = []
 
+        self.catalog = self._catalog_override or conversion_catalog()
+
         try:
             tree = safe_xml.parse(input_file)
-        except Exception as exc:
+        except ET.ParseError as exc:
             raise ValueError(f"Failed to parse XML file: {exc}") from exc
 
         self.replacements_made = self.replace_blocks(
@@ -238,10 +258,10 @@ class ArmorBlockReplacer:
         else:
             output_file = input_file
 
-        tree.write(output_file, encoding="utf-8", xml_declaration=True)
+        safe_xml.safe_write(tree, output_file)
         self.log(f"[INFO] Output written: {output_file}")
 
-        binary_file = output_file.with_name(output_file.stem + "B5")
+        binary_file = output_file.with_name(output_file.name + "B5")
         if binary_file.exists():
             try:
                 binary_file.unlink()
@@ -319,7 +339,7 @@ def main() -> int:
     parser.add_argument(
         "--all-categories",
         action="store_true",
-        help="Enable all loaded categories for this run",
+        help="Enable all built-in categories (profiles remain opt-in)",
     )
     parser.add_argument(
         "--profile-dir",

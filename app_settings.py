@@ -29,6 +29,10 @@ class AppSettings:
     enabled_categories: List[str] = field(default_factory=lambda: ["armor"])
     recent_blueprints: List[str] = field(default_factory=list)
     cache_hours: int = 24
+    space_engineers_install: str = ""
+    space_engineers_cleared: bool = False
+    subgrids_projection: str = "Top"
+    subgrids_dissect_mode: str = "peel"
 
     @classmethod
     def from_dict(cls, data: Dict) -> "AppSettings":
@@ -39,6 +43,10 @@ class AppSettings:
             enabled_categories=list(data.get("enabled_categories", ["armor"])),
             recent_blueprints=list(data.get("recent_blueprints", [])),
             cache_hours=int(data.get("cache_hours", 24)),
+            space_engineers_install=str(data.get("space_engineers_install", "") or ""),
+            space_engineers_cleared=bool(data.get("space_engineers_cleared", False)),
+            subgrids_projection=str(data.get("subgrids_projection", "Top") or "Top"),
+            subgrids_dissect_mode=str(data.get("subgrids_dissect_mode", "peel") or "peel"),
         )
 
     def to_dict(self) -> Dict:
@@ -49,6 +57,10 @@ class AppSettings:
             "enabled_categories": self.enabled_categories,
             "recent_blueprints": self.recent_blueprints,
             "cache_hours": self.cache_hours,
+            "space_engineers_install": self.space_engineers_install,
+            "space_engineers_cleared": self.space_engineers_cleared,
+            "subgrids_projection": self.subgrids_projection,
+            "subgrids_dissect_mode": self.subgrids_dissect_mode,
         }
 
 

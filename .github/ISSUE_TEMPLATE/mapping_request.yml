@@ -1,5 +1,5 @@
 name: Mapping Request
-description: Request new block conversion mappings (vanilla or modded).
+description: Describe a mapping need for Meraby Labs to consider. This is not an invitation to submit patches.
 title: "[Mapping]: "
 labels:
   - mapping-request

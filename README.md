@@ -1,104 +1,75 @@
-# Space Engineers Block Exchanger (SEBX)
+# Space Engineers Tactical Command (SE Block Exchanger)
 
-**A free desktop tool by Meraby Labs for Space Engineers builders, survival players, and server admins.**
+A desktop blueprint inspection and conversion tool by Meraby Labs.
 
-[![CI](https://github.com/MerabyLabs/SE-Block-Exchanger/actions/workflows/ci.yml/badge.svg)](https://github.com/MerabyLabs/SE-Block-Exchanger/actions/workflows/ci.yml)
-[![Release](https://github.com/MerabyLabs/SE-Block-Exchanger/actions/workflows/release.yml/badge.svg)](https://github.com/MerabyLabs/SE-Block-Exchanger/actions/workflows/release.yml)
+**v4.0.0 is an unreleased candidate.** SE2 native acceptance is a release blocker;
+do not treat experimental export as game-certified compatibility. See
+[compatibility and limitations](COMPATIBILITY.md) and [release notes](RELEASE_NOTES.md).
 
-Ever downloaded an awesome ship from the Steam Workshop only to find out:
-- You can't weld it in your survival game because it has **paid DLC blocks you don't own**?
-- Your projector gets stuck because it contains **uncraftable Prototech / Factorum blocks**?
-- The ship's **in-game script crashes your server** or uses banned code?
-- You want to convert a light armor scout into a heavy combat tank in 2 seconds?
+## What v4 changes
 
-**SE Block Exchanger (SEBX)** solves all of this with simple 1-click tools.
+- Identity-aware, catalog-validated SE1 conversions, including empty default subtypes.
+- 116 light/heavy armor pairs, plus supported DLC, weapon and Prototech replacements.
+  Unsafe or unavailable pairs are disabled with diagnostics.
+- Converted copies are staged atomically; existing destinations are never overwritten.
+  Undo removes only unchanged copies created during the current session.
+- Responsive Subgrids 3D preview with orbit, zoom, isolate, dissection, shell and reset
+  controls. Large scenes use explicitly reported preview simplification.
+- Shared blueprint documents, background loading, XML inspection, selective exchange,
+  analytics with catalog coverage, profiles, PB Doctor and Workshop tools.
+- CustomTkinter 6.x and complete renderer/data packaging.
+- Experimental native SE2 single-grid armor migration, with installed GUID validation
+  and explicit unsupported/loss diagnostics. No invented JSON manifest or armor fallback.
 
-> Space Engineers is a trademark of Keen Software House. SEBX is a fan-made tool and is not affiliated with Keen Software House.
+The SE1 baseline is **1.210.014**. Experimental SE2 testing targets **2.4.0.95**.
+Unknown costs are partial, not authoritative totals; PB Doctor is static advice, not
+the game's C# compiler. Full functional/modded/subgrid SE2 migration is not implemented.
 
----
+## Run from source
 
-### 🎯 1. Granular Selective Block Exchanging (Pick & Choose Mode)
-- Don't want to convert your whole ship? Open the **Selective Exchange** tab!
-- View an exact list of every block type on your ship with counts.
-- Use checkboxes to pick only the blocks you want to change (e.g. only swap sloped armor, or swap 1 specific thruster group).
-- Select or type custom target block replacements per-block on the fly.
-- Quick filter buttons: *Select All*, *Deselect All*, *Only Armor*, *Only Slopes*.
+Use Python **3.11 or 3.12** in a virtual environment:
 
-### 🚀 2. Space Engineers 2 (VRAGE3 Engine) Readiness & Export
-- Built from the ground up to support both **Space Engineers 1** and **Space Engineers 2**!
-- Audits blueprints against VRAGE3 volumetric physics, programmable systems, and DLC requirements.
-- **1-Click Export to SE2**: Translates legacy `.sbc` blueprints into modern VRAGE3 JSON blueprint packages with 3D coordinate transformations.
-
-### 🛠️ 3. Fix Stuck Survival Projectors (Vanillafyer & Prototech Sanity)
-- **DLC to Base (Vanillafy)**: Replaces all decorative DLC blocks (including the 2026 Prosperity Pack, Contact, Signal, Automations, and Warfare) with standard base-game blocks you can build without owning DLCs.
-- **Survival Projection Sanity**: Replaces salvage-only Prototech blocks with standard craftable reactors, thrusters, and batteries so your shipyard projectors weld smoothly without getting stuck.
-
-### ⚡ 4. Upgrade Fleets to Prototech / Factorum Tier
-- Turn any vanilla ship into an endgame flagship by upgrading standard reactors, thrusters, jump drives, and weapons to maximum Factorum Prototech tech with 1 click.
-
-### 🩺 5. Built-In PB Script Doctor
-- Checks embedded Programmable Block C# scripts *before* you spawn them in game.
-- Catches missing `Main()` methods, unclosed braces/regions, character limit overruns (100k max), and banned commands (`System.IO`, `System.Threading`) that cause server kicks or crashes.
-- Estimates per-tick instruction costs to help you avoid server lag.
-
-### 📐 6. Subgrid Inspector & 2.5D Ship Map
-- See how your ship's subgrids, rotors, hinges, and pistons are connected in a clean visual tree.
-- View top-down and side profile slices of your ship showing where cockpits, thrusters, weapons, and power blocks are located.
-
-### 🔄 7. Light <-> Heavy Armor & Component Conversions
-- Swap Light Armor to Heavy Armor (or vice-versa) across 70+ block shapes with full volume matching.
-- Swap standard thrusters, weapons, and functional blocks.
-- Preview resource costs, PCU, mass changes, and ore requirements before saving.
-
-### 🌐 8. Import Directly from Steam Workshop & Mod.io
-- Paste a Steam Workshop link or ID to grab blueprints directly from your cache or Workshop.
-- Crossplay support for Mod.io blueprint packages.
-
-### 📏 9. Rescale Grid Size (Large <-> Small)
-- Scale Large grid ships to Small grid fighters (or vice versa). Automatically recalculates 5:1 block positions so blocks don't overlap or end up floating in midair.
-
----
-
-## License (Simple Version)
-
-| Use Case | Free? |
-|---|---|
-| Using SEBX on your own blueprints | **Yes, 100% Free** |
-| Using SEBX for your private/community gaming server | **Yes, 100% Free** |
-| Using SEBX in gameplay videos / Twitch streams | **Yes, 100% Free** |
-| Selling SEBX or bundling it into paid products | Requires Commercial License |
-| Re-uploading or repackaging SEBX binaries | Not Allowed |
-
-Full legal terms are in [LICENSE](LICENSE).
-
----
-
-## Download & Launching
-
-### Quick Start for Gamers:
-1. Download `SE_Tactical_Command_v4.0.0.exe` or `SE_Tactical_Command_v4.0.0_Portable.zip` from [GitHub Releases](https://github.com/MerabyLabs/SE-Block-Exchanger/releases).
-2. Double-click **`SE Tactical Command.bat`** (or run the `.exe` directly).
-3. (Optional) Double-click **`Create Desktop Shortcut.bat`** to pin a shortcut with the custom Space Engineers icon directly to your Windows Desktop!
-4. The app will automatically find your Space Engineers blueprint folder in `%APPDATA%\SpaceEngineers\Blueprints\local`.
-
-### Running from Source (Developers & Modders):
 ```powershell
-git clone https://github.com/MerabyLabs/SE-Block-Exchanger.git
-cd SE-Block-Exchanger
-pip install -r requirements.txt
-python main.py
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe gui_standalone.py
 ```
 
----
+SEBX discovers `%APPDATA%\SpaceEngineers\Blueprints\local`; use Browse to choose
+another root. A missing root produces a nonblocking empty state. Select a blueprint,
+inspect its tabs, and choose conversion categories in the Convert sidebar.
+The original blueprint remains unchanged; output is a separately named folder.
 
-## Keyboard Shortcuts
+`Ctrl+O`: browse root; `Ctrl+R`: convert; `Ctrl+Z`: undo; `F5`: refresh.
 
-- `Ctrl + O` : Browse blueprint directory
-- `Ctrl + R` : Convert selected blueprint
-- `Ctrl + Z` : Undo last conversion
-- `F5` : Refresh blueprint list
+## Candidate packaging
 
----
+`build_exe.bat` uses the shared PyInstaller specification and creates
+`SE_Tactical_Command_v4.0.0.exe` plus `SE_Tactical_Command_v4.0.0_Portable.zip`.
+The archive includes a file-hash manifest and a separate SHA-256 checksum. These
+names describe build outputs, not a claim that v4 has been published.
 
-(c) 2025–2026 Meraby Labs. All Rights Reserved.
+Published versions are on [GitHub Releases](https://github.com/MerabyLabs/SE-Block-Exchanger/releases).
+See [INSTALL](INSTALL.md) for setup, shortcuts and troubleshooting. The release
+workflow refuses publication unless the acceptance manifest passes.
 
+## Validation
+
+```powershell
+python tools/check_runtime.py
+python -m pytest -q
+python tools/check_package.py
+```
+
+CI runs the complete legacy and v4 suites on Python 3.11/3.12, Windows and Linux,
+with Ruff, core/renderer mypy, import/compile and catalog/package checks. Live Windows
+and native SE2 results remain separate acceptance gates.
+
+## License
+
+Free for personal, non-commercial use under [LICENSE](LICENSE). Commercial use
+requires a separate license; redistribution rights are governed by that file.
+Space Engineers is a trademark of Keen Software House. This fan-made tool is not
+affiliated with Keen Software House.
+
+(c) 2025–2026 Meraby Labs.

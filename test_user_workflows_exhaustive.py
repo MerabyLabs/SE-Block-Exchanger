@@ -149,13 +149,14 @@ class TestUserWorkflowsExhaustive(unittest.TestCase):
         sbc_file = bp_folder / "bp.sbc"
 
         dlc_blocks = [
-            "LargeSlopedCockpit", "LargeFactoryStairs", "LargeDecorativeConduit",
-            "LargeRadarAntenna", "LargeSignalBeacon", "LargeWarfareBattery"
+            ("Cockpit", "LargeBlockOpenSlopedCockpit"), ("Cockpit", "LargeBlockModularBridgeCockpit"),
+            ("Thrust", "LargeBlockSmallThrustSciFi"), ("BatteryBlock", "LargeBlockBatteryReskin"),
+            ("LargeGatlingTurret", "LargeGatlingTurretReskin"), ("LargeMissileTurret", "LargeMissileTurretReskin")
         ]
 
         blocks_xml = "\n".join(
-            f'<MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_CubeBlock"><SubtypeName>{b}</SubtypeName><Min x="{i}" y="0" z="0" /></MyObjectBuilder_CubeBlock>'
-            for i, b in enumerate(dlc_blocks)
+            f'<MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_{kind}"><SubtypeName>{b}</SubtypeName><Min x="{i*5}" y="0" z="0" /></MyObjectBuilder_CubeBlock>'
+            for i, (kind, b) in enumerate(dlc_blocks)
         )
 
         sbc_file.write_text(f"""<?xml version="1.0" encoding="utf-8"?>
@@ -181,62 +182,33 @@ class TestUserWorkflowsExhaustive(unittest.TestCase):
 
         text_after = (dest_path / "bp.sbc").read_text(encoding="utf-8")
         self.assertIn("LargeBlockCockpit", text_after)
-        self.assertIn("LargeStairs", text_after)
-        self.assertIn("LargeBlockConveyor", text_after)
-        self.assertIn("LargeBlockRadioAntenna", text_after)
-        self.assertIn("LargeBlockBeacon", text_after)
+        self.assertIn("LargeBlockSmallThrust", text_after)
+        self.assertIn("MyObjectBuilder_LargeGatlingTurret", text_after)
+        self.assertNotIn("TurretReskin", text_after)
         self.assertIn("LargeBlockBatteryBlock", text_after)
 
     def test_workflow_05_prototech_survival_sanity_and_upgrade(self):
-        bp_folder = self.test_dir / "Prototech_Ship"
-        bp_folder.mkdir(parents=True)
-        sbc_file = bp_folder / "bp.sbc"
-
-        sbc_content = """<?xml version="1.0" encoding="utf-8"?>
-<Definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <ShipBlueprints>
-    <ShipBlueprint xsi:type="MyObjectBuilder_ShipBlueprintDefinition">
-      <Id Type="MyObjectBuilder_ShipBlueprintDefinition" Subtype="Prototech_Ship" />
-      <CubeGrids>
-        <CubeGrid>
-          <CustomName>Prototech_Grid</CustomName>
-          <GridSizeEnum>Large</GridSizeEnum>
-          <CubeBlocks>
-            <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_CubeBlock">
-              <SubtypeName>LargePrototechReactor</SubtypeName>
-              <Min x="0" y="0" z="0" />
-            </MyObjectBuilder_CubeBlock>
-            <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_CubeBlock">
-              <SubtypeName>LargePrototechThruster</SubtypeName>
-              <Min x="0" y="1" z="0" />
-            </MyObjectBuilder_CubeBlock>
-            <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_CubeBlock">
-              <SubtypeName>LargePrototechCapacitor</SubtypeName>
-              <Min x="0" y="2" z="0" />
-            </MyObjectBuilder_CubeBlock>
-          </CubeBlocks>
-        </CubeGrid>
-      </CubeGrids>
-    </ShipBlueprint>
-  </ShipBlueprints>
-</Definitions>"""
-        sbc_file.write_text(sbc_content, encoding="utf-8")
-
-        dest_sanity, scanned, converted = self.converter.survival_sanity_prototech(sbc_file)
-        self.assertEqual(converted, 3)
-
-        text_sanity = (dest_sanity / "bp.sbc").read_text(encoding="utf-8")
-        self.assertIn("LargeBlockLargeGenerator", text_sanity)
-        self.assertIn("LargeBlockLargeThrust", text_sanity)
-        self.assertIn("LargeBlockBatteryBlock", text_sanity)
-
-        dest_upgrade, scanned_up, converted_up = self.converter.upgrade_to_prototech(dest_sanity)
-        self.assertEqual(converted_up, 3)
-
-        text_upgrade = (dest_upgrade / "bp.sbc").read_text(encoding="utf-8")
-        self.assertIn("LargePrototechGenerator", text_upgrade)
-        self.assertIn("LargePrototechThruster", text_upgrade)
-        self.assertIn("LargePrototechBattery", text_upgrade)
+        """Typed Prototech gyros preserve position, orientation and entity IDs."""
+        from tests.native_fixtures import armor_blueprint
+        from se_assets.block_identity import BlockIdentity
+        source = armor_blueprint(self.test_dir / "Prototech_Ship")
+        tree = safe_xml.parse(source)
+        original_blocks = tree.getroot().findall(".//CubeBlocks/*")
+        for block in original_blocks:
+            BlockIdentity("Gyro", "LargeBlockPrototechGyro").apply(block)
+        safe_xml.safe_write(tree, source)
+        original = source.read_bytes()
+        dest_sanity, scanned, converted = self.converter.survival_sanity_prototech(source)
+        self.assertEqual((scanned, converted), (2, 2))
+        dest_upgrade, _, converted_up = self.converter.upgrade_to_prototech(dest_sanity)
+        self.assertEqual(converted_up, 2)
+        restored = safe_xml.parse(dest_upgrade / "bp.sbc").findall(".//CubeBlocks/*")
+        for before, after in zip(original_blocks, restored):
+            self.assertEqual(safe_xml.get_subtype(before), safe_xml.get_subtype(after))
+            self.assertEqual(before.findtext("EntityId"), after.findtext("EntityId"))
+            self.assertEqual(before.find("Min").attrib, after.find("Min").attrib)
+            self.assertEqual(before.find("BlockOrientation").attrib, after.find("BlockOrientation").attrib)
+        self.assertEqual(source.read_bytes(), original)
 
     def test_workflow_06_pb_doctor_multigrid_and_syntax(self):
         bp_folder = self.test_dir / "Scripted_Drone"
@@ -360,8 +332,8 @@ class TestUserWorkflowsExhaustive(unittest.TestCase):
           <CustomName>Large Ship</CustomName>
           <GridSizeEnum>Large</GridSizeEnum>
           <CubeBlocks>
-            <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_Cockpit">
-              <SubtypeName>LargeBlockCockpit</SubtypeName>
+            <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_CubeBlock">
+              <SubtypeName>LargeBlockArmorBlock</SubtypeName>
               <Min x="3" y="-2" z="10" />
             </MyObjectBuilder_CubeBlock>
           </CubeBlocks>
@@ -381,9 +353,9 @@ class TestUserWorkflowsExhaustive(unittest.TestCase):
         self.assertEqual(grid.find("GridSizeEnum").text, "Small")
         block = root.find(".//MyObjectBuilder_CubeBlock")
         min_elem = block.find("Min")
-        self.assertEqual(int(min_elem.attrib["x"]), 15)
-        self.assertEqual(int(min_elem.attrib["y"]), -10)
-        self.assertEqual(int(min_elem.attrib["z"]), 50)
+        self.assertEqual(int(min_elem.attrib["x"]), 3)
+        self.assertEqual(int(min_elem.attrib["y"]), -2)
+        self.assertEqual(int(min_elem.attrib["z"]), 10)
 
     def test_workflow_09_workshop_and_modio_parsing(self):
         self.assertEqual(SteamWorkshopFetcher.parse_workshop_id("123456789"), "123456789")

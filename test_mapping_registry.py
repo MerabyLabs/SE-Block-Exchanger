@@ -17,7 +17,8 @@ class TestMappingRegistry(unittest.TestCase):
         registry = build_registry(include_builtin=True)
         mapping = registry.build_mapping(reverse=False, enabled_categories=["armor", "thrusters"])
         self.assertIn("LargeBlockArmorBlock", mapping)
-        self.assertIn("LargeBlockSmallThrust", mapping)
+        self.assertNotIn("LargeBlockSmallThrust", mapping)
+        self.assertTrue(next(c for c in registry.list_categories() if c.name == "thrusters").validation_issues)
         self.assertNotIn("SmallGatlingGun", mapping)
 
     def test_reverse_mapping(self):

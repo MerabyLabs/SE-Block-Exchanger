@@ -1,37 +1,59 @@
 # Release Notes
 
-## v4.0.0 (2026-08-26) — The Master Engineering & Prototech Update
+## v4.0.0 (unreleased candidate)
 
-### 🚀 What's New in v4.0
+This is the first public v4 version under preparation. Keep **4.0.0**: the unified
+UI/document/renderer changes and stricter conversion contracts are a major change
+from v3.2.1. No v4 release has been approved; native SE2 acceptance is a hard gate.
 
-- **Full 2024–2026 DLC Support**:
-  - Added every new block from the **Prosperity Pack (July 2026)**, **Contact Pack (2024)**, and **Signal Pack (2024)**.
-  - Convert sloped cockpits, battery banks, factory stairs, decorative conduits, and radar antennas back to base-game blocks with 1 click so anyone can paste your ships without owning DLCs.
+### Changes
 
-- **Prototech & Factorum Tech Tools**:
-  - **Survival Projection Sanity**: Ever had a shipyard projector get stuck because a blueprint contains salvage-only Prototech blocks? Click "Survival Sanity" to swap them to normal craftable reactors, thrusters, and batteries.
-  - **1-Click Prototech Upgrader**: Instantly upgrade your favorite vanilla ships into endgame Prototech beasts equipped with Factorum jump drives, reactors, thrusters, and weapons.
+- Reconcile the cumulative PR29 renderer/document/performance work with the v4 line.
+  Retain the historical converter, analytics, profile, PB Doctor and UI regression tests.
+- Validate SE1 mappings using object-builder type plus subtype, including empty
+  default weapon subtypes, against the installed 1.210 catalog or versioned baseline.
+- Refresh the 1,503-definition catalog and cost metadata. The baseline offers 116
+  light/heavy pairs, 21 DLC replacements, one weapon pair and one Prototech pair.
+  Unsafe footprint/type changes and stale IDs are excluded with diagnostics.
+- Stage converted copies before publication, refuse existing output names, and
+  protect user-edited converted copies from undo deletion.
+- Limit grid-size scaling to single armor grids; preserve cell coordinates.
+- Show analytics coverage and partial totals instead of treating unknown blocks as zero.
+- Add the native SE2 EntityBundle bridge and installed definition index. The first
+  supported subset is 16 armor variants on one grid; unsupported functional/modded/
+  subgrid conversions fail with explicit diagnostics. No readiness score certifies
+  compatibility, and no synthetic JSON manifest or silent armor fallback remains.
+- Move the Subgrids layout to a responsive split view, clarify shell-empty states,
+  report simplification and make missing-root startup nonblocking.
+- Upgrade to CustomTkinter 6.x; package NumPy, ModernGL, Pillow, shaders, catalogs,
+  document modules and the complete renderer through one PyInstaller specification.
+- Add Python 3.11/3.12 unified CI, catalog checks, clean-package checks, frozen runtime
+  probes, file hashes and a fail-closed release acceptance manifest.
 
-- **In-App PB Script Doctor**:
-  - Checks C# scripts inside your Programmable Blocks before you spawn them in multiplayer.
-  - Flags missing `Main()` methods, unclosed braces, and banned code (`System.IO`, `System.Threading`) that cause server kicks or crashes.
-  - Shows an estimated instruction cost so you can prevent server simulation drops (Sim Speed lag).
+### Release limitations
 
-- **Subgrid Inspector & 2.5D Ship Map**:
-  - View a complete hierarchy tree of all rotors, hinges, pistons, and attached subgrids.
-  - See top-down and side profile blueprint projections showing where weapons, cockpits, and thrusters are placed.
+Native SE2 open/place/save/reopen verification is still required. Single-grid and
+subgrid results must be recorded separately. The official SE2 build also has
+incomplete subgrid projection support. See [COMPATIBILITY](COMPATIBILITY.md) for
+the exact support boundary; this candidate does not claim full SE2 export support.
 
-- **Steam Workshop & Mod.io Import**:
-  - Paste any Steam Workshop link or ID to grab blueprints directly from your cache or Workshop.
-  - Full support for Mod.io crossplay blueprint packages.
+## v3.2.1 (2026-08-29)
 
-- **Smart Grid Rescaling**:
-  - Convert Large grid capital ships into Small grid fighters (or vice versa). Coordinates automatically scale by 5x so blocks never overlap or float away.
+Patch for the portable Windows build. The 3.2.0 executable could fail when
+started from a desktop shortcut because it resolved bundled data from the
+current working directory. This patch made resource resolution bundle-safe,
+kept frozen profile edits in `%APPDATA%`, fixed 64-bit drag-and-drop values, and
+included the shortcut helper in tagged builds.
 
-- **Quality of Life & UI**:
-  - Added new dedicated tabs: **PB DOCTOR** and **SUBGRIDS & MAP**.
-  - New quick-action buttons for 1-click conversions.
-  - Full keyboard shortcuts (`Ctrl+O`, `Ctrl+R`, `Ctrl+Z`, `F5`) and top menu bar.
+## v3.2.0 (2026-08-29)
+
+The 3.2 line introduced the product workflow: copy-on-convert previews, armor
+and multi-category mappings, subgrid maps, analytics, PB Doctor, selective
+exchange, Workshop/Mod.io import, profiles, and a responsive CustomTkinter UI.
+It also added safe XML parsing, atomic writes, desktop shortcut handling and
+the first portable Windows packaging workflow. v4 retains those regression
+contracts while moving the tested UI to CustomTkinter 6.x and adding the
+catalog-backed renderer and native-SE2 boundary described above.
 
 ## v3.1.2 (2026-05-24)
 
