@@ -38,7 +38,7 @@ class TestShipCanvas(unittest.TestCase):
 
         # Thruster
         fill, outline = ShipCanvas._get_block_color("LargeBlockLargeThrust", False)
-        self.assertEqual(fill, "#06b6d4")
+        self.assertEqual(fill, "#22d3ee")
 
         # Weapon
         fill, outline = ShipCanvas._get_block_color("LargeMissileTurret", False)
@@ -46,7 +46,7 @@ class TestShipCanvas(unittest.TestCase):
 
         # Subgrid
         fill, outline = ShipCanvas._get_block_color("LargeBlockArmorBlock", True)
-        self.assertEqual(fill, "#10b981")
+        self.assertEqual(fill, "#22c55e")
 
 
 if __name__ == "__main__":

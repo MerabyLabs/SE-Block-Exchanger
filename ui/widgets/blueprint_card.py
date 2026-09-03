@@ -1,9 +1,8 @@
-"""
-Blueprint Card Widget
-Rich card representation for blueprints in the list panel
-"""
+"""Blueprint card widget — one ship in the left-hand list."""
 
 import customtkinter as ctk
+
+from ui.labels import card_status_label, convertible_total
 from ui.theme import TacticalTheme
 
 
@@ -15,8 +14,8 @@ class BlueprintCard(ctk.CTkFrame):
             master,
             fg_color=TacticalTheme.BG_CARD,
             border_width=1,
-            border_color=TacticalTheme.BG_MEDIUM,
-            corner_radius=6,
+            border_color=TacticalTheme.BORDER_SUBTLE,
+            corner_radius=10,
             cursor="hand2",
             **kwargs,
         )
@@ -27,89 +26,87 @@ class BlueprintCard(ctk.CTkFrame):
 
         self.columnconfigure(2, weight=1)
 
+        is_large = bp_info.grid_size == "Large"
+        badge_color = TacticalTheme.ORANGE_PRIMARY if is_large else TacticalTheme.CYAN_PRIMARY
+        grid_letter = (bp_info.grid_size or "?")[0]
+
         thumbnail = ctk.CTkFrame(
             self,
-            width=42,
-            height=42,
-            corner_radius=6,
+            width=44,
+            height=44,
+            corner_radius=8,
             fg_color=TacticalTheme.BG_DARK,
             border_width=1,
-            border_color=TacticalTheme.CYAN_DIM,
+            border_color=badge_color,
         )
-        thumbnail.grid(row=0, column=0, rowspan=3, padx=(8, 6), pady=8, sticky="n")
+        thumbnail.grid(row=0, column=0, rowspan=3, padx=(10, 8), pady=10, sticky="n")
         ctk.CTkLabel(
             thumbnail,
-            text=bp_info.grid_size[0] if bp_info.grid_size else "?",
+            text=grid_letter,
             font=TacticalTheme.FONT_LARGE,
-            text_color=TacticalTheme.ORANGE_PRIMARY if bp_info.grid_size == "Large" else TacticalTheme.CYAN_PRIMARY,
+            text_color=badge_color,
         ).place(relx=0.5, rely=0.5, anchor="center")
 
-        # Grid size badge
-        badge_color = TacticalTheme.ORANGE_PRIMARY if bp_info.grid_size == "Large" else TacticalTheme.CYAN_PRIMARY
         badge = ctk.CTkLabel(
             self,
-            text=bp_info.grid_size.upper() if bp_info.grid_size else "UNK",
-            width=68,
+            text=bp_info.grid_size or "Unknown",
+            width=64,
             height=20,
-            corner_radius=4,
+            corner_radius=6,
             fg_color=badge_color,
             text_color=TacticalTheme.BG_DARK,
             font=TacticalTheme.FONT_SMALL,
         )
-        badge.grid(row=0, column=1, padx=(0, 6), pady=(8, 0), sticky="w")
+        badge.grid(row=0, column=1, padx=(0, 6), pady=(10, 0), sticky="w")
 
-        # Blueprint name
-        name_label = ctk.CTkLabel(
+        self._name_label = ctk.CTkLabel(
             self,
             text=bp_info.display_name,
-            font=TacticalTheme.FONT_LARGE,
+            font=TacticalTheme.FONT_NORMAL,
             text_color=TacticalTheme.TEXT_WHITE,
             anchor="w",
         )
-        name_label.grid(row=0, column=2, sticky="ew", padx=(0, 8), pady=(8, 0))
+        self._name_label.grid(row=0, column=2, sticky="ew", padx=(0, 10), pady=(10, 0))
 
-        # Stats row
         stats_text = (
-            f"{bp_info.block_count} blocks  |  "
-            f"{bp_info.light_armor_count} LA  |  {bp_info.heavy_armor_count} HA"
+            f"{bp_info.block_count} blocks  ·  "
+            f"{bp_info.light_armor_count} light  ·  {bp_info.heavy_armor_count} heavy"
         )
-        stats_label = ctk.CTkLabel(
+        self._stats_label = ctk.CTkLabel(
             self,
             text=stats_text,
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.TEXT_GRAY,
             anchor="w",
         )
-        stats_label.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=(0, 0))
+        self._stats_label.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(0, 10), pady=(2, 0))
 
-        convertible = bp_info.light_armor_count + bp_info.heavy_armor_count
-        status_text = "READY" if convertible > 0 else "NO TARGETS"
-        status_color = TacticalTheme.GREEN_PRIMARY if convertible > 0 else TacticalTheme.TEXT_GRAY
-        status_label = ctk.CTkLabel(
+        ready = convertible_total(bp_info)
+        status_text = card_status_label(ready, scanned=True)
+        status_color = TacticalTheme.GREEN_PRIMARY if ready > 0 else TacticalTheme.TEXT_GRAY
+        self._status_label = ctk.CTkLabel(
             self,
             text=status_text,
             font=TacticalTheme.FONT_SMALL,
             text_color=status_color,
             anchor="w",
         )
-        status_label.grid(row=2, column=1, columnspan=2, sticky="w", padx=(0, 8), pady=(0, 8))
+        self._status_label.grid(row=2, column=1, columnspan=2, sticky="w", padx=(0, 10), pady=(0, 10))
 
-        # Bind click events on the whole card and children
-        for widget in [self, thumbnail, badge, name_label, stats_label, status_label]:
+        for widget in [self, thumbnail, badge, self._name_label, self._stats_label, self._status_label]:
             widget.bind("<Button-1>", self._on_click)
             widget.bind("<Control-Button-1>", self._on_ctrl_click)
 
-        # Hover effects
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
 
     def _on_click(self, event):
         if self._on_select:
-            self._on_select(self.index, multi=False)
+            self._on_select(self, multi=False)
 
     def _on_ctrl_click(self, event):
         if self._on_select:
-            self._on_select(self.index, multi=True)
+            self._on_select(self, multi=True)
         return "break"
 
     def _on_enter(self, event):
@@ -118,7 +115,23 @@ class BlueprintCard(ctk.CTkFrame):
 
     def _on_leave(self, event):
         if not self._selected:
-            self.configure(border_color=TacticalTheme.BG_MEDIUM)
+            self.configure(border_color=TacticalTheme.BORDER_SUBTLE)
+
+    def update_info(self, bp_info) -> None:
+        """Refresh counts in place so a category remap does not rebuild the list."""
+        self.bp_info = bp_info
+        self._name_label.configure(text=bp_info.display_name)
+        self._stats_label.configure(
+            text=(
+                f"{bp_info.block_count} blocks  ·  "
+                f"{bp_info.light_armor_count} light  ·  {bp_info.heavy_armor_count} heavy"
+            )
+        )
+        ready = convertible_total(bp_info)
+        self._status_label.configure(
+            text=card_status_label(ready, scanned=True),
+            text_color=TacticalTheme.GREEN_PRIMARY if ready > 0 else TacticalTheme.TEXT_GRAY,
+        )
 
     def set_selected(self, selected: bool):
         """Update the card's visual selection state."""
@@ -127,9 +140,11 @@ class BlueprintCard(ctk.CTkFrame):
             self.configure(
                 border_color=TacticalTheme.ORANGE_PRIMARY,
                 border_width=2,
+                fg_color="#1f2a3d",
             )
         else:
             self.configure(
-                border_color=TacticalTheme.BG_MEDIUM,
+                border_color=TacticalTheme.BORDER_SUBTLE,
                 border_width=1,
+                fg_color=TacticalTheme.BG_CARD,
             )

@@ -1,21 +1,20 @@
 """
 Subgrid Engine package.
-Provides multi-grid hierarchy parsing, rotor/hinge/piston tracking, and 2.5D/isometric matrix previews.
+Parses CubeGrid parent/child links and extracts block voxels for the map canvas.
 """
 
 from subgrid_engine.hierarchy_parser import (
+    MechanicalLink,
+    MultiGridStructure,
     SubgridHierarchyParser,
     SubgridNode,
-    MultiGridStructure,
-    MechanicalLink,
 )
 from subgrid_engine.visualizer_matrix import (
-    GridMatrixVisualizer,
-    GridMatrixSummary,
     GridBoundingBox,
+    GridMatrixSummary,
+    GridMatrixVisualizer,
     VoxelBlockPoint,
 )
-
 from subgrid_engine.projector_splitter import (
     ProjectorSplitter,
     ProjectorSplitResult,

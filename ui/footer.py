@@ -13,56 +13,54 @@ class Footer(ctk.CTkFrame):
             master,
             fg_color=TacticalTheme.BG_MEDIUM,
             border_width=1,
-            border_color=TacticalTheme.CYAN_PRIMARY,
-            corner_radius=8,
-            height=40,
+            border_color=TacticalTheme.BORDER_SUBTLE,
+            corner_radius=12,
+            height=42,
             **kwargs,
         )
         self._on_update_click = on_update_click
 
-        # Status
         status_frame = ctk.CTkFrame(self, fg_color="transparent")
-        status_frame.pack(side="left", padx=12, pady=6)
+        status_frame.pack(side="left", padx=14, pady=8)
 
         ctk.CTkLabel(
-            status_frame, text="STATUS:",
+            status_frame, text="Status",
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.TEXT_GRAY,
-        ).pack(side="left", padx=(0, 4))
+        ).pack(side="left", padx=(0, 6))
 
         self.status_label = ctk.CTkLabel(
-            status_frame, text="SYSTEM READY",
-            font=TacticalTheme.FONT_NORMAL,
+            status_frame, text="Ready",
+            font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.CYAN_PRIMARY,
         )
         self.status_label.pack(side="left")
 
-        # Stats
         stats_frame = ctk.CTkFrame(self, fg_color="transparent")
-        stats_frame.pack(side="left", padx=20)
+        stats_frame.pack(side="left", padx=18)
 
         ctk.CTkLabel(
-            stats_frame, text="SCANNED:",
+            stats_frame, text="Scanned",
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.TEXT_GRAY,
-        ).pack(side="left", padx=(0, 4))
+        ).pack(side="left", padx=(0, 6))
 
         self.scanned_label = ctk.CTkLabel(
             stats_frame, text="0",
-            font=TacticalTheme.FONT_NORMAL,
-            text_color=TacticalTheme.CYAN_PRIMARY,
+            font=TacticalTheme.FONT_SMALL,
+            text_color=TacticalTheme.TEXT_WHITE,
         )
-        self.scanned_label.pack(side="left", padx=(0, 14))
+        self.scanned_label.pack(side="left", padx=(0, 16))
 
         ctk.CTkLabel(
-            stats_frame, text="CONVERTED:",
+            stats_frame, text="Converted",
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.TEXT_GRAY,
-        ).pack(side="left", padx=(0, 4))
+        ).pack(side="left", padx=(0, 6))
 
         self.converted_label = ctk.CTkLabel(
             stats_frame, text="0",
-            font=TacticalTheme.FONT_NORMAL,
+            font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.ORANGE_PRIMARY,
         )
         self.converted_label.pack(side="left")
@@ -76,21 +74,21 @@ class Footer(ctk.CTkFrame):
             border_width=1,
             border_color=TacticalTheme.GREEN_PRIMARY,
             hover_color=TacticalTheme.BG_DARK,
-            width=260,
+            width=240,
             height=26,
+            corner_radius=8,
             command=self._on_update_click,
         )
         self.update_button.pack(side="right", padx=(6, 2))
         self.update_button.pack_forget()
 
-        # Version info
-        version_text = f"SE-BCX-v{__version__} ({__channel__}) // BUILD {__build_date__}"
+        version_text = f"v{__version__}  ·  {__channel__}  ·  {__build_date__}"
         ctk.CTkLabel(
             self,
             text=version_text,
             font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.TEXT_GRAY,
-        ).pack(side="right", padx=12)
+        ).pack(side="right", padx=14)
 
     def set_status(self, text: str, color: str = None):
         """Update the status text."""

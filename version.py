@@ -8,5 +8,5 @@ from datetime import date
 
 __version__ = "4.0.0"
 __build_date__ = date.today().isoformat()
-__channel__ = "stable"  # stable | beta | dev
+__channel__ = "candidate"  # Do not publish until release_acceptance.json passes.
 

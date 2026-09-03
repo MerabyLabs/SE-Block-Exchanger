@@ -1,17 +1,308 @@
-﻿"""
-Interactive 2D / 2.5D Graphical Ship Blueprint Canvas.
-Renders authentic 1:1 square voxel representations of Space Engineers grids and subgrids
-with orthographic projection modes, deck slicer, subsystem color coding, and zoom/pan.
-"""
+"""Interactive 2D ship map — renders blueprint blocks as a grid without freezing the UI."""
 
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
+
 import customtkinter as ctk
+import numpy as np
+from PIL import Image, ImageTk
 
 from ui.theme import TacticalTheme
+
+
+MAP_BG_RGB = (7, 12, 24)
+MAP_GRID_RGB = (30, 41, 59)
+
+
+def project_cell_key(block: "VoxelBlock", mode: str) -> Tuple[int, int]:
+    if mode == "Top":
+        return (int(block.x), int(block.z))
+    if mode == "Side":
+        return (int(block.x), -int(block.y))
+    return (int(block.z), -int(block.y))
+
+
+def collect_projected_cells(
+    blocks: List["VoxelBlock"],
+    mode: str,
+) -> Dict[Tuple[int, int], Tuple[str, str]]:
+    cells: Dict[Tuple[int, int], Tuple[str, str]] = {}
+    for block in blocks:
+        cells[project_cell_key(block, mode)] = ShipCanvas._get_block_color(
+            block.subtype, block.is_subgrid, block.color_rgb
+        )
+    return cells
+
+
+def _hex_to_rgb(color: str) -> Tuple[int, int, int]:
+    raw = (color or "").lstrip("#")
+    if len(raw) != 6:
+        return MAP_BG_RGB
+    return int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+
+
+def _clip_fill(
+    arr: np.ndarray,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    color: Tuple[int, int, int],
+) -> None:
+    h, w = arr.shape[0], arr.shape[1]
+    xa, xb = max(0, min(x0, x1)), min(w, max(x0, x1) + 1)
+    ya, yb = max(0, min(y0, y1)), min(h, max(y0, y1) + 1)
+    if xa < xb and ya < yb:
+        arr[ya:yb, xa:xb] = color
+
+
+def rasterize_projected_cells(
+    cells: Dict[Tuple[int, int], Tuple[str, str]],
+    *,
+    width: int,
+    height: int,
+    step: float,
+    cx: float,
+    cy: float,
+    mid_x: float,
+    mid_y: float,
+    projection: str,
+    draw_grid: bool,
+) -> Image.Image:
+    """One bitmap for the 2D map — same colors/legend as per-cell rectangles."""
+    w = max(1, int(width))
+    h = max(1, int(height))
+    arr = np.empty((h, w, 3), dtype=np.uint8)
+    arr[:] = MAP_BG_RGB
+    if not cells:
+        return Image.fromarray(arr, "RGB")
+    cell = max(1.0, float(step))
+
+    def project(gx: int, gy: int) -> Tuple[float, float]:
+        if projection == "Top":
+            return cx + (gx - mid_x) * cell, cy + (gy - mid_y) * cell
+        if projection == "Side":
+            return cx + (gx - mid_x) * cell, cy - ((-gy) - mid_y) * cell
+        return cx + (gx - mid_x) * cell, cy - ((-gy) - mid_y) * cell
+
+    xs = [key[0] for key in cells]
+    ys = [key[1] for key in cells]
+    min_gx, max_gx = min(xs), max(xs)
+    min_gy, max_gy = min(ys), max(ys)
+    if draw_grid and (max_gx - min_gx) <= 80 and (max_gy - min_gy) <= 80:
+        for gx in range(min_gx, max_gx + 2):
+            x0, y0 = project(gx, min_gy)
+            _x1, y1 = project(gx, max_gy + 1)
+            _clip_fill(arr, int(round(x0)), int(round(y0)), int(round(x0)), int(round(y1)), MAP_GRID_RGB)
+        for gy in range(min_gy, max_gy + 2):
+            x0, y0 = project(min_gx, gy)
+            x1, _y1 = project(max_gx + 1, gy)
+            _clip_fill(arr, int(round(x0)), int(round(y0)), int(round(x1)), int(round(y0)), MAP_GRID_RGB)
+
+    inset = cell >= 8
+    size = max(1, int(round(cell)))
+    for (gx, gy), (fill, outline) in cells.items():
+        px, py = project(gx, gy)
+        x0 = int(round(px))
+        y0 = int(round(py))
+        x1 = x0 + size - 1
+        y1 = y0 + size - 1
+        _clip_fill(arr, x0, y0, x1, y1, _hex_to_rgb(fill))
+        if inset and outline:
+            rgb = _hex_to_rgb(outline)
+            _clip_fill(arr, x0, y0, x1, y0, rgb)
+            _clip_fill(arr, x0, y1, x1, y1, rgb)
+            _clip_fill(arr, x0, y0, x0, y1, rgb)
+            _clip_fill(arr, x1, y0, x1, y1, rgb)
+    return Image.fromarray(arr, "RGB")
+
+
+def visible_map_blocks(
+    blocks: List["VoxelBlock"],
+    grid_filter: Optional[str] = None,
+    grid_entity_id: Optional[str] = None,
+) -> List["VoxelBlock"]:
+    if grid_entity_id:
+        return [b for b in blocks if b.grid_entity_id == grid_entity_id]
+    if grid_filter:
+        return [b for b in blocks if b.grid_name == grid_filter]
+    return blocks
+
+
+def bounds_for_blocks(
+    blocks: List["VoxelBlock"],
+) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
+    if not blocks:
+        return (0, 0, 0), (0, 0, 0)
+    xs = [b.x for b in blocks]
+    ys = [b.y for b in blocks]
+    zs = [b.z for b in blocks]
+    return (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
+
+
+def fit_scale_for(
+    min_c: Tuple[int, int, int],
+    max_c: Tuple[int, int, int],
+    projection: str,
+    width: int,
+    height: int,
+) -> float:
+    w = max(int(width), 320)
+    h = max(int(height), 240)
+    dim_x = max(1, max_c[0] - min_c[0] + 1)
+    dim_y = max(1, max_c[1] - min_c[1] + 1)
+    dim_z = max(1, max_c[2] - min_c[2] + 1)
+    if projection == "Top":
+        span_w, span_h = dim_x, dim_z
+    elif projection == "Side":
+        span_w, span_h = dim_x, dim_y
+    else:
+        span_w, span_h = dim_z, dim_y
+    return max(6.0, min(40.0, min((w * 0.8) / span_w, (h * 0.8) / span_h)))
+
+
+def map_status_caption(
+    count: int,
+    min_c: Tuple[int, int, int],
+    max_c: Tuple[int, int, int],
+    grid_filter: Optional[str] = None,
+) -> str:
+    if count <= 0:
+        return "No blocks on this grid." if grid_filter else "No blocks to draw"
+    dim = (
+        max_c[0] - min_c[0] + 1,
+        max_c[1] - min_c[1] + 1,
+        max_c[2] - min_c[2] + 1,
+    )
+    prefix = f"{grid_filter}  ·  " if grid_filter else ""
+    return f"{prefix}{count:,} blocks  ·  {dim[0]} × {dim[1]} × {dim[2]}"
+
+
+@dataclass
+class MapFrame:
+    image: Optional[Image.Image]
+    count: int
+    min_c: Tuple[int, int, int]
+    max_c: Tuple[int, int, int]
+    scale: float
+    caption: str
+    fitted: bool = False
+
+
+def build_map_frame(
+    blocks: List["VoxelBlock"],
+    *,
+    projection: str,
+    width: int,
+    height: int,
+    scale: float,
+    pan_x: float,
+    pan_y: float,
+    grid_filter: Optional[str] = None,
+    grid_entity_id: Optional[str] = None,
+    fit: bool = False,
+) -> MapFrame:
+    """Filter, bounds, caption, optional fit-scale, collect, raster. Worker only."""
+    w = max(1, int(width))
+    h = max(1, int(height))
+    active = visible_map_blocks(blocks, grid_filter, grid_entity_id)
+    if not active:
+        return MapFrame(
+            image=None,
+            count=0,
+            min_c=(0, 0, 0),
+            max_c=(0, 0, 0),
+            scale=float(scale),
+            caption=map_status_caption(0, (0, 0, 0), (0, 0, 0), grid_filter),
+            fitted=bool(fit),
+        )
+    min_c, max_c = bounds_for_blocks(active)
+    use_scale = float(scale)
+    use_pan_x = float(pan_x)
+    use_pan_y = float(pan_y)
+    if fit:
+        use_scale = fit_scale_for(min_c, max_c, projection, w, h)
+        use_pan_x = 0.0
+        use_pan_y = 0.0
+    mid_x = (min_c[0] + max_c[0]) / 2.0
+    mid_y = (min_c[1] + max_c[1]) / 2.0
+    mid_z = (min_c[2] + max_c[2]) / 2.0
+    if projection == "Top":
+        axis_mid_x, axis_mid_y = mid_x, mid_z
+    elif projection == "Side":
+        axis_mid_x, axis_mid_y = mid_x, mid_y
+    else:
+        axis_mid_x, axis_mid_y = mid_z, mid_y
+    cells = collect_projected_cells(active, projection)
+    image = rasterize_projected_cells(
+        cells,
+        width=w,
+        height=h,
+        step=max(4.0, use_scale),
+        cx=w / 2 + use_pan_x,
+        cy=h / 2 + use_pan_y,
+        mid_x=axis_mid_x,
+        mid_y=axis_mid_y,
+        projection=projection,
+        draw_grid=True,
+    )
+    return MapFrame(
+        image=image,
+        count=len(active),
+        min_c=min_c,
+        max_c=max_c,
+        scale=use_scale,
+        caption=map_status_caption(len(active), min_c, max_c, grid_filter),
+        fitted=bool(fit),
+    )
+
+
+def render_map_bitmap(
+    blocks: List["VoxelBlock"],
+    *,
+    projection: str,
+    width: int,
+    height: int,
+    scale: float,
+    pan_x: float,
+    pan_y: float,
+    grid_filter: Optional[str] = None,
+    grid_entity_id: Optional[str] = None,
+) -> Optional[Image.Image]:
+    """collect + raster. Call from a worker, never from Tk during a ship switch."""
+    return build_map_frame(
+        blocks,
+        projection=projection,
+        width=width,
+        height=height,
+        scale=scale,
+        pan_x=pan_x,
+        pan_y=pan_y,
+        grid_filter=grid_filter,
+        grid_entity_id=grid_entity_id,
+    ).image
+
+
+def voxels_to_blocks(voxels: Iterable[dict]) -> List["VoxelBlock"]:
+    """Build 2D map cubes. Call only when the 2D map will actually draw."""
+    return [
+        VoxelBlock(
+            x=int(v["x"]),
+            y=int(v["y"]),
+            z=int(v["z"]),
+            subtype=v["subtype"],
+            grid_name=v["grid_name"],
+            grid_size=v.get("grid_size", "Large"),
+            is_subgrid=bool(v.get("is_subgrid", False)),
+            color_rgb=v.get("color_rgb"),
+            grid_entity_id=str(v.get("grid_entity_id") or ""),
+        )
+        for v in voxels
+    ]
 
 
 @dataclass
@@ -23,253 +314,180 @@ class VoxelBlock:
     grid_name: str
     is_subgrid: bool
     grid_size: str = "Large"
+    color_rgb: Optional[Tuple[float, float, float]] = None
+    grid_entity_id: str = ""
 
 
 class ShipCanvas(ctk.CTkFrame):
-    """
-    Interactive 2D/2.5D graphical blueprint viewer.
-    """
+    """Top / side / front map of CubeGrid voxels."""
 
-    PROJECTIONS = ("TOP (X-Z)", "SIDE (X-Y)", "FRONT (Y-Z)", "ISOMETRIC 2.5D")
+    PROJECTIONS = ("Top", "Side", "Front")
+    _session_projection = "Top"
+    _on_session_prefs = None
 
     def __init__(self, master, **kwargs):
-        super().__init__(master, fg_color=TacticalTheme.BG_DARK, corner_radius=6, **kwargs)
-
+        super().__init__(master, fg_color=TacticalTheme.BG_DARK, corner_radius=8, **kwargs)
         self.blocks: List[VoxelBlock] = []
         self.selected_grid_filter: Optional[str] = None
-        self.projection_mode: str = "TOP (X-Z)"
-        self.slice_axis: str = "Y"  # Default slice height for Top view
-        self.slice_index: Optional[int] = None  # None = show all slices
+        self.selected_grid_entity_id: Optional[str] = None
+        self.projection_mode = str(self._session_projection or "Top")
+        if self.projection_mode not in self.PROJECTIONS:
+            self.projection_mode = "Top"
         self.min_coords = (0, 0, 0)
         self.max_coords = (0, 0, 0)
-
-        # Canvas pan/zoom transforms
-        self.scale: float = 18.0  # Pixels per block voxel
-        self.pan_x: float = 0.0
-        self.pan_y: float = 0.0
+        self.scale = 16.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
         self._drag_start_x = 0
         self._drag_start_y = 0
-
+        self._redraw_job = None
+        self._photo = None
+        self._photo_size = (0, 0)
+        self._map_image_id = None
+        self._map_gen = 0
+        self._map_busy = False
+        self._map_pending = False
+        self._fit_next = False
         self._build_ui()
 
     def _build_ui(self) -> None:
-        # Top toolbar
-        toolbar = ctk.CTkFrame(self, fg_color=TacticalTheme.BG_GLASS, height=36, corner_radius=6)
+        toolbar = ctk.CTkFrame(self, fg_color=TacticalTheme.BG_GLASS, height=40, corner_radius=8)
         toolbar.pack(fill="x", padx=8, pady=(8, 4))
 
-        # View Mode Dropdown
         ctk.CTkLabel(
-            toolbar,
-            text="VIEW:",
+            toolbar, text="View",
             font=TacticalTheme.FONT_SMALL,
-            text_color=TacticalTheme.CYAN_PRIMARY,
-        ).pack(side="left", padx=(8, 4))
+            text_color=TacticalTheme.TEXT_GRAY,
+        ).pack(side="left", padx=(10, 6))
 
-        self.view_var = ctk.StringVar(value="TOP (X-Z)")
-        self.view_menu = ctk.CTkOptionMenu(
+        self.view_var = ctk.StringVar(value=self.projection_mode)
+        ctk.CTkOptionMenu(
             toolbar,
             values=list(self.PROJECTIONS),
             variable=self.view_var,
             font=TacticalTheme.FONT_SMALL,
             fg_color=TacticalTheme.BG_DARK,
             button_color=TacticalTheme.BG_MEDIUM,
-            button_hover_color=TacticalTheme.CYAN_DIM,
             text_color=TacticalTheme.TEXT_WHITE,
-            width=140,
-            height=28,
+            width=110,
+            height=30,
             command=self._on_projection_changed,
-        )
-        self.view_menu.pack(side="left", padx=4)
+        ).pack(side="left", padx=4)
 
-        # Deck Slicer Controls
-        ctk.CTkLabel(
-            toolbar,
-            text="DECK SLICE:",
+        ctk.CTkButton(
+            toolbar, text="Fit", width=70, height=30,
             font=TacticalTheme.FONT_SMALL,
-            text_color=TacticalTheme.ORANGE_PRIMARY,
-        ).pack(side="left", padx=(12, 4))
-
-        self.slice_toggle_var = ctk.BooleanVar(value=False)
-        self.slice_chk = ctk.CTkCheckBox(
-            toolbar,
-            text="Enable",
-            variable=self.slice_toggle_var,
-            font=TacticalTheme.FONT_SMALL,
-            text_color=TacticalTheme.TEXT_GRAY,
-            fg_color=TacticalTheme.ORANGE_PRIMARY,
-            hover_color=TacticalTheme.ORANGE_DIM,
-            width=65,
-            command=self._toggle_slice_mode,
-        )
-        self.slice_chk.pack(side="left", padx=2)
-
-        self.slice_slider = ctk.CTkSlider(
-            toolbar,
-            from_=0,
-            to=10,
-            number_of_steps=10,
-            width=120,
-            height=16,
-            progress_color=TacticalTheme.ORANGE_PRIMARY,
-            button_color=TacticalTheme.ORANGE_PRIMARY,
-            command=self._on_slice_slider_moved,
-        )
-        self.slice_slider.pack(side="left", padx=4)
-        self.slice_slider.set(0)
-
-        self.slice_label = ctk.CTkLabel(
-            toolbar,
-            text="ALL DECKS",
-            font=TacticalTheme.FONT_CODE_SMALL,
-            text_color=TacticalTheme.TEXT_CYAN,
-            width=90,
-        )
-        self.slice_label.pack(side="left", padx=2)
-
-        # Zoom & Fit Controls
-        btn_fit = ctk.CTkButton(
-            toolbar,
-            text="FIT VIEW",
-            width=75,
-            height=26,
-            font=TacticalTheme.FONT_SMALL,
-            fg_color=TacticalTheme.BG_DARK,
-            text_color=TacticalTheme.TEXT_CYAN,
-            hover_color=TacticalTheme.CYAN_DIM,
+            fg_color=TacticalTheme.CYAN_PRIMARY,
+            text_color=TacticalTheme.BG_DARK,
             command=self.fit_to_view,
-        )
-        btn_fit.pack(side="right", padx=6)
-
-        btn_zoom_in = ctk.CTkButton(
-            toolbar,
-            text="+",
-            width=30,
-            height=26,
+        ).pack(side="right", padx=8)
+        ctk.CTkButton(
+            toolbar, text="+", width=36, height=30,
             font=TacticalTheme.FONT_LARGE,
             fg_color=TacticalTheme.BG_DARK,
             text_color=TacticalTheme.TEXT_WHITE,
-            hover_color=TacticalTheme.CYAN_DIM,
             command=lambda: self._zoom(1.25),
-        )
-        btn_zoom_in.pack(side="right", padx=2)
-
-        btn_zoom_out = ctk.CTkButton(
-            toolbar,
-            text="-",
-            width=30,
-            height=26,
+        ).pack(side="right", padx=2)
+        ctk.CTkButton(
+            toolbar, text="−", width=36, height=30,
             font=TacticalTheme.FONT_LARGE,
             fg_color=TacticalTheme.BG_DARK,
             text_color=TacticalTheme.TEXT_WHITE,
-            hover_color=TacticalTheme.CYAN_DIM,
             command=lambda: self._zoom(0.8),
-        )
-        btn_zoom_out.pack(side="right", padx=2)
+        ).pack(side="right", padx=2)
 
-        # Canvas drawing surface
-        canvas_container = ctk.CTkFrame(self, fg_color="#080e1a", corner_radius=6)
+        canvas_container = ctk.CTkFrame(self, fg_color="#080e1a", corner_radius=8)
         canvas_container.pack(fill="both", expand=True, padx=8, pady=(0, 6))
-
-        self.canvas = tk.Canvas(
-            canvas_container,
-            bg="#070c18",
-            highlightthickness=0,
-            bd=0,
-        )
+        self.canvas = tk.Canvas(canvas_container, bg="#070c18", highlightthickness=0, bd=0)
         self.canvas.pack(fill="both", expand=True)
-
-        # Canvas event bindings
         self.canvas.bind("<ButtonPress-1>", self._on_pan_start)
         self.canvas.bind("<B1-Motion>", self._on_pan_drag)
-        self.canvas.bind("<ButtonPress-2>", self._on_pan_start)
-        self.canvas.bind("<B2-Motion>", self._on_pan_drag)
-        self.canvas.bind("<ButtonPress-3>", self._on_pan_start)
-        self.canvas.bind("<B3-Motion>", self._on_pan_drag)
         self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)
-        self.canvas.bind("<Configure>", lambda e: self.redraw())
+        self.canvas.bind("<Button-4>", lambda _e: self._zoom(1.15))
+        self.canvas.bind("<Button-5>", lambda _e: self._zoom(0.85))
+        self.canvas.bind("<Configure>", self._on_configure)
+        self.canvas.bind("<Map>", self._on_mapped)
 
-        # Legend Bar
-        legend = ctk.CTkFrame(self, fg_color="transparent", height=24)
-        legend.pack(fill="x", padx=10, pady=(0, 6))
-
-        legend_items = [
-            ("Hull / Armor", TacticalTheme.COLOR_ARMOR),
+        legend = ctk.CTkFrame(self, fg_color="transparent")
+        legend.pack(fill="x", padx=10, pady=(0, 8))
+        for text, color in (
+            ("Armor", TacticalTheme.COLOR_ARMOR),
             ("Cockpit", TacticalTheme.COLOR_COCKPIT),
             ("Thrusters", TacticalTheme.COLOR_PROPULSION),
             ("Weapons", TacticalTheme.COLOR_WEAPONS),
             ("Power", TacticalTheme.COLOR_POWER),
             ("Subgrids", TacticalTheme.COLOR_SUBGRID),
-            ("DLC Reskins", TacticalTheme.COLOR_DLC),
-        ]
-
-        for text, color in legend_items:
-            dot = ctk.CTkLabel(
-                legend,
-                text="■",
-                font=("Segoe UI", 12),
-                text_color=color,
-                width=14,
+        ):
+            ctk.CTkLabel(legend, text="■", font=TacticalTheme.FONT_NORMAL, text_color=color, width=16).pack(side="left")
+            ctk.CTkLabel(legend, text=text, font=TacticalTheme.FONT_SMALL, text_color=TacticalTheme.TEXT_GRAY).pack(
+                side="left", padx=(0, 10)
             )
-            dot.pack(side="left", padx=(6, 2))
-            ctk.CTkLabel(
-                legend,
-                text=text,
-                font=TacticalTheme.FONT_SMALL,
-                text_color=TacticalTheme.TEXT_GRAY,
-            ).pack(side="left", padx=(0, 8))
-
         self.info_status = ctk.CTkLabel(
-            legend,
-            text="0 Voxels Loaded",
-            font=TacticalTheme.FONT_CODE_SMALL,
+            legend, text="No ship loaded",
+            font=TacticalTheme.FONT_SMALL,
             text_color=TacticalTheme.CYAN_PRIMARY,
         )
-        self.info_status.pack(side="right", padx=8)
+        self.info_status.pack(side="right")
 
-    # ------------------------------------------------------------------
-    # Data Loading
-    # ------------------------------------------------------------------
-
-    def load_structure_data(self, blocks: List[VoxelBlock]) -> None:
-        """Load block voxels and recalculate 3D bounding geometry."""
-        self.blocks = list(blocks)
+    def load_structure_data(self, blocks: List[VoxelBlock], *, draw: bool = True) -> None:
+        self._map_gen += 1
+        self.blocks = blocks if blocks is not None else []
+        self.selected_grid_filter = None
+        self.selected_grid_entity_id = None
         if not self.blocks:
             self.min_coords = (0, 0, 0)
             self.max_coords = (0, 0, 0)
-            self.info_status.configure(text="0 Voxels Loaded")
-            self.redraw()
+            self.info_status.configure(text="No blocks to draw")
+            if draw:
+                self._request_map_bitmap()
             return
+        if draw:
+            self.fit_to_view()
 
-        xs = [b.x for b in self.blocks]
-        ys = [b.y for b in self.blocks]
-        zs = [b.z for b in self.blocks]
-
-        self.min_coords = (min(xs), min(ys), min(zs))
-        self.max_coords = (max(xs), max(ys), max(zs))
-
-        # Setup slice slider range
-        self._update_slider_range()
-
-        dim_x = self.max_coords[0] - self.min_coords[0] + 1
-        dim_y = self.max_coords[1] - self.min_coords[1] + 1
-        dim_z = self.max_coords[2] - self.min_coords[2] + 1
-        self.info_status.configure(text=f"{len(self.blocks):,} Voxels | Grid: {dim_x}W x {dim_y}H x {dim_z}L")
-
-        self.fit_to_view()
-
-    def filter_by_grid(self, grid_name: Optional[str]) -> None:
+    def filter_by_grid(
+        self,
+        grid_name: Optional[str] = None,
+        grid_entity_id: Optional[str] = None,
+    ) -> None:
+        self._map_gen += 1
         self.selected_grid_filter = grid_name
-        self.redraw()
-
-    # ------------------------------------------------------------------
-    # Canvas Transforms & Rendering
-    # ------------------------------------------------------------------
+        self.selected_grid_entity_id = grid_entity_id
+        if self.blocks:
+            self.fit_to_view()
+        else:
+            self._schedule_redraw()
 
     @staticmethod
-    def _get_block_color(subtype: str, is_subgrid: bool) -> Tuple[str, str]:
+    def bounds_for(blocks: List[VoxelBlock]) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
+        return bounds_for_blocks(blocks)
+
+    def clear(self) -> None:
+        self._map_gen += 1
+        self._map_pending = False
+        self.blocks = []
+        self.selected_grid_filter = None
+        self.selected_grid_entity_id = None
+        self.info_status.configure(text="No ship loaded")
+        self._request_map_bitmap()
+
+    @staticmethod
+    def _rgb_to_hex(rgb: Tuple[float, float, float]) -> str:
+        r = max(0, min(255, int(round(rgb[0] * 255))))
+        g = max(0, min(255, int(round(rgb[1] * 255))))
+        b = max(0, min(255, int(round(rgb[2] * 255))))
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    @staticmethod
+    def _get_block_color(
+        subtype: str,
+        is_subgrid: bool,
+        color_rgb: Optional[Tuple[float, float, float]] = None,
+    ) -> Tuple[str, str]:
+        if color_rgb is not None:
+            fill = ShipCanvas._rgb_to_hex(color_rgb)
+            return fill, "#0f172a"
         if is_subgrid:
             return TacticalTheme.COLOR_SUBGRID, "#047857"
-
         s = subtype.lower()
         if "cockpit" in s or "cryo" in s:
             return TacticalTheme.COLOR_COCKPIT, "#b45309"
@@ -277,188 +495,204 @@ class ShipCanvas(ctk.CTkFrame):
             return TacticalTheme.COLOR_PROPULSION, "#0e7490"
         if any(k in s for k in ("turret", "missile", "gatling", "cannon", "railgun", "warhead", "rocket")):
             return TacticalTheme.COLOR_WEAPONS, "#b91c1c"
-        if any(k in s for k in ("reactor", "battery", "generator", "solar")):
+        if any(k in s for k in ("reactor", "battery", "generator", "solar", "jumpdrive", "hydrogenengine")):
             return TacticalTheme.COLOR_POWER, "#a16207"
-        if any(k in s for k in ("industrial", "scifi", "contact", "signal", "warfare", "wasteland")):
-            return TacticalTheme.COLOR_DLC, "#be185d"
         if "heavy" in s:
             return "#1e293b", TacticalTheme.ORANGE_PRIMARY
         if "armor" in s or "panel" in s:
             return TacticalTheme.COLOR_ARMOR, TacticalTheme.CYAN_DIM
         return "#334155", "#475569"
 
-    def redraw(self) -> None:
-        self.canvas.delete("all")
+    def _on_configure(self, _event=None) -> None:
         w = self.canvas.winfo_width()
         h = self.canvas.winfo_height()
+        if self._photo is not None and self._photo_size == (w, h):
+            return
+        self._schedule_redraw()
 
-        if w < 10 or h < 10 or not self.blocks:
-            self.canvas.create_text(
-                w // 2,
-                h // 2,
-                text="No blueprint voxel data loaded.\nSelect a blueprint in the database to inspect hull geometry.",
-                font=TacticalTheme.FONT_NORMAL,
-                fill=TacticalTheme.TEXT_MUTED,
-                justify="center",
+    def _on_mapped(self, _event=None) -> None:
+        if self._photo is not None:
+            return
+        if self.blocks:
+            self.fit_to_view()
+        else:
+            self._schedule_redraw()
+
+    def refresh(self) -> None:
+        """Redraw after the Map/Subgrids tab becomes visible, if the bitmap is gone or resized."""
+        if self._photo is not None:
+            try:
+                if self._photo_size == (self.canvas.winfo_width(), self.canvas.winfo_height()):
+                    return
+            except Exception:
+                return
+        if self.blocks:
+            self.fit_to_view()
+        else:
+            self._schedule_redraw()
+
+    def _is_drawn(self) -> bool:
+        try:
+            return bool(self.winfo_ismapped() and self.canvas.winfo_ismapped())
+        except Exception:
+            return False
+
+    def _schedule_redraw(self) -> None:
+        if not self._is_drawn():
+            return
+        if self._redraw_job is not None:
+            self.after_cancel(self._redraw_job)
+        self._redraw_job = self.after(40, self._request_map_bitmap)
+
+    def _redraw_now(self) -> None:
+        if self._redraw_job is not None:
+            try:
+                self.after_cancel(self._redraw_job)
+            except Exception:
+                pass
+            self._redraw_job = None
+        self._request_map_bitmap()
+
+    def redraw(self) -> None:
+        self._request_map_bitmap()
+
+    def _paint_empty_map(self, width: int, height: int, text: str) -> None:
+        self._clear_map_image()
+        self.canvas.delete("all")
+        self.canvas.create_text(
+            width // 2,
+            height // 2,
+            text=text,
+            font=TacticalTheme.FONT_LARGE,
+            fill=TacticalTheme.TEXT_MUTED,
+            justify="center",
+        )
+
+    def _request_map_bitmap(self) -> None:
+        self._redraw_job = None
+        if not self._is_drawn():
+            return
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        if w < 40 or h < 40:
+            if self.blocks:
+                self.after(80, self.refresh)
+            return
+        if not self.blocks:
+            self._paint_empty_map(
+                w, h, "Select a blueprint to see its grids on this map."
             )
             return
+        if self._map_busy:
+            self._map_pending = True
+            return
+        self._map_busy = True
+        self._map_pending = False
+        fit = self._fit_next
+        self._fit_next = False
+        gen = self._map_gen
+        blocks = self.blocks
+        projection = self.projection_mode
+        scale = self.scale
+        pan_x = self.pan_x
+        pan_y = self.pan_y
+        grid_filter = self.selected_grid_filter
+        grid_entity_id = self.selected_grid_entity_id
 
-        # Draw subtle holographic background grid
-        self._draw_holo_grid(w, h)
-
-        # Center reference
-        cx = w / 2 + self.pan_x
-        cy = h / 2 + self.pan_y
-
-        active_blocks = self.blocks
-        if self.selected_grid_filter:
-            active_blocks = [b for b in active_blocks if b.grid_name == self.selected_grid_filter]
-
-        # Apply deck slicing
-        if self.slice_toggle_var.get() and self.slice_index is not None:
-            if self.projection_mode.startswith("TOP"):
-                active_blocks = [b for b in active_blocks if b.y == self.slice_index]
-            elif self.projection_mode.startswith("SIDE"):
-                active_blocks = [b for b in active_blocks if b.z == self.slice_index]
-            elif self.projection_mode.startswith("FRONT"):
-                active_blocks = [b for b in active_blocks if b.x == self.slice_index]
-
-        mid_x = (self.min_coords[0] + self.max_coords[0]) / 2.0
-        mid_y = (self.min_coords[1] + self.max_coords[1]) / 2.0
-        mid_z = (self.min_coords[2] + self.max_coords[2]) / 2.0
-
-        # Sort blocks for clean painter's algorithm
-        if self.projection_mode.startswith("ISOMETRIC"):
-            active_blocks = sorted(active_blocks, key=lambda b: (b.x + b.z - b.y))
-        elif self.projection_mode.startswith("TOP"):
-            active_blocks = sorted(active_blocks, key=lambda b: b.y)
-        elif self.projection_mode.startswith("SIDE"):
-            active_blocks = sorted(active_blocks, key=lambda b: b.z)
-        elif self.projection_mode.startswith("FRONT"):
-            active_blocks = sorted(active_blocks, key=lambda b: b.x)
-
-        step = self.scale
-
-        for b in active_blocks:
-            fill_color, outline_color = self._get_block_color(b.subtype, b.is_subgrid)
-
-            if self.projection_mode.startswith("TOP"):
-                # X-Z Plane (Ship looking down from top: X horizontal, Z vertical)
-                px = cx + (b.x - mid_x) * step
-                py = cy + (b.z - mid_z) * step
-                self.canvas.create_rectangle(
-                    px, py, px + step - 1, py + step - 1,
-                    fill=fill_color,
-                    outline=outline_color if step > 6 else "",
-                    width=1,
+        def work() -> None:
+            frame = None
+            try:
+                frame = build_map_frame(
+                    blocks,
+                    projection=projection,
+                    width=w,
+                    height=h,
+                    scale=scale,
+                    pan_x=pan_x,
+                    pan_y=pan_y,
+                    grid_filter=grid_filter,
+                    grid_entity_id=grid_entity_id,
+                    fit=fit,
                 )
+            except Exception:
+                frame = None
+            try:
+                self.after(0, lambda f=frame: self._apply_map_bitmap(gen, f, w, h))
+            except Exception:
+                self._map_busy = False
+                self._map_pending = False
 
-            elif self.projection_mode.startswith("SIDE"):
-                # X-Y Plane (Ship profile: X horizontal, Y vertical inverted)
-                px = cx + (b.x - mid_x) * step
-                py = cy - (b.y - mid_y) * step
-                self.canvas.create_rectangle(
-                    px, py, px + step - 1, py + step - 1,
-                    fill=fill_color,
-                    outline=outline_color if step > 6 else "",
-                    width=1,
-                )
+        threading.Thread(target=work, daemon=True, name="se-map-raster").start()
 
-            elif self.projection_mode.startswith("FRONT"):
-                # Y-Z Plane (Cross section: Z horizontal, Y vertical inverted)
-                px = cx + (b.z - mid_z) * step
-                py = cy - (b.y - mid_y) * step
-                self.canvas.create_rectangle(
-                    px, py, px + step - 1, py + step - 1,
-                    fill=fill_color,
-                    outline=outline_color if step > 6 else "",
-                    width=1,
-                )
-
-            elif self.projection_mode.startswith("ISOMETRIC"):
-                # 2.5D Isometric projection
-                rel_x = b.x - mid_x
-                rel_y = b.y - mid_y
-                rel_z = b.z - mid_z
-
-                iso_x = (rel_x - rel_z) * (step * 0.866)
-                iso_y = (-rel_y * step * 0.9) + (rel_x + rel_z) * (step * 0.5)
-
-                px = cx + iso_x
-                py = cy + iso_y
-
-                # Draw isometric cube diamond top
-                h_step = step * 0.5
-                points = [
-                    px, py - h_step,
-                    px + h_step, py,
-                    px, py + h_step,
-                    px - h_step, py,
-                ]
-                self.canvas.create_polygon(
-                    points,
-                    fill=fill_color,
-                    outline=outline_color if step > 6 else "",
-                    width=1,
-                )
-
-    def _draw_holo_grid(self, w: int, h: int) -> None:
-        grid_size = 40
-        for x in range(0, w, grid_size):
-            self.canvas.create_line(x, 0, x, h, fill="#0d1829", width=1)
-        for y in range(0, h, grid_size):
-            self.canvas.create_line(0, y, w, y, fill="#0d1829", width=1)
-
-    def fit_to_view(self) -> None:
-        w = max(self.canvas.winfo_width(), 400)
-        h = max(self.canvas.winfo_height(), 300)
-
-        if not self.blocks:
-            self.scale = 18.0
+    def _apply_map_bitmap(
+        self,
+        gen: int,
+        frame: Optional[MapFrame],
+        width: int,
+        height: int,
+    ) -> None:
+        self._map_busy = False
+        pending = self._map_pending
+        self._map_pending = False
+        if gen != self._map_gen:
+            if pending:
+                self._request_map_bitmap()
+            return
+        w = max(1, self.canvas.winfo_width())
+        h = max(1, self.canvas.winfo_height())
+        if frame is None:
+            if pending:
+                self._request_map_bitmap()
+            return
+        self.min_coords = frame.min_c
+        self.max_coords = frame.max_c
+        if frame.fitted:
+            self.scale = frame.scale
             self.pan_x = 0.0
             self.pan_y = 0.0
-            self.redraw()
+        self.info_status.configure(text=frame.caption)
+        if frame.image is None:
+            self._paint_empty_map(w, h, "No blocks on this grid.")
+            if pending:
+                self._request_map_bitmap()
             return
-
-        dim_x = max(1, self.max_coords[0] - self.min_coords[0] + 1)
-        dim_y = max(1, self.max_coords[1] - self.min_coords[1] + 1)
-        dim_z = max(1, self.max_coords[2] - self.min_coords[2] + 1)
-
-        if self.projection_mode.startswith("TOP"):
-            max_span_w = dim_x
-            max_span_h = dim_z
-        elif self.projection_mode.startswith("SIDE"):
-            max_span_w = dim_x
-            max_span_h = dim_y
-        elif self.projection_mode.startswith("FRONT"):
-            max_span_w = dim_z
-            max_span_h = dim_y
+        image = frame.image
+        if self._photo is not None and self._photo_size == image.size:
+            self._photo.paste(image)
         else:
-            max_span_w = dim_x + dim_z
-            max_span_h = dim_y + (dim_x + dim_z) * 0.5
+            self._photo = ImageTk.PhotoImage(image)
+            self._photo_size = image.size
+            if self._map_image_id is None:
+                self.canvas.delete("all")
+                self._map_image_id = self.canvas.create_image(0, 0, image=self._photo, anchor="nw")
+            else:
+                self.canvas.itemconfig(self._map_image_id, image=self._photo)
+        if self._map_image_id is not None:
+            self.canvas.coords(self._map_image_id, 0, 0)
+        if pending or w != width or h != height:
+            self._request_map_bitmap()
 
-        scale_x = (w * 0.8) / max_span_w
-        scale_y = (h * 0.8) / max_span_h
-        self.scale = max(4.0, min(36.0, min(scale_x, scale_y)))
+    def fit_to_view(self) -> None:
         self.pan_x = 0.0
         self.pan_y = 0.0
-        self.redraw()
-
-    # ------------------------------------------------------------------
-    # Interactivity: Zoom, Pan, Slicing
-    # ------------------------------------------------------------------
+        self._fit_next = True
+        self._request_map_bitmap()
 
     def _zoom(self, factor: float) -> None:
-        self.scale = max(2.0, min(64.0, self.scale * factor))
-        self.redraw()
+        self.scale = max(4.0, min(48.0, self.scale * factor))
+        self._schedule_redraw()
 
     def _on_mouse_wheel(self, event) -> None:
-        factor = 1.15 if event.delta > 0 else 0.85
-        self._zoom(factor)
+        self._zoom(1.15 if event.delta > 0 else 0.85)
 
     def _on_pan_start(self, event) -> None:
         self._drag_start_x = event.x
         self._drag_start_y = event.y
+
+    def _clear_map_image(self) -> None:
+        self._photo = None
+        self._photo_size = (0, 0)
+        self._map_image_id = None
 
     def _on_pan_drag(self, event) -> None:
         dx = event.x - self._drag_start_x
@@ -467,52 +701,12 @@ class ShipCanvas(ctk.CTkFrame):
         self.pan_y += dy
         self._drag_start_x = event.x
         self._drag_start_y = event.y
-        self.redraw()
+        self._schedule_redraw()
 
     def _on_projection_changed(self, choice: str) -> None:
+        self._map_gen += 1
         self.projection_mode = choice
-        self._update_slider_range()
+        ShipCanvas._session_projection = choice
+        if callable(self._on_session_prefs):
+            self._on_session_prefs()
         self.fit_to_view()
-
-    def _update_slider_range(self) -> None:
-        if not self.blocks:
-            return
-
-        if self.projection_mode.startswith("TOP"):
-            min_v, max_v = self.min_coords[1], self.max_coords[1]
-            axis_name = "Deck Y"
-        elif self.projection_mode.startswith("SIDE"):
-            min_v, max_v = self.min_coords[2], self.max_coords[2]
-            axis_name = "Slice Z"
-        elif self.projection_mode.startswith("FRONT"):
-            min_v, max_v = self.min_coords[0], self.max_coords[0]
-            axis_name = "Cross X"
-        else:
-            min_v, max_v = 0, 10
-            axis_name = "Isometric"
-
-        steps = max(1, max_v - min_v)
-        self.slice_slider.configure(from_=min_v, to=max_v, number_of_steps=steps)
-        if self.slice_index is None or self.slice_index < min_v or self.slice_index > max_v:
-            self.slice_index = min_v
-            self.slice_slider.set(min_v)
-
-        if self.slice_toggle_var.get():
-            self.slice_label.configure(text=f"{axis_name} = {int(self.slice_slider.get())}")
-        else:
-            self.slice_label.configure(text="ALL DECKS")
-
-    def _toggle_slice_mode(self) -> None:
-        if self.slice_toggle_var.get():
-            self.slice_index = int(self.slice_slider.get())
-            self._update_slider_range()
-        else:
-            self.slice_index = None
-            self.slice_label.configure(text="ALL DECKS")
-        self.redraw()
-
-    def _on_slice_slider_moved(self, value) -> None:
-        if self.slice_toggle_var.get():
-            self.slice_index = int(value)
-            self._update_slider_range()
-            self.redraw()

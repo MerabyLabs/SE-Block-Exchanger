@@ -1,7 +1,11 @@
-customtkinter>=5.2.2
+customtkinter>=6.0.0,<7
 
 # Security: hardened XML parser (prevents XXE / billion-laughs)
 defusedxml>=0.7.1
 
 # Optional dependencies
-Pillow>=12.2.0
+Pillow>=12.3.0,<13
+
+# Subgrids 3D preview (standalone ModernGL context; falls back to the 2D map)
+numpy>=1.26.0,<3
+moderngl>=5.12.0,<6

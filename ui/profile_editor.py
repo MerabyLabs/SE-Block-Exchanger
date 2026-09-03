@@ -4,7 +4,6 @@ Profile editor dialog for custom mapping profiles.
 
 from __future__ import annotations
 
-import json
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 from typing import Callable, List, Optional
@@ -444,12 +443,7 @@ class ProfileEditorDialog(ctk.CTkToplevel):
             messagebox.showwarning("No profile selected", "Select a saved profile to share.")
             return
         try:
-            profile = self.profile_manager.get(selected)
-            payload = json.dumps(profile.to_dict(), indent=2)
-            formatted = (
-                f"**{profile.name}** by {profile.author} (v{profile.version})\n"
-                f"{profile.description}\n\n```json\n{payload}\n```"
-            )
+            formatted = self.profile_manager.discord_share_text(selected)
             self.clipboard_clear()
             self.clipboard_append(formatted)
             self.status_label.configure(text="Discord share payload copied to clipboard.")

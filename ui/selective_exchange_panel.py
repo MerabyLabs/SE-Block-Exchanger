@@ -6,12 +6,33 @@ with custom targets, smart dropdowns, category filters, live search, and visual 
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 import customtkinter as ctk
 
 from ui.theme import TacticalTheme
 from blueprint_scanner import BlueprintInfo
 from mappings import build_registry
+
+
+TABLE_ROW_CHUNK = 4
+
+
+def table_build_progress(done: int, total: int) -> str:
+    total_n = max(0, int(total))
+    done_n = max(0, min(int(done), total_n))
+    if total_n <= 0:
+        return "Building table…"
+    if done_n < total_n:
+        return f"Building table… {done_n} of {total_n}"
+    return ""
+
+
+def chunk_table_rows(rows: Sequence, start: int, chunk: int = TABLE_ROW_CHUNK) -> Tuple[list, int]:
+    """Return (slice, next_start). Never drops rows; caller loops until next_start == len."""
+    begin = max(0, int(start))
+    size = max(1, int(chunk))
+    end = min(len(rows), begin + size)
+    return list(rows[begin:end]), end
 
 
 class SelectiveExchangePanel(ctk.CTkFrame):
@@ -48,6 +69,10 @@ class SelectiveExchangePanel(ctk.CTkFrame):
         self._block_categories: Dict[str, str] = {}
         self._search_query: str = ""
         self._active_category_filter: str = "ALL"
+        self._table_generation = 0
+        self._pending_rows: List[Tuple[str, int]] = []
+        self._row_build_index = 0
+        self._build_job = None
 
         self._build_ui()
 
@@ -292,6 +317,14 @@ class SelectiveExchangePanel(ctk.CTkFrame):
     def load_blueprint(self, bp: Optional[BlueprintInfo]) -> None:
         """Populate the tactical table with block subtypes from the selected blueprint."""
         self.current_blueprint = bp
+        self._table_generation += 1
+        generation = self._table_generation
+        if self._build_job is not None:
+            try:
+                self.after_cancel(self._build_job)
+            except Exception:
+                pass
+            self._build_job = None
         self._row_vars.clear()
         self._row_targets.clear()
         self._row_combos.clear()
@@ -314,9 +347,29 @@ class SelectiveExchangePanel(ctk.CTkFrame):
             return
 
         self._block_counts = dict(bp.subtype_counts)
-        sorted_subtypes = sorted(self._block_counts.items(), key=lambda x: x[1], reverse=True)
+        self._pending_rows = sorted(self._block_counts.items(), key=lambda x: x[1], reverse=True)
+        self._row_build_index = 0
+        self.summary_title.configure(text=table_build_progress(0, len(self._pending_rows)))
+        self.convert_btn.configure(state="disabled")
+        self._build_table_chunk(generation)
 
-        for subtype, count in sorted_subtypes:
+    def _build_table_chunk(self, generation: int) -> None:
+        self._build_job = None
+        if generation != self._table_generation:
+            return
+        chunk, nxt = chunk_table_rows(self._pending_rows, self._row_build_index, TABLE_ROW_CHUNK)
+        for subtype, count in chunk:
+            self._add_subtype_row(subtype, count)
+        self._row_build_index = nxt
+        total = len(self._pending_rows)
+        if nxt < total:
+            self.summary_title.configure(text=table_build_progress(nxt, total))
+            self._build_job = self.after(1, lambda: self._build_table_chunk(generation))
+            return
+        self._filter_rows()
+        self._update_summary()
+
+    def _add_subtype_row(self, subtype: str, count: int) -> None:
             cat = self._classify_subtype(subtype)
             self._block_categories[subtype] = cat
 
@@ -422,9 +475,6 @@ class SelectiveExchangePanel(ctk.CTkFrame):
                 command=lambda st=subtype: self._quick_swap_row(st),
             )
             quick_btn.pack(side="right", padx=10)
-
-        self._filter_rows()
-        self._update_summary()
 
     def _quick_swap_row(self, subtype: str) -> None:
         """Cycle through smart replacement suggestions on click."""

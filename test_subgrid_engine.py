@@ -43,7 +43,7 @@ class TestSubgridEngine(unittest.TestCase):
             self.assertGreaterEqual(len(summaries), 1)
             self.assertIn("Top-Down Projection", summaries[0].ascii_top_down_view)
             self.assertIn("Side Profile Projection", summaries[0].ascii_side_view)
-            self.assertIn("Armor/other", summaries[0].ascii_top_down_view)
+            self.assertIn("Armor", summaries[0].ascii_top_down_view)
 
 
 if __name__ == "__main__":

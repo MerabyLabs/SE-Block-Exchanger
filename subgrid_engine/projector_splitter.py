@@ -94,7 +94,6 @@ class ProjectorSplitter:
                 source_blueprint_name=bp_name,
                 total_subgrids=1,
                 output_directory=source_bp_path,
-                error_message="Blueprint already contains only a single grid. No subgrid splitting required.",
             )
 
         # Parse hierarchy to determine order
@@ -156,14 +155,18 @@ class ProjectorSplitter:
             sub_bp_dir.mkdir(parents=True, exist_ok=True)
             sub_sbc_file = sub_bp_dir / "bp.sbc"
 
-            # Construct clean standalone XML document
-            ET.register_namespace("xsd", "http://www.w3.org/2001/XMLSchema")
-            ET.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
+            # Construct clean standalone XML document.
+            # Use Clark notation so ElementTree binds xmlns:xsi instead of
+            # emitting a literal "xsi:type" attribute with no namespace.
+            xsi_ns = "http://www.w3.org/2001/XMLSchema-instance"
+            xsd_ns = "http://www.w3.org/2001/XMLSchema"
+            ET.register_namespace("xsi", xsi_ns)
+            ET.register_namespace("xsd", xsd_ns)
             standalone_root = ET.Element("Definitions")
 
             sbps = ET.SubElement(standalone_root, "ShipBlueprints")
             sbp = ET.SubElement(sbps, "ShipBlueprint")
-            sbp.set("xsi:type", "MyObjectBuilder_ShipBlueprintDefinition")
+            sbp.set(f"{{{xsi_ns}}}type", "MyObjectBuilder_ShipBlueprintDefinition")
 
             id_elem = ET.SubElement(sbp, "Id")
             id_elem.set("Type", "MyObjectBuilder_ShipBlueprintDefinition")
@@ -181,7 +184,7 @@ class ProjectorSplitter:
             # Write standalone SBC
             tree_out = ET.ElementTree(standalone_root)
             ET.indent(tree_out, space="  ", level=0)
-            tree_out.write(sub_sbc_file, encoding="utf-8", xml_declaration=True)
+            safe_xml.safe_write(tree_out, sub_sbc_file)
 
             entry = SplitBlueprintEntry(
                 sequence_number=seq_num,

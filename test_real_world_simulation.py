@@ -233,16 +233,16 @@ public class BrokenScript
           <GridSizeEnum>Large</GridSizeEnum>
           <CubeBlocks>
             <MyObjectBuilder_CubeBlock>
-              <SubtypeName>LargeSlopedCockpit</SubtypeName>
+              <SubtypeName>LargeBlockOpenSlopedCockpit</SubtypeName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock>
-              <SubtypeName>LargeBatteryBank</SubtypeName>
+              <SubtypeName>LargeBlockBatteryReskin</SubtypeName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock>
-              <SubtypeName>LargeFactoryStairs</SubtypeName>
+              <SubtypeName>LargeBlockSmallThrustSciFi</SubtypeName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock>
-              <SubtypeName>LargeRadarAntenna</SubtypeName>
+              <SubtypeName>LargeBlockBatteryReskinOffset</SubtypeName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock>
               <SubtypeName>LargeBlockArmorBlock</SubtypeName>
@@ -266,75 +266,39 @@ public class BrokenScript
         self.assertEqual(subtypes, [
             "LargeBlockCockpit",
             "LargeBlockBatteryBlock",
-            "LargeStairs",
-            "LargeBlockRadioAntenna",
+            "LargeBlockSmallThrust",
+            "LargeBlockBatteryBlock",
             "LargeBlockArmorBlock"
         ])
 
     def test_04_prototech_survival_sanity_and_upgrade(self):
-        """Tests 1-click Survival Sanity stripping of uncraftable Prototech & 1-click upgrade to Factorum."""
-        bp_folder = self.test_dir / "Factorum_Destroyer"
-        bp_folder.mkdir(parents=True)
-        sbc_file = bp_folder / "bp.sbc"
+        """Real 1.210 identities: unsafe reactor swaps fail, safe gyros round-trip."""
+        from tests.native_fixtures import armor_blueprint
+        from se_assets.block_identity import BlockIdentity
+        source = armor_blueprint(self.test_dir / "Factorum_Destroyer")
+        tree = safe_xml.parse(source)
+        cubes = tree.getroot().find(".//CubeBlocks")
+        BlockIdentity("HydrogenEngine", "LargePrototechReactor").apply(cubes[0])
+        safe_xml.safe_write(tree, source)
+        original = source.read_bytes()
+        with self.assertRaisesRegex(ValueError, "Object-builder type"):
+            self.converter.survival_sanity_prototech(source)
+        self.assertEqual(source.read_bytes(), original)
+        self.assertFalse((source.parent.parent / "SURVIVAL_READY_Factorum_Destroyer").exists())
 
-        sbc_content = """<?xml version="1.0" encoding="utf-8"?>
-<Definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <ShipBlueprints>
-    <ShipBlueprint>
-      <CubeGrids>
-        <CubeGrid>
-          <GridSizeEnum>Large</GridSizeEnum>
-          <CubeBlocks>
-            <MyObjectBuilder_CubeBlock>
-              <SubtypeName>LargePrototechJumpDrive</SubtypeName>
-            </MyObjectBuilder_CubeBlock>
-            <MyObjectBuilder_CubeBlock>
-              <SubtypeName>LargePrototechGenerator</SubtypeName>
-            </MyObjectBuilder_CubeBlock>
-            <MyObjectBuilder_CubeBlock>
-              <SubtypeName>LargePrototechThruster</SubtypeName>
-            </MyObjectBuilder_CubeBlock>
-            <MyObjectBuilder_CubeBlock>
-              <SubtypeName>LargePrototechBattery</SubtypeName>
-            </MyObjectBuilder_CubeBlock>
-          </CubeBlocks>
-        </CubeGrid>
-      </CubeGrids>
-    </ShipBlueprint>
-  </ShipBlueprints>
-</Definitions>"""
-        sbc_file.write_text(sbc_content, encoding="utf-8")
-
-        # 1. Run Survival Sanity
-        sanity_dest, scanned, converted = self.converter.survival_sanity_prototech(bp_folder)
-        self.assertEqual(scanned, 4)
-        self.assertEqual(converted, 4)
-
-        tree = safe_xml.parse(sanity_dest / "bp.sbc")
-        subtypes = [safe_xml.get_subtype(b) for b in tree.getroot().findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock")]
-        self.assertEqual(subtypes, [
-            "LargeJumpDrive",
-            "LargeBlockLargeGenerator",
-            "LargeBlockLargeThrust",
-            "LargeBlockBatteryBlock",
-        ])
-
-        # 2. Run Prototech Upgrade on the sanity result
-        proto_dest, p_scanned, p_converted = self.converter.upgrade_to_prototech(sanity_dest)
-        self.assertEqual(p_scanned, 4)
-        self.assertEqual(p_converted, 4)
-
-        proto_tree = safe_xml.parse(proto_dest / "bp.sbc")
-        proto_subtypes = [safe_xml.get_subtype(b) for b in proto_tree.getroot().findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock")]
-        self.assertEqual(proto_subtypes, [
-            "LargePrototechJumpDrive",
-            "LargePrototechGenerator",
-            "LargePrototechThruster",
-            "LargePrototechBattery",
-        ])
+        for cube in cubes:
+            BlockIdentity("Gyro", "LargeBlockPrototechGyro").apply(cube)
+        safe_xml.safe_write(tree, source)
+        sanity, scanned, converted = self.converter.survival_sanity_prototech(source)
+        self.assertEqual((scanned, converted), (2, 2))
+        restored, scanned, converted = self.converter.upgrade_to_prototech(sanity)
+        self.assertEqual((scanned, converted), (2, 2))
+        expected = [safe_xml.get_subtype(b) for b in cubes]
+        actual = [safe_xml.get_subtype(b) for b in safe_xml.parse(restored / "bp.sbc").findall(".//CubeBlocks/*")]
+        self.assertEqual(actual, expected)
 
     def test_05_grid_rescaler_coordinates_math(self):
-        """Tests Large <-> Small grid rescaling and 5x coordinate transformation."""
+        """Scaling changes metres per cell while preserving connected cell coordinates."""
         bp_folder = self.test_dir / "Fighter_Grid"
         bp_folder.mkdir(parents=True)
         sbc_file = bp_folder / "bp.sbc"
@@ -348,7 +312,7 @@ public class BrokenScript
           <GridSizeEnum>Large</GridSizeEnum>
           <CubeBlocks>
             <MyObjectBuilder_CubeBlock>
-              <SubtypeName>LargeBlockCockpit</SubtypeName>
+              <SubtypeName>LargeBlockArmorBlock</SubtypeName>
               <Min x="2" y="3" z="-4" />
             </MyObjectBuilder_CubeBlock>
           </CubeBlocks>
@@ -359,25 +323,25 @@ public class BrokenScript
 </Definitions>"""
         sbc_file.write_text(sbc_content, encoding="utf-8")
 
-        # Large -> Small (Coords * 5)
+        # Large -> Small: cell coordinates are not world metres.
         small_dest, scanned, converted = self.converter.scale_grid_size(bp_folder, "Small")
         tree = safe_xml.parse(small_dest / "bp.sbc")
         root = tree.getroot()
         self.assertEqual(root.find(".//CubeGrid/GridSizeEnum").text, "Small")
         block = root.find(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock")
-        self.assertEqual(safe_xml.get_subtype(block), "SmallBlockCockpit")
+        self.assertEqual(safe_xml.get_subtype(block), "SmallBlockArmorBlock")
         min_elem = block.find("Min")
-        self.assertEqual(min_elem.attrib["x"], "10")
-        self.assertEqual(min_elem.attrib["y"], "15")
-        self.assertEqual(min_elem.attrib["z"], "-20")
+        self.assertEqual(min_elem.attrib["x"], "2")
+        self.assertEqual(min_elem.attrib["y"], "3")
+        self.assertEqual(min_elem.attrib["z"], "-4")
 
-        # Small -> Large (Coords // 5)
+        # Round trip keeps negative coordinates exact.
         large_dest, l_scanned, l_converted = self.converter.scale_grid_size(small_dest, "Large")
         l_tree = safe_xml.parse(large_dest / "bp.sbc")
         l_root = l_tree.getroot()
         self.assertEqual(l_root.find(".//CubeGrid/GridSizeEnum").text, "Large")
         l_block = l_root.find(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock")
-        self.assertEqual(safe_xml.get_subtype(l_block), "LargeBlockCockpit")
+        self.assertEqual(safe_xml.get_subtype(l_block), "LargeBlockArmorBlock")
         l_min = l_block.find("Min")
         self.assertEqual(l_min.attrib["x"], "2")
         self.assertEqual(l_min.attrib["y"], "3")

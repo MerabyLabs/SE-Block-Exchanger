@@ -14,11 +14,13 @@ import safe_xml
 @dataclass
 class MechanicalLink:
     """Represents a mechanical block connecting two grids."""
-    block_type: str  # Rotor, Hinge, Piston (mechanical; connectors are not parsed yet)
+    block_type: str  # Rotor, Hinge, Piston, Connector
     subtype: str
     custom_name: str
     base_entity_id: str
     top_entity_id: Optional[str]
+    angle: float = 0.0
+    displacement: float = 0.0
 
 
 @dataclass
@@ -42,6 +44,22 @@ class MultiGridStructure:
     mechanical_links: List[MechanicalLink]
     orphaned_grids: List[SubgridNode] = field(default_factory=list)
 
+    def iter_nodes(self) -> List[tuple]:
+        """Yield (depth, node) in display order, including orphans."""
+        rows: List[tuple] = []
+
+        def walk(node: Optional[SubgridNode], depth: int) -> None:
+            if node is None:
+                return
+            rows.append((depth, node))
+            for child in node.children:
+                walk(child, depth + 1)
+
+        walk(self.root_node, 0)
+        for orphan in self.orphaned_grids:
+            walk(orphan, 0)
+        return rows
+
 
 class SubgridHierarchyParser:
     """Parses blueprint XML into a connected tree of CubeGrids."""
@@ -59,23 +77,11 @@ class SubgridHierarchyParser:
         except Exception:
             return MultiGridStructure(root_node=None, total_grids=0, total_blocks=0, mechanical_links=[])
 
-    @staticmethod
-    def _iter_blocks(grid: ET.Element) -> List[ET.Element]:
-        cube_blocks = grid.find("CubeBlocks")
-        if cube_blocks is not None:
-            children = list(cube_blocks)
-            if children:
-                return children
-        return (
-            grid.findall(".//CubeBlocks/*")
-            or grid.findall(".//MyObjectBuilder_CubeBlock")
-        )
-
     @classmethod
     def parse_element(cls, root: ET.Element) -> MultiGridStructure:
-        grids = root.findall(".//CubeGrid")
+        grids = safe_xml.iter_cube_grids(root)
         if not grids:
-            blocks = cls._iter_blocks(root)
+            blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock") or root.findall(".//MyObjectBuilder_CubeBlock")
             if blocks:
                 node = SubgridNode(
                     grid_name="MainGrid",
@@ -102,10 +108,10 @@ class SubgridHierarchyParser:
 
         for grid in grids:
             grid_entity_id = cls._get_text(grid, "EntityId") or f"grid_{id(grid)}"
-            grid_name = cls._get_text(grid, "CustomName") or cls._get_text(grid, "DisplayName") or "CubeGrid"
+            grid_name = cls._grid_label(grid, fallback=f"Grid {len(grid_data) + 1}")
             grid_size = cls._get_text(grid, "GridSizeEnum") or "Large"
 
-            blocks = cls._iter_blocks(grid)
+            blocks = cls._findall_blocks(grid)
             block_count = len(blocks)
 
             # Detect mechanical bases and top parts in this grid
@@ -119,6 +125,7 @@ class SubgridHierarchyParser:
                     or cls._get_text(block, "TopPartEntityId")
                     or cls._get_text(block, "RotorEntityId")
                     or cls._get_text(block, "AttachedSubgridId")
+                    or cls._get_text(block, "TopGridId")
                 )
                 if top_part_id and top_part_id != "0":
                     link_type = "Mechanical"
@@ -133,6 +140,8 @@ class SubgridHierarchyParser:
                         custom_name=custom_name,
                         base_entity_id=grid_entity_id,
                         top_entity_id=top_part_id,
+                        angle=_optional_float(block, "CurrentPosition"),
+                        displacement=_optional_float(block, "DummyDisplacement"),
                     )
                     all_links.append(link)
                     top_to_base_map[top_part_id] = grid_entity_id
@@ -150,16 +159,30 @@ class SubgridHierarchyParser:
         parent_child_map: Dict[str, List[tuple]] = {gid: [] for gid in grid_data}
         child_grid_ids: Set[str] = set()
 
+        def _link(parent_grid_id: str, child_grid_id: str, desc: str) -> None:
+            if parent_grid_id == child_grid_id:
+                return
+            if parent_grid_id not in parent_child_map or child_grid_id not in grid_data:
+                return
+            existing = parent_child_map[parent_grid_id]
+            if any(cid == child_grid_id for cid, _ in existing):
+                return
+            existing.append((child_grid_id, desc))
+            child_grid_ids.add(child_grid_id)
+
         for grid_id, data in grid_data.items():
             grid_elem = data["element"]
-            for block in cls._iter_blocks(grid_elem):
+            for block in cls._findall_blocks(grid_elem):
                 block_id = cls._get_text(block, "EntityId")
                 if block_id in top_to_base_map:
                     parent_grid_id = top_to_base_map[block_id]
-                    if parent_grid_id != grid_id:
-                        desc = top_id_to_link_desc.get(block_id, "Mechanical Link")
-                        parent_child_map[parent_grid_id].append((grid_id, desc))
-                        child_grid_ids.add(grid_id)
+                    desc = top_id_to_link_desc.get(block_id, "Mechanical Link")
+                    _link(parent_grid_id, grid_id, desc)
+
+        # Some blueprints store TopBlockId / TopGridId as the child CubeGrid EntityId.
+        for top_id, base_grid_id in top_to_base_map.items():
+            if top_id in grid_data:
+                _link(base_grid_id, top_id, top_id_to_link_desc.get(top_id, "Mechanical Link"))
 
         # Identify primary root grid (largest block count among non-children)
         root_candidates = [gid for gid in grid_data if gid not in child_grid_ids]
@@ -204,9 +227,136 @@ class SubgridHierarchyParser:
             orphaned_grids=orphans,
         )
 
+    @classmethod
+    def from_scene(cls, scene) -> MultiGridStructure:
+        """Build the hierarchy tree from a PreviewScene — no second XML walk."""
+        grids = getattr(scene, "grids", None) or []
+        blocks = getattr(scene, "blocks", None) or []
+        if not grids and not blocks:
+            return MultiGridStructure(root_node=None, total_grids=0, total_blocks=0, mechanical_links=[])
+
+        counts: Dict[str, int] = {}
+        for block in blocks:
+            gid = getattr(block, "grid_entity_id", "") or ""
+            counts[gid] = counts.get(gid, 0) + 1
+
+        nodes: Dict[str, SubgridNode] = {}
+        main_name = getattr(scene, "main_grid_name", "") or ""
+        main_id = getattr(scene, "main_grid_entity_id", "") or ""
+        for grid in grids:
+            eid = grid.entity_id
+            nodes[eid] = SubgridNode(
+                grid_name=grid.name,
+                entity_id=eid,
+                grid_size=grid.grid_size,
+                block_count=counts.get(eid, 0),
+                is_main_grid=False,
+                attachment_via=grid.attachment_via,
+                children=[],
+            )
+
+        if not nodes and blocks:
+            node = SubgridNode(
+                grid_name=main_name or "MainGrid",
+                entity_id=main_id or "grid_default",
+                grid_size=getattr(blocks[0], "grid_size", "Large"),
+                block_count=len(blocks),
+                is_main_grid=True,
+                attachment_via=None,
+                children=[],
+            )
+            return MultiGridStructure(
+                root_node=node,
+                total_grids=1,
+                total_blocks=len(blocks),
+                mechanical_links=[],
+                orphaned_grids=[],
+            )
+
+        parent_of = getattr(scene, "parent_of", None) or {}
+        child_ids: Set[str] = set()
+        for child_id, parent_id in parent_of.items():
+            parent = nodes.get(parent_id)
+            child = nodes.get(child_id)
+            if parent is None or child is None or parent is child:
+                continue
+            if child in parent.children:
+                continue
+            parent.children.append(child)
+            child_ids.add(child_id)
+
+        if not main_id or main_id not in nodes:
+            candidates = [eid for eid in nodes if eid not in child_ids] or list(nodes)
+            main_id = max(candidates, key=lambda eid: (nodes[eid].block_count, nodes[eid].grid_name))
+        if main_id in nodes:
+            nodes[main_id].is_main_grid = True
+
+        root_node = nodes.get(main_id)
+        orphans = [node for eid, node in nodes.items() if eid != main_id and eid not in child_ids]
+        return MultiGridStructure(
+            root_node=root_node,
+            total_grids=len(nodes),
+            total_blocks=sum(counts.values()) if counts else len(blocks),
+            mechanical_links=_mechanical_links_from_scene(grids, parent_of),
+            orphaned_grids=orphans,
+        )
+
+    @staticmethod
+    def _findall_blocks(grid: ET.Element) -> List[ET.Element]:
+        return safe_xml.iter_blocks_in_grid(grid)
+
+    @staticmethod
+    def _grid_label(grid: ET.Element, fallback: str) -> str:
+        for tag in ("DisplayName", "CustomName", "Name"):
+            child = grid.find(tag)
+            if child is None:
+                child = grid.find(f"{{*}}{tag}")
+            if child is not None and child.text and child.text.strip():
+                return child.text.strip()
+        return fallback
+
     @staticmethod
     def _get_text(element: ET.Element, tag: str) -> Optional[str]:
         child = element.find(tag)
+        if child is None:
+            child = element.find(f"{{*}}{tag}")
         if child is not None and child.text:
             return child.text.strip()
         return None
+
+
+def _mechanical_links_from_scene(grids, parent_of: Dict[str, str]) -> List[MechanicalLink]:
+    via_by_child: Dict[str, Optional[str]] = {}
+    for grid in grids:
+        via_by_child[grid.entity_id] = getattr(grid, "attachment_via", None)
+    links: List[MechanicalLink] = []
+    for child_id, parent_id in parent_of.items():
+        via = via_by_child.get(child_id) or "Mechanical"
+        block_type = "Mechanical"
+        subtype = via
+        if "(" in via:
+            head, rest = via.split("(", 1)
+            block_type = head.strip() or "Mechanical"
+            subtype = rest.rstrip(")").strip() or via
+        links.append(
+            MechanicalLink(
+                block_type=block_type,
+                subtype=subtype,
+                custom_name=subtype,
+                base_entity_id=parent_id,
+                top_entity_id=child_id,
+            )
+        )
+    return links
+
+
+def _optional_float(element: ET.Element, tag: str) -> float:
+    child = element.find(tag)
+    if child is None:
+        child = element.find(f"{{*}}{tag}")
+    if child is None or not (child.text and child.text.strip()):
+        return 0.0
+    try:
+        return float(child.text.strip())
+    except ValueError:
+        return 0.0

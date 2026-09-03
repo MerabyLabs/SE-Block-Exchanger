@@ -305,7 +305,7 @@ class TestExtendedMappings(unittest.TestCase):
         m = ArmorBlockReplacer.LIGHT_TO_HEAVY
         # Spot-check a handful of extended shapes
         self.assertIn('LargeBlockArmorHalfSlopeCorner', m)
-        self.assertIn('SmallBlockArmorRoundedSlope', m)
+        self.assertIn('SmallBlockArmorRoundSlope', m)
     
     def test_reverse_mapping_completeness(self):
         """Every HEAVY_TO_LIGHT key must appear as a value in LIGHT_TO_HEAVY."""

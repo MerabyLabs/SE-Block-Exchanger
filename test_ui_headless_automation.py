@@ -36,73 +36,52 @@ class TestUIHeadlessAutomation(unittest.TestCase):
         shutil.rmtree(cls.temp_dir, ignore_errors=True)
 
     def test_01_full_app_and_selective_panel_automation(self):
-        """Test full app lifecycle, blueprint selection, tab switching, and selective exchange."""
-        with patch("customtkinter.CTk.mainloop"):
+        """CTk 6: app lifecycle, current navigation and separate selective dialog."""
+        import customtkinter as ctk
+        from ui.selective_exchange_panel import SelectiveExchangePanel
+
+        self.assertTrue(ctk.__version__.startswith("6."))
+        # Widget contracts run without starting background I/O or saving settings.
+        with patch("threading.Thread.start"), patch("app_settings.SettingsStore.save"):
             app = TacticalCommandCenter()
             app.withdraw()
+            try:
+                app.blueprints = self.blueprints
+                app.blueprint_panel.set_blueprints(self.blueprints)
+                battleship = next(b for b in self.blueprints if b.name == "Battleship_Vindicator")
+                app.on_blueprint_select(battleship)
+                self.assertEqual(app.selected_blueprint.name, battleship.name)
 
-            # Inject test blueprints
-            app.blueprints = self.blueprints
-            app.blueprint_panel.set_blueprints(self.blueprints)
+                panel = SelectiveExchangePanel(app)
+                panel.load_blueprint(battleship)
+                app.update()
+                self.assertIsNotNone(panel.current_blueprint)
+                self.assertGreater(len(panel._row_vars), 0)
+                panel._select_all()
+                self.assertTrue(all(v.get() for v in panel._row_vars.values()))
+                panel._deselect_all()
+                self.assertFalse(any(v.get() for v in panel._row_vars.values()))
+                panel._select_only_armor()
+                self.assertTrue(all("Armor" in st for st, v in panel._row_vars.items() if v.get()))
 
-            # Select battleship
-            battleship_bp = next(b for b in self.blueprints if b.name == "Battleship_Vindicator")
-            app.on_blueprint_select(battleship_bp)
+                for name in ("Overview", "XML", "Preview", "Subgrids", "Analytics", "SE2"):
+                    app.preview_panel.tabview.set(name)
+                    self.assertEqual(app.preview_panel.tabview.get(), name)
+                for name in ("Blueprints", "Convert"):
+                    app.sidebar_tabs.set(name)
+                    self.assertEqual(app.sidebar_tabs.get(), name)
 
-            self.assertEqual(app.selected_blueprint.name, "Battleship_Vindicator")
-
-            # Verify SelectiveExchangePanel is populated
-            preview = app.preview_panel
-            selective_panel = preview.selective_panel
-            self.assertIsNotNone(selective_panel.current_blueprint)
-            self.assertGreater(len(selective_panel._row_vars), 0)
-
-            # Test Quick Filter buttons on Selective panel
-            selective_panel._select_all()
-            self.assertEqual(len([st for st, v in selective_panel._row_vars.items() if v.get()]), len(selective_panel._row_vars))
-
-            selective_panel._deselect_all()
-            self.assertEqual(len([st for st, v in selective_panel._row_vars.items() if v.get()]), 0)
-
-            selective_panel._select_only_armor()
-            for st in [st for st, v in selective_panel._row_vars.items() if v.get()]:
-                self.assertIn("Armor", st)
-
-            # Verify PreviewPanel tab population
-            preview = app.preview_panel
-            self.assertIsNotNone(preview.selective_panel.current_blueprint)
-
-            # Test tab switching across all 8 tabs
-            tabs = [
-                "INTEL", "SELECTIVE EXCHANGE", "XML SOURCE", "PREVIEW",
-                "ANALYTICS", "PB DOCTOR", "SUBGRIDS & MAP", "SE2 TRANSITION"
-            ]
-            for tab_name in tabs:
-                preview.tabview.set(tab_name)
-                self.assertEqual(preview.tabview.get(), tab_name)
-
-            # Run dry run preview
-            app.run_dry_run_preview()
-
-            # Test Selective Conversion execution
-            custom_map = {"LargeBlockArmorSlope": "LargeHeavyBlockArmorSlope"}
-            selected = {"LargeBlockArmorSlope"}
-            
-            with patch("threading.Thread") as mock_thread:
-                # Capture thread target and run synchronously
-                def sync_start():
-                    pass
-                mock_thread.return_value.start = sync_start
-                app.selective_convert_blueprint(custom_map, selected)
-
-            # Test SE2 Export trigger
-            with patch("tkinter.messagebox.askyesno", return_value=True), patch("threading.Thread") as mock_thread:
-                def sync_start():
-                    pass
-                mock_thread.return_value.start = sync_start
-                app.migrate_se2_blueprint()
-
-            app.destroy()
+                app.run_dry_run_preview()
+                with patch("threading.Thread") as thread:
+                    app._run_selective_convert(
+                        {"LargeBlockArmorSlope": "LargeHeavyBlockArmorSlope"},
+                        {"LargeBlockArmorSlope"},
+                    )
+                    thread.return_value.start.assert_called_once()
+                panel.destroy()
+            finally:
+                app._jobs.cancel_stale()
+                app.destroy()
 
 
 if __name__ == "__main__":
