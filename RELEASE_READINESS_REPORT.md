@@ -9,7 +9,7 @@ contracts are a breaking surface change from 3.2.1.
 - The v4 branch was reconciled with cumulative PR #29 on top of the latest v4
   master line. PR #29 is merged into `feature/v4-master-overhaul` as
   `d3d7ac8a694120ca49b72ab510e142a73964d6cc`; PRs #26–#28, #25, and #12 are
-  closed as superseded/held. The integrated head passed CI run `33699609283`
+  closed as superseded/held. The integrated head passed CI run `33699901222`
   (Ubuntu and Windows, Python 3.11 and 3.12).
 - SE1 baseline is installed 1.210.014 / Steam build 24675677. The catalog has
   1,503 definitions and 116 validated light/heavy armor pairs. Identity-aware
