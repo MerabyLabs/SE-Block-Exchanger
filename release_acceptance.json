@@ -4,8 +4,8 @@
   "se1_baseline": "1.210.014 / Steam 24675677",
   "se2_baseline": "2.4.0.95 / Steam 24993846",
   "checks": {
-    "unified_python311": {"status": "PASS", "evidence": ["artifacts/pytest311-final.xml: 328 passed", "CI run 33699901222: Ubuntu and Windows matrix passed"]},
-    "unified_python312": {"status": "PASS", "evidence": ["artifacts/pytest312-final.xml: 328 passed", "CI run 33699901222: Ubuntu and Windows matrix passed"]},
+    "unified_python311": {"status": "PASS", "evidence": ["artifacts/pytest311-final.xml: 328 passed", "CI run 33700759077: Ubuntu and Windows matrix passed"]},
+    "unified_python312": {"status": "PASS", "evidence": ["artifacts/pytest312-final.xml: 328 passed", "CI run 33700759077: Ubuntu and Windows matrix passed"]},
     "catalog_validation": {"status": "PASS", "evidence": ["tools/check_runtime.py: 79 files compiled; 1,503 SE1 definitions; enabled mappings validated", "artifacts/runtime-selftest-final.json: shader compile passed"]},
     "live_app_and_3d": {"status": "PENDING", "evidence": ["Restarted source app showed nonblocking missing-root empty state", "artifacts/runtime-selftest-final.json: OpenGL 3.3/NVIDIA renderer and shader compile passed", "artifacts/live-fixture-appdata/large-xml-final.json: isolated 28 MiB XML parsed with four grids in 1.879 seconds", "Desktop interaction sweep was interrupted by the computer-use usage limit; no full live interaction claim"]},
     "source_blueprint_hashes": {"status": "PASS", "evidence": ["artifacts/live-fixture-appdata/hash-verification-final.json: four source/copy SHA-256 pairs unchanged"]},
