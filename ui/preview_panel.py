@@ -1290,6 +1290,24 @@ class PreviewPanel(ctk.CTkFrame):
         lines = list(report.unsupported_blocks) + list(report.notes)
         self._set_textbox_content(self.se2_audit_textbox, "\n".join(lines))
 
+    def show_native_export(self, output_path, scanned: int, converted: int) -> None:
+        """Show a native SE2 export without routing JSON through the XML viewer."""
+        self.tabview.set("SE2")
+        self.se2_score_label.configure(text="READY", text_color=TacticalTheme.CYAN_PRIMARY)
+        self.se2_status_title.configure(text="Native SE2 files created", text_color=TacticalTheme.CYAN_PRIMARY)
+        self.se2_status_desc.configure(
+            text="Catalog conversion completed. Opening, saving, and reopening this folder in the installed SE2 build is still required for release acceptance."
+        )
+        self._set_textbox_content(
+            self.se2_audit_textbox,
+            f"Output: {output_path}\n"
+            f"Blocks scanned: {scanned:,}\n"
+            f"Blocks converted: {converted:,}\n\n"
+            "Files: grid.json, .container-info, snapshot, sebx-migration.json\n"
+            "The original SE1 blueprint was not modified.\n"
+            "Native SE2 open/save/reopen acceptance is not implied by this export.",
+        )
+
     def clear_se2_transition(self):
         self.se2_score_label.configure(text="--", text_color=TacticalTheme.GREEN_PRIMARY)
         self.se2_status_title.configure(text="Native validation required", text_color=TacticalTheme.CYAN_PRIMARY)

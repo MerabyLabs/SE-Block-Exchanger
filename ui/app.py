@@ -998,10 +998,12 @@ class TacticalCommandCenter(ctk.CTk):
         self._update_convert_state()
 
         preview_file = dest_path / "bp.sbc"
-        if not preview_file.exists():
-            preview_file = dest_path / "grid.json"
         if preview_file.exists():
             self.preview_panel.load_xml(preview_file, f"Converted: {dest_path.name}")
+        elif (dest_path / "grid.json").exists():
+            # Native SE2 output is JSON, not SE1 XML. Keep the XML/3D source
+            # path untouched and show an explicit native-export handoff.
+            self.preview_panel.show_native_export(dest_path, scanned, converted)
         self.toasts.toast(
             f"Created {dest_path.name} with {converted} block(s) converted.",
             level="success",
