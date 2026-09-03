@@ -43,7 +43,10 @@ def _volume_ready(path: Path) -> bool:
     try:
         import ctypes
 
-        dtype = int(ctypes.windll.kernel32.GetDriveTypeW(f"{key}:\\"))
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:  # non-Windows type stubs do not expose Win32 loaders
+            return True
+        dtype = int(windll.kernel32.GetDriveTypeW(f"{key}:\\"))
         ready = dtype in (_DRIVE_FIXED, _DRIVE_RAMDISK)
     except Exception:
         ready = True
