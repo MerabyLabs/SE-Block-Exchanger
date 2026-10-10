@@ -9,7 +9,7 @@
 
 Meraby Block Exchanger (MBX) is a Windows desktop and command-line toolkit for local blueprint files.
 
-It converts blocks (armor, thrusters, weapons, functional, DLC → vanilla, opt-in Prototech), imports Workshop/Mod.io ships, inspects programmable-block scripts, splits projector subgrids, hardens or lightens armor, rescales large ↔ small grid, audits PCU/mass/ores, and scores Space Engineers 2 readiness. The GUI **always writes a new copy**; the original ship is not overwritten. The CLI overwrites in place unless you pass `-o` or `--dry-run`.
+It converts blocks (armor, thrusters, weapons, functional, DLC → vanilla, opt-in Prototech), imports Workshop/Mod.io ships, inspects programmable-block scripts, splits projector subgrids, hardens or lightens armor, rescales large ↔ small grid, audits PCU/mass/ores, and scores Space Engineers 2 readiness. The GUI **always writes a new copy**, including analytics repair; the original ship is not overwritten. The CLI overwrites in place unless you pass `-o` or `--dry-run`.
 
 Works with local Space Engineers blueprint (`.sbc`) files. Not affiliated with or endorsed by Keen Software House. Space Engineers is a trademark of Keen Software House.
 
@@ -100,7 +100,7 @@ Dependencies: CustomTkinter 5.x, `defusedxml`, Pillow (header logo).
 | **Overview** | Block totals, conversion readiness, file location |
 | **Preview** | Live before/after of the current mapping and direction |
 | **XML** | Blueprint XML (truncated if huge). Errors appear in the tab status, not a fake “loaded” label |
-| **Analytics** | PCU, mass, ores, ingots, components, category mix, conversion cost delta, health audit (control, power, thruster balance, unknown subtypes) with fix actions; CSV/TXT export |
+| **Analytics** | PCU, mass, ores, ingots, components, category mix, conversion cost delta, health audit (control, power, thruster balance, unknown subtypes). Fix actions write a new `REPAIRED_` copy; CSV/TXT export |
 | **Subgrids** | Clickable CubeGrid tree and a 2D voxel map from `Min` coordinates (`TopGridId` links). Click a rotor/turret to isolate that grid; Fit uses that grid’s bounds. Single-grid ships still draw a map |
 | **SE2** | Readiness score from DLC usage, programmable-block scripts, and mechanical subgrids. **Replace DLC with vanilla** and **large ↔ small grid rescale** from this tab |
 

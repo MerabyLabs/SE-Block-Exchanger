@@ -88,14 +88,14 @@ class GridMatrixVisualizer:
                 name_elem = grid.find("CustomName")
             grid_name = name_elem.text.strip() if (name_elem is not None and name_elem.text) else f"Grid {idx+1}"
 
-            blocks = grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock") or grid.findall(".//MyObjectBuilder_CubeBlock")
+            blocks = cls._blocks_in_grid(grid)
             points: List[VoxelBlockPoint] = []
             for b_idx, block in enumerate(blocks):
                 min_elem = block.find("Min")
                 if min_elem is not None:
-                    x = int(min_elem.attrib.get("x", 0))
-                    y = int(min_elem.attrib.get("y", 0))
-                    z = int(min_elem.attrib.get("z", 0))
+                    x = safe_xml.min_axis(min_elem, "x")
+                    y = safe_xml.min_axis(min_elem, "y")
+                    z = safe_xml.min_axis(min_elem, "z")
                 else:
                     x = b_idx % 5
                     y = (b_idx // 25)
@@ -235,15 +235,7 @@ class GridMatrixVisualizer:
 
     @staticmethod
     def _blocks_in_grid(grid: ET.Element) -> List[ET.Element]:
-        cube_blocks = grid.find("CubeBlocks")
-        if cube_blocks is not None:
-            children = list(cube_blocks)
-            if children:
-                return children
-        return (
-            grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
-            or grid.findall(".//MyObjectBuilder_CubeBlock")
-        )
+        return list(safe_xml.iter_cube_blocks(grid))
 
     @staticmethod
     def _grid_label(grid: ET.Element, fallback: str) -> str:
@@ -279,9 +271,9 @@ class GridMatrixVisualizer:
             for b_idx, block in enumerate(blocks):
                 min_elem = block.find("Min")
                 if min_elem is not None:
-                    x = int(min_elem.attrib.get("x", 0))
-                    y = int(min_elem.attrib.get("y", 0))
-                    z = int(min_elem.attrib.get("z", 0))
+                    x = safe_xml.min_axis(min_elem, "x")
+                    y = safe_xml.min_axis(min_elem, "y")
+                    z = safe_xml.min_axis(min_elem, "z")
                 else:
                     x = b_idx % 5
                     y = (b_idx // 25)

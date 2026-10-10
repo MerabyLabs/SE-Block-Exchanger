@@ -61,26 +61,21 @@ class ArmorHardeningEngine:
         if not sbc_file.is_file():
             raise FileNotFoundError(f"Blueprint SBC not found: {sbc_file}")
 
-        tree = safe_xml.parse(sbc_file)
+        dest_dir, dest_sbc = cls._copy_for_edit(source_bp_path, "HARDENED", target_bp_path)
+        tree = safe_xml.parse(dest_sbc)
         root = tree.getroot()
 
         # Phase 1: Locate critical cores
         critical_coords: List[Tuple[int, int, int]] = []
         all_blocks: List[Tuple[ET.Element, int, int, int, str]] = []
 
-        for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+        for block in safe_xml.iter_cube_blocks(root):
             st_el = block.find("SubtypeName")
             if st_el is None:
                 st_el = block.find("SubtypeId")
             subtype = st_el.text.strip() if st_el is not None and st_el.text else ""
 
-            min_elem = block.find("Min")
-            if min_elem is not None:
-                bx = int(min_elem.attrib.get("x", "0"))
-                by = int(min_elem.attrib.get("y", "0"))
-                bz = int(min_elem.attrib.get("z", "0"))
-            else:
-                bx, by, bz = 0, 0, 0
+            bx, by, bz = safe_xml.min_xyz(block)
 
             all_blocks.append((block, bx, by, bz, subtype))
 
@@ -113,14 +108,6 @@ class ArmorHardeningEngine:
                             sub_id.text = new_subtype
                     hardened_count += 1
 
-        if target_bp_path is None:
-            parent = source_bp_path.parent if source_bp_path.is_file() else source_bp_path.parent
-            base_name = source_bp_path.parent.name if source_bp_path.name == "bp.sbc" else source_bp_path.stem
-            target_bp_path = parent / f"{base_name}_HARDENED"
-
-        target_bp_path.mkdir(parents=True, exist_ok=True)
-        dest_sbc = target_bp_path / "bp.sbc"
-
         ET.indent(tree, space="  ", level=0)
         safe_xml.safe_write(tree, dest_sbc)
 
@@ -129,7 +116,7 @@ class ArmorHardeningEngine:
             critical_cores_found=len(critical_coords),
             armor_blocks_hardened=hardened_count,
             armor_blocks_lightened=0,
-            output_path=target_bp_path,
+            output_path=dest_dir,
         )
 
     @classmethod
@@ -147,22 +134,20 @@ class ArmorHardeningEngine:
         if not sbc_file.is_file():
             raise FileNotFoundError(f"Blueprint SBC not found: {sbc_file}")
 
-        tree = safe_xml.parse(sbc_file)
+        dest_dir, dest_sbc = cls._copy_for_edit(source_bp_path, "LIGHTWEIGHT", target_bp_path)
+        tree = safe_xml.parse(dest_sbc)
         root = tree.getroot()
 
         critical_coords: List[Tuple[int, int, int]] = []
         all_blocks: List[Tuple[ET.Element, int, int, int, str]] = []
 
-        for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+        for block in safe_xml.iter_cube_blocks(root):
             st_el = block.find("SubtypeName")
             if st_el is None:
                 st_el = block.find("SubtypeId")
             subtype = st_el.text.strip() if st_el is not None and st_el.text else ""
 
-            min_elem = block.find("Min")
-            bx = int(min_elem.attrib.get("x", "0")) if min_elem is not None else 0
-            by = int(min_elem.attrib.get("y", "0")) if min_elem is not None else 0
-            bz = int(min_elem.attrib.get("z", "0")) if min_elem is not None else 0
+            bx, by, bz = safe_xml.min_xyz(block)
 
             all_blocks.append((block, bx, by, bz, subtype))
 
@@ -194,14 +179,6 @@ class ArmorHardeningEngine:
                             sub_id.text = new_subtype
                     lightened_count += 1
 
-        if target_bp_path is None:
-            parent = source_bp_path.parent if source_bp_path.is_file() else source_bp_path.parent
-            base_name = source_bp_path.parent.name if source_bp_path.name == "bp.sbc" else source_bp_path.stem
-            target_bp_path = parent / f"{base_name}_LIGHTWEIGHT"
-
-        target_bp_path.mkdir(parents=True, exist_ok=True)
-        dest_sbc = target_bp_path / "bp.sbc"
-
         ET.indent(tree, space="  ", level=0)
         safe_xml.safe_write(tree, dest_sbc)
 
@@ -210,5 +187,27 @@ class ArmorHardeningEngine:
             critical_cores_found=len(critical_coords),
             armor_blocks_hardened=0,
             armor_blocks_lightened=lightened_count,
-            output_path=target_bp_path,
+            output_path=dest_dir,
         )
+
+    @staticmethod
+    def _copy_for_edit(
+        source_bp_path: Path,
+        suffix: str,
+        target_bp_path: Optional[Path],
+    ) -> Tuple[Path, Path]:
+        """Copy the blueprint folder before rewriting armor. Source stays put."""
+        from blueprint_converter import copy_blueprint_folder
+
+        source_bp_path = Path(source_bp_path)
+        if source_bp_path.is_dir():
+            source_dir = source_bp_path
+        elif source_bp_path.name.lower() == "bp.sbc":
+            source_dir = source_bp_path.parent
+        else:
+            raise FileNotFoundError(f"Blueprint SBC not found: {source_bp_path}")
+        if not (source_dir / "bp.sbc").is_file():
+            raise FileNotFoundError(f"Blueprint SBC not found: {source_dir / 'bp.sbc'}")
+        dest_dir = Path(target_bp_path) if target_bp_path is not None else source_dir.parent / f"{source_dir.name}_{suffix}"
+        copy_blueprint_folder(source_dir, dest_dir)
+        return dest_dir, dest_dir / "bp.sbc"

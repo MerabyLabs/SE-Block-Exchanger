@@ -160,7 +160,7 @@ class SkinPaletteEngine:
             skin_def = OFFICIAL_SKINS.get(skin_id)
             actual_skin_tag_val = skin_def.skin_id if skin_def else skin_id
 
-        for block in root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock"):
+        for block in safe_xml.iter_cube_blocks(root):
             st_el = block.find("SubtypeName")
             if st_el is None:
                 st_el = block.find("SubtypeId")

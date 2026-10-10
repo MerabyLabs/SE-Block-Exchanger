@@ -1373,21 +1373,28 @@ class TacticalCommandCenter(ctk.CTk):
     def apply_health_fix(self, fix_id: str):
         if not self.selected_blueprint:
             return
-        bp_file = self.selected_blueprint.path / "bp.sbc"
+        from blueprint_analytics import write_repair_copy
+
+        bp = self.selected_blueprint
         confirm = messagebox.askyesno(
             "Apply suggested fix?",
-            f"Apply this repair to '{self.selected_blueprint.display_name}'?\n\n"
-            "This edits the selected blueprint (not a copy).",
+            f"Create a repaired copy of '{bp.display_name}'?\n\n"
+            "The original blueprint is not changed.",
         )
         if not confirm:
             return
-        success = self.analytics_engine.apply_fix(bp_file, fix_id)
-        if success:
-            self.toasts.toast(f"Applied fix: {fix_id}", level="success")
-            self.refresh_analytics_async()
-            self.preview_panel.load_xml(bp_file, f"SOURCE: {self.selected_blueprint.name}")
-        else:
-            self.toasts.toast(f"Fix '{fix_id}' could not be applied.", level="warning")
+        try:
+            dest = write_repair_copy(bp.path, fix_id, self.analytics_engine)
+        except Exception as exc:
+            self.toasts.toast(f"Fix '{fix_id}' could not be applied: {exc}", level="warning")
+            return
+        self._undo_stack.append(dest)
+        self.toasts.toast(
+            f"Created {dest.name}. The original blueprint was not changed.",
+            level="success",
+        )
+        self._pending_select_name = dest.name
+        self.load_blueprints_async()
 
     # ------------------------------------------------------------------
     # Changelog / utilities

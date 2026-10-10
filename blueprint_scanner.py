@@ -153,7 +153,7 @@ class BlueprintScanner:
         if grid_size_elem is not None and grid_size_elem.text:
             grid_size = grid_size_elem.text.strip()
 
-        blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
+        blocks = list(safe_xml.iter_cube_blocks(root))
         subtype_counter: Dict[str, int] = Counter()
         category_counter: Dict[str, int] = defaultdict(int)
         convertible_counter: Dict[str, int] = defaultdict(int)

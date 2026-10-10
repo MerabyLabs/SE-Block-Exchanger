@@ -214,7 +214,7 @@ class BlueprintAnalyticsEngine:
     def analyze_root(self, root: ET.Element, *, blueprint_name: str) -> BlueprintAnalyticsResult:
         grid_size = self._detect_grid_size(root)
 
-        blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
+        blocks = list(safe_xml.iter_cube_blocks(root))
         subtype_counts: Dict[str, int] = Counter()
         component_totals: Dict[str, int] = defaultdict(int)
         category_totals: Dict[str, int] = defaultdict(int)
@@ -428,6 +428,11 @@ class BlueprintAnalyticsEngine:
         ET.SubElement(new_block, "BlockOrientation").attrib.update(
             {"Forward": "Forward", "Up": "Up"}
         )
+        binary_file = Path(blueprint_file).with_name(Path(blueprint_file).name + "B5")
+        if binary_file.exists():
+            from se_armor_replacer import remove_blueprint_binary_cache
+
+            remove_blueprint_binary_cache(binary_file)
         safe_xml.safe_write(tree, blueprint_file)
         return True
 
@@ -527,7 +532,7 @@ class BlueprintAnalyticsEngine:
     def _thruster_balance(self, root: ET.Element) -> Optional[str]:
         directions: Counter[str] = Counter()
         thruster_blocks = 0
-        for block in root.findall(".//CubeGrid/CubeBlocks/MyObjectBuilder_CubeBlock"):
+        for block in safe_xml.iter_cube_blocks(root):
             subtype = self._get_block_subtype(block)
             if not subtype:
                 continue
@@ -598,4 +603,29 @@ def compute_se2_readiness(block_counts: Dict[str, int]) -> SE2Readiness:
         score=score,
         status=status,
     )
+
+
+def write_repair_copy(
+    source_dir: Path,
+    fix_id: str,
+    engine: BlueprintAnalyticsEngine,
+) -> Path:
+    """Write a repaired blueprint folder. The source folder is not modified."""
+    import shutil
+
+    from blueprint_converter import copy_blueprint_folder
+
+    source_dir = Path(source_dir)
+    dest = source_dir.parent / f"REPAIRED_{source_dir.name}"
+    try:
+        copy_blueprint_folder(source_dir, dest)
+        applied = engine.apply_fix(dest / "bp.sbc", fix_id)
+    except Exception:
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+        raise
+    if not applied:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise ValueError(f"Fix {fix_id!r} could not be applied")
+    return dest
 

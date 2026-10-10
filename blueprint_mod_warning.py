@@ -206,11 +206,10 @@ def is_unresolved_mod_subtype(subtype: str, known: Optional[Iterable[str]] = Non
 
 def iter_cubeblock_subtypes(root: Element) -> Iterable[str]:
     """Every CubeBlocks child, including thrust and other non-armor builders."""
-    for cube_blocks in root.findall(".//CubeBlocks"):
-        for block in list(cube_blocks):
-            subtype = safe_xml.get_subtype(block)
-            if subtype:
-                yield subtype
+    for block in safe_xml.iter_cube_blocks(root):
+        subtype = safe_xml.get_subtype(block)
+        if subtype:
+            yield subtype
 
 
 def unresolved_mod_counts(root: Element) -> Dict[str, int]:

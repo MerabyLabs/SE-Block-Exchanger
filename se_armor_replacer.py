@@ -231,38 +231,40 @@ class ArmorBlockReplacer:
 
         selected_set = set(selected_subtypes) if selected_subtypes is not None else None
 
-        for cube_blocks in root.findall(".//CubeBlocks"):
-            for block in list(cube_blocks):
-                self.blocks_scanned += 1
-                subtype_name = block.find("SubtypeName")
-                subtype_id = block.find("SubtypeId")
-
+        for block in safe_xml.iter_cube_blocks(root):
+            self.blocks_scanned += 1
+            subtype_name = block.find("SubtypeName")
+            subtype_id = block.find("SubtypeId")
+            name_text = subtype_name.text.strip() if subtype_name is not None and subtype_name.text else ""
+            id_text = subtype_id.text.strip() if subtype_id is not None and subtype_id.text else ""
+            # SubtypeName is the block the game builds. A different SubtypeId
+            # must not rewrite that name into a mapped vanilla block.
+            if name_text:
+                current_subtype = name_text if name_text in effective_mapping else None
+            elif id_text and id_text in effective_mapping:
+                current_subtype = id_text
+            else:
                 current_subtype = None
-                if subtype_name is not None and subtype_name.text:
-                    candidate = subtype_name.text.strip()
-                    if candidate in effective_mapping:
-                        current_subtype = candidate
-                if current_subtype is None and subtype_id is not None and subtype_id.text:
-                    candidate = subtype_id.text.strip()
-                    if candidate in effective_mapping:
-                        current_subtype = candidate
 
-                if current_subtype is None:
-                    continue
+            if current_subtype is None:
+                continue
 
-                if selected_set is not None and current_subtype not in selected_set:
-                    continue
+            if selected_set is not None and current_subtype not in selected_set:
+                continue
 
-                new_subtype = effective_mapping[current_subtype]
-                self.change_log.append((current_subtype, new_subtype))
-                self.log(f"[MAP] {current_subtype} -> {new_subtype}")
+            new_subtype = effective_mapping[current_subtype]
+            self.change_log.append((current_subtype, new_subtype))
+            self.log(f"[MAP] {current_subtype} -> {new_subtype}")
 
-                if not dry_run:
+            if not dry_run:
+                if name_text:
                     if subtype_name is not None:
                         subtype_name.text = new_subtype
-                    if subtype_id is not None:
+                    if subtype_id is not None and id_text == name_text:
                         subtype_id.text = new_subtype
-                replacements += 1
+                elif subtype_id is not None:
+                    subtype_id.text = new_subtype
+            replacements += 1
 
         return replacements
 

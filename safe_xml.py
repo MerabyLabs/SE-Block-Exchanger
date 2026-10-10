@@ -14,7 +14,7 @@ import os
 import secrets
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from typing import Optional, Union, cast
+from typing import Iterator, Optional, Tuple, Union, cast
 
 try:
     import defusedxml.ElementTree as _DET  # type: ignore[import-not-found]
@@ -75,4 +75,56 @@ def get_text(element: ET.Element, tag: str) -> Optional[str]:
     return None
 
 
-__all__ = ["parse", "safe_write", "get_subtype", "get_text", "HARDENED"]
+def iter_cube_blocks(root: ET.Element) -> Iterator[ET.Element]:
+    """Yield every direct child of each ``CubeBlocks`` element.
+
+    Space Engineers usually names that child ``MyObjectBuilder_CubeBlock``
+    and stores the concrete builder in ``xsi:type``. Some files use the
+    concrete builder as the element name (``MyObjectBuilder_Thrust``,
+    ``MyObjectBuilder_Cockpit``). Counting only the CubeBlock tag drops
+    those blocks from scans, maps, and armor tools while conversion still
+    sees them.
+    """
+    found = False
+    for cube_blocks in root.findall(".//CubeBlocks"):
+        for block in list(cube_blocks):
+            found = True
+            yield block
+    if found:
+        return
+    yield from root.findall(".//MyObjectBuilder_CubeBlock")
+
+
+def min_axis(element: Optional[ET.Element], axis: str, default: int = 0) -> int:
+    """Read one ``Min`` axis. Non-numeric text stays at ``default``."""
+    if element is None:
+        return default
+    raw = element.attrib.get(axis)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def min_xyz(block: ET.Element) -> Tuple[int, int, int]:
+    """Return ``Min`` x/y/z, or zeros when the element or an axis is unusable."""
+    min_elem = block.find("Min")
+    return (
+        min_axis(min_elem, "x"),
+        min_axis(min_elem, "y"),
+        min_axis(min_elem, "z"),
+    )
+
+
+__all__ = [
+    "parse",
+    "safe_write",
+    "get_subtype",
+    "get_text",
+    "iter_cube_blocks",
+    "min_axis",
+    "min_xyz",
+    "HARDENED",
+]

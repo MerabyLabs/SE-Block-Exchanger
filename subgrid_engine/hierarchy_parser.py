@@ -79,7 +79,7 @@ class SubgridHierarchyParser:
     def parse_element(cls, root: ET.Element) -> MultiGridStructure:
         grids = root.findall(".//CubeGrid")
         if not grids:
-            blocks = root.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock") or root.findall(".//MyObjectBuilder_CubeBlock")
+            blocks = list(safe_xml.iter_cube_blocks(root))
             if blocks:
                 node = SubgridNode(
                     grid_name="MainGrid",
@@ -225,12 +225,7 @@ class SubgridHierarchyParser:
 
     @staticmethod
     def _findall_blocks(grid: ET.Element) -> List[ET.Element]:
-        blocks = grid.findall(".//CubeBlocks/MyObjectBuilder_CubeBlock")
-        if not blocks:
-            blocks = grid.findall(".//{*}CubeBlocks/{*}MyObjectBuilder_CubeBlock")
-        if not blocks:
-            blocks = grid.findall(".//MyObjectBuilder_CubeBlock")
-        return blocks
+        return list(safe_xml.iter_cube_blocks(grid))
 
     @staticmethod
     def _grid_label(grid: ET.Element, fallback: str) -> str:

@@ -51,13 +51,34 @@ def stage_blueprint_for_spawn(source: Path, dest: Path) -> Tuple[Path, str, bool
     return dest, warning_for_blueprint_file(dest / "bp.sbc"), removed
 
 
+def copy_blueprint_folder(source_dir: Path, dest_dir: Path) -> Path:
+    """Copy a blueprint folder, drop ``bp.sbcB5``, and sync ship identity.
+
+    The original folder is not modified. A locked cache raises
+    ``BinaryCacheError`` and the destination is removed.
+    """
+    source_dir = Path(source_dir)
+    dest_dir = Path(dest_dir)
+    bp_file = source_dir / "bp.sbc"
+    if not bp_file.is_file():
+        raise FileNotFoundError(f"No bp.sbc found in: {source_dir}")
+    if dest_dir.exists():
+        shutil.rmtree(dest_dir)
+    shutil.copytree(source_dir, dest_dir)
+    binary_bp_file = dest_dir / "bp.sbcB5"
+    if binary_bp_file.exists():
+        try:
+            remove_blueprint_binary_cache(binary_bp_file)
+        except BinaryCacheError:
+            shutil.rmtree(dest_dir, ignore_errors=True)
+            raise
+    out_file = dest_dir / "bp.sbc"
+    _sync_ship_blueprint_identity(out_file, dest_dir.name)
+    return out_file
+
+
 def _iter_cube_blocks(root):
-    blocks = []
-    for cube_blocks in root.findall(".//CubeBlocks"):
-        blocks.extend(list(cube_blocks))
-    if blocks:
-        return blocks
-    return root.findall(".//MyObjectBuilder_CubeBlock")
+    return list(safe_xml.iter_cube_blocks(root))
 
 
 def _apply_subtype_text(block, target: str) -> None:
@@ -178,23 +199,15 @@ class BlueprintConverter:
     def _copy_blueprint_folder(self, source_path: Path, dest_path: Path) -> Path:
         if dest_path.exists():
             self.log(f"Destination exists, removing: {dest_path}")
-            shutil.rmtree(dest_path)
         self.log(f"Copying blueprint folder: {source_path.name} -> {dest_path.name}")
-        shutil.copytree(source_path, dest_path)
         # Drop bp.sbcB5 before any subtype rewrite. A lock raises BinaryCacheError
         # and the new folder is removed, so the game never sees a converted name
         # paired with the stale binary cache.
-        binary_bp_file = dest_path / "bp.sbcB5"
-        if binary_bp_file.exists():
-            self.log(f"Removing binary blueprint cache: {binary_bp_file}")
-            try:
-                remove_blueprint_binary_cache(binary_bp_file)
-            except BinaryCacheError:
-                shutil.rmtree(dest_path, ignore_errors=True)
-                raise
+        had_cache = (source_path / "bp.sbcB5").exists()
+        bp_file = copy_blueprint_folder(source_path, dest_path)
+        if had_cache:
+            self.log(f"Removing binary blueprint cache: {dest_path / 'bp.sbcB5'}")
             self.removed_binary_cache = True
-        bp_file = dest_path / "bp.sbc"
-        _sync_ship_blueprint_identity(bp_file, dest_path.name)
         return bp_file
 
     def _rewrite_with_mapping(self, bp_file: Path, mapping: Dict[str, str]) -> Tuple[int, int]:
@@ -328,24 +341,18 @@ class BlueprintConverter:
             blocks_scanned += 1
             subtype_name = block.find("SubtypeName")
             subtype_id = block.find("SubtypeId")
-
-            elem_to_modify = []
-            current_val = None
-
-            if subtype_name is not None and subtype_name.text:
-                elem_to_modify.append(subtype_name)
-                current_val = subtype_name.text.strip()
-            if subtype_id is not None and subtype_id.text:
-                elem_to_modify.append(subtype_id)
-                if not current_val:
-                    current_val = subtype_id.text.strip()
-
-            if current_val and elem_to_modify:
-                new_val = _scale_subtype_prefix(current_val, source_prefix, dest_prefix)
-                if new_val and new_val != current_val:
-                    for elem in elem_to_modify:
-                        elem.text = new_val
-                    replacements += 1
+            # Scale each field from its own text. A SubtypeId that does not
+            # share the SubtypeName prefix must not be overwritten by it.
+            replaced = False
+            for elem in (subtype_name, subtype_id):
+                if elem is None or not elem.text or not elem.text.strip():
+                    continue
+                new_val = _scale_subtype_prefix(elem.text.strip(), source_prefix, dest_prefix)
+                if new_val and new_val != elem.text.strip():
+                    elem.text = new_val
+                    replaced = True
+            if replaced:
+                replacements += 1
 
             min_elem = block.find("Min")
             if min_elem is not None:
